@@ -197,4 +197,19 @@ class NightscoutDrainTest {
         assertEquals(1, result.dropped)
         assertTrue(bridge.requests.isEmpty())
     }
+
+    @Test
+    fun `a gap-fill slot's marker is dropped, not POSTed`() = runTest {
+        val dao = FakeOutboxDao()
+        dao.enqueue(entryRow(1_787_000_000_000L))
+        val bridge = RecordingBridge({ SyncResponse(200, ByteArray(0)) })
+        val fill: suspend (Long) -> SampleEntity? =
+            { sampleAt(it).copy(bgProvenance = ReadingProvenance.INTERPOLATED) }
+
+        val result = drainer(dao, bridge, fill).drainOnce()
+
+        assertEquals(1, result.dropped)
+        assertTrue(bridge.requests.isEmpty())
+        assertEquals(0, dao.count())
+    }
 }

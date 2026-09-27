@@ -21,6 +21,24 @@ class NightscoutMappersTest {
         assertEquals(112, sample(112).toNsEntry(null)?.sgv)
     }
 
+    @Test
+    fun `a gap-fill is never bridged`() {
+        val fill = sample(112).copy(bgProvenance = ReadingProvenance.INTERPOLATED)
+        assertNull("a gap-fill must not reach the bridge", fill.toNsEntry(null))
+    }
+
+    @Test
+    fun `a warm-up reading is never bridged`() {
+        val warmup = sample(112).copy(bgFlag = ReadingFlag.WARMUP)
+        assertNull("a warm-up reading must not reach the bridge", warmup.toNsEntry(null))
+    }
+
+    @Test
+    fun `a sample with no provenance is never bridged`() {
+        assertNull(sample(112).copy(bgProvenance = null).toNsEntry(null))
+        assertNull(sample(112).copy(bgFlag = null).toNsEntry(null))
+    }
+
     private fun sample(bg: Int?, ts: Long = 1_787_000_000_000L, tz: Int = 180) = SampleEntity(
         ts = ts,
         tzOffsetMin = tz,

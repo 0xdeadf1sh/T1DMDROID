@@ -1,6 +1,6 @@
 package com.t1dm.sync.nightscout
 
-import com.t1dm.core.model.ReadingProvenance
+import com.t1dm.core.model.isRealMeasurement
 import com.t1dm.data.db.DoseKind
 import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.LoggedMealEntity
@@ -30,8 +30,8 @@ fun nsDirection(trendTenthsPerMin: Int?): String? = when {
 /** Only bgMgdl crosses: exercise is carb EQUIVALENT, opposite sign to a meal (§3); never carbs. */
 fun SampleEntity.toNsEntry(trendTenthsPerMin: Int?): NsEntryDto? {
     val bg = bgMgdl ?: return null
-    // Fail closed: `sgv` claims sensor signal a third party can't retract. 2nd of two stops.
-    if (bgProvenance == ReadingProvenance.RECONSTRUCTED) return null
+    // Fail closed: `sgv` claims sensor signal, not a fill or warm-up; the host can't retract one.
+    if (!isRealMeasurement(bgProvenance ?: return null, bgFlag ?: return null)) return null
     // Unsnapped, so two readings contesting one slot reach the host as the two readings they are.
     val at = bgMeasuredAtMs ?: ts
     return NsEntryDto(
