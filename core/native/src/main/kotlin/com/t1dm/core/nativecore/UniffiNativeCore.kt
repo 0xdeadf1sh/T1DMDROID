@@ -179,7 +179,7 @@ import uniffi.t1dm_core.TimeHead as UniffiTimeHead
 import uniffi.t1dm_core.StatSample as UniffiStatSample
 import uniffi.t1dm_core.SubBands as UniffiSubBands
 
-/** Needs libt1dm_core.so (else [StubNativeCore]); CoreException from decode/parse maps to null */
+/** Host builds: [StubNativeCore]. Calls with a try fail closed; the rest throw CoreException. */
 class UniffiNativeCore : NativeCore {
     override fun roundtrip(msg: String): String = uniffiRoundtrip(msg)
 
