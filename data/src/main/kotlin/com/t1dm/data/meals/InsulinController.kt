@@ -122,6 +122,10 @@ class InsulinController(
             "Lantus" to "Glargine U100 · Lantus",
             "Tresiba" to "Degludec · Tresiba",
         )
+
+        /** θ and duration grow with the dose, SPEC/invariants.md §5; others scale linearly. */
+        fun isDoseScaled(type: InsulinType): Boolean = type.kind == InsulinKind.BOLUS &&
+            type.customCurve.isNullOrEmpty() && (type.k == null || type.theta == null)
     }
 }
 
@@ -139,7 +143,7 @@ internal suspend fun pkCurveOf(engine: CurveEngine, type: InsulinType, units: Do
         }
         type.kind == InsulinKind.BOLUS && k != null && theta != null ->
             engine.gamma(units, k, theta, type.durationMin).toList()
-        type.kind == InsulinKind.BOLUS ->
+        InsulinController.isDoseScaled(type) ->
             engine.presetCurve(units, engine.defaultPreset(InsulinFamily.RapidGamma)).toList()
         ka != null && ke != null -> engine.bateman(units, type.durationMin, ka, ke).toList()
         else -> engine.presetCurve(units, engine.defaultPreset(InsulinFamily.BasalBateman)).toList()

@@ -2161,14 +2161,17 @@ class AppContainer(context: Context) {
         reforecastAfterCurveWrite()
     }
 
-    /** Dose twin of [editLoggedMeal]; [insulin] re-resolves PK curve via the owning writer. */
+    /** Twin of [editLoggedMeal]; a pick, or new units of a dose-scaled insulin, re-resolve PK. */
     suspend fun editLoggedDose(entry: LoggedEntry, units: Double, insulin: InsulinChoice?, tsMs: Long) {
         requireLoggableDose(units)
         val now = System.currentTimeMillis()
         val old = repository.loggedDoseById(entry.rowId) ?: return
-        val edited = when (insulin) {
-            is InsulinChoice.Preset -> repository.editLoggedDose(old.retypedTo(insulin.spec, units, tsMs), now)
-            else -> insulinController.editDose(old, (insulin as? InsulinChoice.Type)?.type, units, tsMs, now)
+        val choice = insulin ?: if (units == old.units) null else {
+            doseScaledOwnChoice(insulinChoices.first(), entry.insulin, entry.detail)
+        }
+        val edited = when (choice) {
+            is InsulinChoice.Preset -> repository.editLoggedDose(old.retypedTo(choice.spec, units, tsMs), now)
+            else -> insulinController.editDose(old, (choice as? InsulinChoice.Type)?.type, units, tsMs, now)
         } ?: return
         remirrorEditedTreatment(edited.clientId) {
             nightscoutEnqueuer.enqueueDose(edited, now, holdMs = pushHoldMs())

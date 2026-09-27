@@ -1,8 +1,11 @@
 package com.t1dm.app.di
 
 import com.t1dm.app.settings.SettingsStore
+import com.t1dm.core.model.InsulinChoice
 import com.t1dm.core.model.InsulinFamily
+import com.t1dm.core.model.InsulinKind
 import com.t1dm.core.model.InsulinPresetSpec
+import com.t1dm.core.model.InsulinType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -83,5 +86,31 @@ class InsulinPresetResolutionTest {
     fun `the last-used insulin is not exportable configuration`() {
         assertTrue(!SettingsStore.isConfigKey(SettingsStore.K_LAST_RAPID_PRESET))
         assertTrue(!SettingsStore.isConfigKey(SettingsStore.K_LAST_BASAL_PRESET))
+    }
+
+    private val novorapid = InsulinType(1L, "Novorapid", InsulinKind.BOLUS, 240.0, builtin = true)
+    private val customGamma = InsulinType(2L, "Slow", InsulinKind.BOLUS, 300.0, k = 2.0, theta = 40.0)
+    private val choices = catalog.map(InsulinChoice::Preset) +
+        listOf(novorapid, customGamma).map(InsulinChoice::Type)
+
+    private fun own(kind: InsulinKind, label: String) = doseScaledOwnChoice(choices, kind, label)
+
+    /** SPEC/invariants.md §5: a units edit must re-derive θ and duration for these. */
+    @Test
+    fun `a units edit re-resolves a rapid preset or a builtin bolus`() {
+        assertEquals("Lispro · Humalog", own(InsulinKind.BOLUS, "Lispro · Humalog")?.label)
+        assertEquals(InsulinChoice.Type(novorapid), own(InsulinKind.BOLUS, "Novorapid"))
+    }
+
+    @Test
+    fun `a linear shape keeps its stored curve`() {
+        assertNull(own(InsulinKind.BASAL, "Degludec · Tresiba"))
+        assertNull(own(InsulinKind.BOLUS, "Slow"))
+    }
+
+    @Test
+    fun `a kind mismatch or an unknown label resolves nothing`() {
+        assertNull(own(InsulinKind.BASAL, "Lispro · Humalog"))
+        assertNull(own(InsulinKind.BOLUS, "Insulin That Was Renamed"))
     }
 }
