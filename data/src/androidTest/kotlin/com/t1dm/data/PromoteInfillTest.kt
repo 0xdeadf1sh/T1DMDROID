@@ -147,6 +147,23 @@ class PromoteInfillTest {
         assertNull(db.cgmReadingDao().byTs(src.value, spanStart))
     }
 
+    /** The sample slot is shared across sensors; one measured there before the switch counts. */
+    @Test
+    fun a_slot_another_sensor_measured_is_refused_and_kept() = runTest {
+        val other = CgmSourceId("s-2")
+        repo.upsertSource(descriptor().copy(id = other, serialSuffix = "2"), authoritative = true, nowMs = t0)
+        repo.upsertReading(measured(t0 + 300_000L, 111).copy(sourceId = other))
+        val spanStart = seedPromotableSpan()
+
+        val r = repo.promoteInfillSpan(spanStart, now)
+        assertTrue(r.toString(), r is PromoteResult.Refused)
+
+        val sample = db.sampleDao().byTs(spanStart)!!
+        assertEquals(111, sample.bgMgdl)
+        assertEquals(ReadingProvenance.MEASURED, sample.bgProvenance)
+        assertNull(db.cgmReadingDao().byTs(src.value, spanStart))
+    }
+
     /** A band that does not bracket its own median is withheld rather than stored. */
     @Test
     fun a_degenerate_band_is_refused() = runTest {

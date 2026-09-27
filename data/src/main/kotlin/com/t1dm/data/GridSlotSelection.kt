@@ -3,7 +3,18 @@ package com.t1dm.data
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.db.CgmReadingEntity
+import com.t1dm.data.db.SampleEntity
 import kotlin.math.abs
+
+/** Any source's; legacy NULL provenance counts as measured. */
+internal fun sampleHoldsMeasurement(sample: SampleEntity?): Boolean =
+    sample != null && sample.bgMgdl != null &&
+        sample.bgProvenance != ReadingProvenance.INTERPOLATED &&
+        sample.bgProvenance != ReadingProvenance.RECONSTRUCTED
+
+/** [supersedesGridSlot]'s reconstruction rule on `sample`: a hole or another reconstruction. */
+internal fun reconstructionTakesSample(sample: SampleEntity?): Boolean =
+    sample == null || sample.bgMgdl == null || sample.bgProvenance == ReadingProvenance.RECONSTRUCTED
 
 /** Does [incoming] take [stored]'s slot? Storage-side: NORMAL>suppressed, nearest, earlier wins. */
 internal fun supersedesGridSlot(stored: CgmReadingEntity?, incoming: CgmReadingEntity): Boolean {

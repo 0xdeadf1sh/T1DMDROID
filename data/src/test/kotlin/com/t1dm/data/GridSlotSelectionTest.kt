@@ -3,6 +3,7 @@ package com.t1dm.data
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.db.CgmReadingEntity
+import com.t1dm.data.db.SampleEntity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -122,6 +123,26 @@ class GridSlotSelectionTest {
     }
 
     @Test
+    fun `a sample holds a measurement unless its BG is absent or not measured`() {
+        assertTrue(sampleHoldsMeasurement(sample(120, ReadingProvenance.MEASURED)))
+        assertTrue("a pre-provenance row is a measurement", sampleHoldsMeasurement(sample(120, null)))
+        assertFalse(sampleHoldsMeasurement(sample(120, ReadingProvenance.INTERPOLATED)))
+        assertFalse(sampleHoldsMeasurement(sample(120, ReadingProvenance.RECONSTRUCTED)))
+        assertFalse(sampleHoldsMeasurement(sample(null, null)))
+        assertFalse(sampleHoldsMeasurement(null))
+    }
+
+    @Test
+    fun `a reconstruction takes only an empty or reconstructed sample`() {
+        assertTrue(reconstructionTakesSample(null))
+        assertTrue(reconstructionTakesSample(sample(null, null)))
+        assertTrue(reconstructionTakesSample(sample(120, ReadingProvenance.RECONSTRUCTED)))
+        assertFalse("another sensor's gap-fill", reconstructionTakesSample(sample(120, ReadingProvenance.INTERPOLATED)))
+        assertFalse(reconstructionTakesSample(sample(120, ReadingProvenance.MEASURED)))
+        assertFalse(reconstructionTakesSample(sample(120, null)))
+    }
+
+    @Test
     fun `the same receive instant replaces in place`() {
         val row = measured(SLOT, SLOT + 40_000)
         assertTrue(supersedesGridSlot(row, row.copy(bgMgdl = 999)))
@@ -191,6 +212,12 @@ class GridSlotSelectionTest {
             tzOffsetMin = 0,
             rxWallMs = tsMs,
             rssi = null,
+        )
+
+        fun sample(bg: Int?, provenance: ReadingProvenance?) = SampleEntity(
+            ts = SLOT, tzOffsetMin = 0, bgMgdl = bg, bgSource = null, bgProvenance = provenance,
+            bgFlag = null, steps = null, mood = null, hr = null, sleep = null, exercise = null,
+            updatedAt = SLOT,
         )
 
         /** What `upsertReading` stores, slot by slot. */

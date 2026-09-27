@@ -1241,7 +1241,9 @@ class T1dmRepository(
 
             for (row in rows) {
                 val stored = readings.byTs(src, row.ts)
-                if (stored != null && stored.provenance == ReadingProvenance.MEASURED) {
+                if ((stored != null && stored.provenance == ReadingProvenance.MEASURED) ||
+                    sampleHoldsMeasurement(samples.byTs(row.ts))
+                ) {
                     return@inWriteTx PromoteResult.Refused("Slot measured")
                 }
                 if (!row.mgdl.isFinite() || !row.lo90.isFinite() || !row.hi90.isFinite() ||
@@ -1273,7 +1275,10 @@ class T1dmRepository(
                 if (!supersedesGridSlot(readings.byTs(src, row.ts), entity)) continue
                 readings.upsert(entity)
                 written++
-                val base = samples.byTs(row.ts) ?: emptySample(row.ts, tz, row.ts)
+                val slot = samples.byTs(row.ts)
+                // Else demotion would null another sensor's gap-fill.
+                if (!reconstructionTakesSample(slot)) continue
+                val base = slot ?: emptySample(row.ts, tz, row.ts)
                 samples.upsert(
                     base.copy(
                         bgMgdl = entity.bgMgdl,
