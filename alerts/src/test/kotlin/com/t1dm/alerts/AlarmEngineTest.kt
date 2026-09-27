@@ -113,6 +113,31 @@ class AlarmEngineTest {
     }
 
     @Test
+    fun `a seeded reading fires signal loss with no live reading`() {
+        val e = engine()
+        e.seed(reading(120, rxWallMs = 0), nowMs = MIN)
+        assertNull(e.state.value.signalLoss)
+        e.onTick(20 * MIN)
+        assertNotNull(e.state.value.signalLoss)
+    }
+
+    @Test
+    fun `a seed older than lossMin raises loss but no breach`() {
+        val e = engine()
+        e.seed(reading(50, rxWallMs = 0), nowMs = 25 * MIN)
+        assertNull(e.state.value.threshold)
+        assertTrue(e.state.value.signalLoss!!.escalated)
+    }
+
+    @Test
+    fun `a seed older than a live reading is ignored`() {
+        val e = engine()
+        e.onReading(reading(120, rxWallMs = 10 * MIN), nowMs = 10 * MIN)
+        e.seed(reading(50, rxWallMs = 5 * MIN), nowMs = 10 * MIN)
+        assertNull(e.state.value.threshold)
+    }
+
+    @Test
     fun `a critical threshold breach outranks a critical over-temperature`() {
         val e = AlarmEngine(AlarmConfig.DEFAULT.copy(overTempSeverity = AlarmSeverity.CRITICAL))
         e.onReading(reading(50, rxWallMs = 0))

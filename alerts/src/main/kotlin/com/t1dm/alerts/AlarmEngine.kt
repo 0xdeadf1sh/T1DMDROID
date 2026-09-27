@@ -31,6 +31,18 @@ class AlarmEngine(private var config: AlarmConfig = AlarmConfig.DEFAULT) {
         publish()
     }
 
+    /** Stored last reading, on start. Not weak signal: one RSSI shows no sustained weak link. */
+    @Synchronized
+    fun seed(last: CgmReading, nowMs: Long) {
+        if (take(last, nowMs)) {
+            if (isFresh(last, nowMs)) threshold.onReading(last)
+            lossOfSignal.onReading(last)
+        }
+        lossOfSignal.evaluate(nowMs)
+        weakSignal.evaluate(nowMs)
+        publish()
+    }
+
     /** Forgets link state only; a standing threshold breach is never cleared here. */
     @Synchronized
     fun onSourceChanged(nowMs: Long) {

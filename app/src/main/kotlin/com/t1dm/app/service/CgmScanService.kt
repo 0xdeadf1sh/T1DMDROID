@@ -51,6 +51,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
@@ -229,6 +230,13 @@ class CgmScanService : LifecycleService() {
         alarmScope.launch {
             container.refreshAlertActuatorConfig()
             alarmEngine = AlarmEngine(container.alarmConfig)
+            runCatching {
+                container.repository.authoritativeSourceId()
+                    ?.let { container.repository.observeLastMeasuredReading(it).first() }
+            }
+                .onFailure { Timber.tag(TAG).w(it, "alarm seed read failed") }
+                .getOrNull()
+                ?.let { alarmEngine.seed(it, System.currentTimeMillis()) }
             val notifier = AndroidAlarmNotifier(
                 context = this@CgmScanService,
                 // Live: a snapshot here would freeze the choice for the life of the service.
