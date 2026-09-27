@@ -7,7 +7,7 @@ import java.util.concurrent.Executors
 
 /** The single injected dispatcher holder (§2.3); heavy work never lands on [main]. */
 interface T1dmDispatchers {
-    val main: CoroutineDispatcher        // Main.immediate — UI only
+    val main: CoroutineDispatcher        // Dispatchers.Main — UI only
     val default: CoroutineDispatcher     // CPU: Rust pre/post, decode, grid-stamp, stats, crypto
     val io: CoroutineDispatcher          // Room, disk, HTTP/WS, file
     val inference: CoroutineDispatcher   // SINGLE-thread: serialises ExecuTorch/Neuron; <=5 models.
