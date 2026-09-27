@@ -1,4 +1,4 @@
-//! Curve/PK (SPEC §3.3; INFERENCE.md §9): carbs=Ra, insulin=PK; basal+bolus → `insulin_combined`.
+//! Curve/PK (SPEC/invariants.md §5): carbs=Ra, insulin=PK; basal+bolus → `insulin_combined`.
 
 use crate::CoreError;
 
@@ -58,7 +58,7 @@ pub struct BasalDoseSpec {
     pub ke_per_hour: f64,
 }
 
-/// SPEC §3.6: `tz_offset_min` maps epoch-ms to the local midnight `time_of_day_min` is from.
+/// SPEC/invariants.md §2, §5: `tz_offset_min` sets the local midnight `time_of_day_min` is from.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct BasalSchedule {
     pub tz_offset_min: i32,
