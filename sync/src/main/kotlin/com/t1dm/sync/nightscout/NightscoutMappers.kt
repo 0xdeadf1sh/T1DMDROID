@@ -1,6 +1,7 @@
 package com.t1dm.sync.nightscout
 
 import com.t1dm.core.model.isRealMeasurement
+import com.t1dm.data.T1dmRepository
 import com.t1dm.data.db.DoseKind
 import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.LoggedMealEntity
@@ -46,7 +47,7 @@ fun SampleEntity.toNsEntry(trendTenthsPerMin: Int?): NsEntryDto? {
 /** The appearance curve does not survive; see [NsTreatmentDto]. */
 fun LoggedMealEntity.toNsTreatment(): NsTreatmentDto = NsTreatmentDto(
     eventType = NsEventType.CARBS,
-    created_at = nsIso(updatedAt, tzOffsetMin),
+    created_at = nsIso(eventInstantMs(tsMs, loggedAtMs, updatedAt), tzOffsetMin),
     carbs = grams,
     notes = noteWithClientId(note, clientId),
     utcOffset = tzOffsetMin,
@@ -57,14 +58,18 @@ fun LoggedDoseEntity.toNsTreatment(): NsTreatmentDto? {
     if (kind != DoseKind.BOLUS) return null
     return NsTreatmentDto(
         eventType = NsEventType.BOLUS,
-        created_at = nsIso(updatedAt, tzOffsetMin),
+        created_at = nsIso(eventInstantMs(tsMs, loggedAtMs, updatedAt), tzOffsetMin),
         insulin = units,
         notes = noteWithClientId(note, clientId),
         utcOffset = tzOffsetMin,
     )
 }
 
-// A treatment carries `updatedAt`, not grid-snapped `tsMs`: same-slot host-keying would drop one.
+/** The slot plus the log instant's sub-slot ms: bare tsMs lets the host drop a same-slot pair. */
+internal fun eventInstantMs(tsMs: Long, loggedAtMs: Long, updatedAt: Long): Long {
+    val logged = loggedAtMs.takeIf { it != 0L } ?: updatedAt
+    return tsMs + (logged - T1dmRepository.snapToGrid(logged))
+}
 
 /** Best-effort: a host may overwrite `notes` — see [NightscoutClient.alreadyPosted]. */
 internal fun noteWithClientId(note: String?, clientId: String): String =

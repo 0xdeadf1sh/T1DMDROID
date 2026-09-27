@@ -83,7 +83,7 @@ class EventMutationTest {
         assertNotNull(db.eventTombstoneDao().byClientId(row.clientId))
     }
 
-    /** /api/v1 has no update for a landed treatment; bridged created_at derives from updatedAt. */
+    /** /api/v1 has no update for a landed row; a resent edit is dropped or filed as a SECOND. */
     @Test
     fun an_edited_events_bridged_mirror_is_recalled_only_while_it_is_still_pending() = runTest {
         val row = repo.logLoggedDose(dose())

@@ -7,6 +7,7 @@ import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.db.SampleEntity
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -185,6 +186,35 @@ class NightscoutMappersTest {
     }
 
     @Test
+    fun `an unedited treatment carries its log instant`() {
+        val logged = SLOT + 12_345L
+        val t = dose(DoseKind.BOLUS, 6.5)
+            .copy(tsMs = SLOT, loggedAtMs = logged, updatedAt = logged).toNsTreatment()!!
+        assertEquals(nsIso(logged, 180), t.created_at)
+    }
+
+    /** A backdate is the point of the edit; the edit instant is when the user noticed. */
+    @Test
+    fun `an edited treatment carries its slot, not the edit instant`() {
+        val logged = SLOT + 12_345L
+        val editedAt = SLOT + 20 * 60_000L
+        val movedTo = SLOT - 30 * 60_000L
+        val t = dose(DoseKind.BOLUS, 6.5)
+            .copy(tsMs = movedTo, loggedAtMs = logged, updatedAt = editedAt).toNsTreatment()!!
+        assertEquals(nsIso(movedTo + 12_345L, 180), t.created_at)
+        assertNotEquals(nsIso(editedAt, 180), t.created_at)
+    }
+
+    @Test
+    fun `meal and bolus edited into one slot keep distinct created_at`() {
+        val editedAt = SLOT + 20 * 60_000L
+        val m = meal(40.0).copy(tsMs = SLOT, loggedAtMs = SLOT + 5_000L, updatedAt = editedAt)
+        val d = dose(DoseKind.BOLUS, 6.0)
+            .copy(tsMs = SLOT, loggedAtMs = SLOT - 30 * 60_000L + 40_000L, updatedAt = editedAt)
+        assertNotEquals(m.toNsTreatment().created_at, d.toNsTreatment()!!.created_at)
+    }
+
+    @Test
     fun `client id survives with and without a user note`() {
         assertEquals("cid", noteWithClientId(null, "cid"))
         assertEquals("cid", noteWithClientId("  ", "cid"))
@@ -193,5 +223,10 @@ class NightscoutMappersTest {
         assertEquals("cid", clientIdMarker(noteWithClientId("pizza", "cid")))
         assertNull(clientIdMarker(null))
         assertNull(clientIdMarker("  "))
+    }
+
+    private companion object {
+        /** On the five-minute grid. */
+        const val SLOT = 1_787_057_700_000L
     }
 }
