@@ -63,6 +63,7 @@ import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.InferenceCause
 import com.t1dm.core.model.InsulinFamily
+import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.data.curve.CurveEngine
@@ -108,7 +109,7 @@ class CgmScanService : LifecycleService() {
     private var started = false
 
     /** Touched only from refreshGlanceSurfaces, on one coroutine; needs no synchronization. */
-    private var lastGlancePushSig: List<Any?>? = null
+    private var lastWidgetPushSig: List<Any?>? = null
 
     /** Alarm-engine input: the active source's readings plus injected ones. */
     private val readingBus = MutableSharedFlow<CgmReading>(replay = 0, extraBufferCapacity = 128)
@@ -428,17 +429,17 @@ class CgmScanService : LifecycleService() {
         val (themeId, customJson) = themeSig
         val palette = resolvePalette(themeId, customJson)
         val accent = palette.primary.toArgb()
-        // Push only what CHANGED: unguarded, a widget push parcels ~2 MB per cgm_reading write.
-        val pushSig: List<Any?> =
-            listOf(glance, unit, accent, state.selectedPredictedTime, themeId, customJson)
-        val surfacesChanged = pushSig != lastGlancePushSig
-        if (surfacesChanged) lastGlancePushSig = pushSig
+        // A widget push parcels ~2 MB: only when what it draws changed.
+        val widgetSig = widgetPushSig(
+            glance, readings.lastMeasured?.rxWallMs, unit, accent, state.selectedPredictedTime, themeId, customJson,
+        )
+        val widgetChanged = widgetSig != lastWidgetPushSig
+        if (widgetChanged) lastWidgetPushSig = widgetSig
 
         val nm = getSystemService(NotificationManager::class.java)
-        if (surfacesChanged) {
-            runCatching {
-                nm.notify(NOTIF_ID, livePresenter.build(glance, unit, accent, state.selectedPredictedTime))
-            }
+        // Every refresh: the body counts seconds.
+        runCatching {
+            nm.notify(NOTIF_ID, livePresenter.build(glance, unit, accent, state.selectedPredictedTime))
         }
 
         val deterministicCriticalActive = ::alarmController.isInitialized &&
@@ -454,7 +455,7 @@ class CgmScanService : LifecycleService() {
         }
 
         // Seed palette globals BEFORE pushing so the widget renders headlessly, no Activity needed.
-        if (surfacesChanged) {
+        if (widgetChanged) {
             applyWidgetPalette(palette)
             runCatching { GlucoseWidget().updateAll(this) }
         }
@@ -988,3 +989,17 @@ class CgmScanService : LifecycleService() {
 private val CGM_PERMISSIONS = listOf(android.Manifest.permission.BLUETOOTH_SCAN)
 
 internal fun missingCgmGrants(granted: (String) -> Boolean): List<String> = CGM_PERMISSIONS.filterNot(granted)
+
+/** Age in whole minutes, as the widget draws it; [readingWallMs] repaints each new reading. */
+internal fun widgetPushSig(
+    glance: BgGlance,
+    readingWallMs: Long?,
+    unit: UnitSpace,
+    accent: Int,
+    predictedTime: PredictedTime?,
+    themeId: String,
+    customJson: String?,
+): List<Any?> = listOf(
+    glance.copy(readingAgeMs = glance.readingAgeMs / 60_000L),
+    readingWallMs, unit, accent, predictedTime, themeId, customJson,
+)
