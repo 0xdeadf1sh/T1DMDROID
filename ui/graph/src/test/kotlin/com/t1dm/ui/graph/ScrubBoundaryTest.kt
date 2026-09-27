@@ -152,4 +152,16 @@ class ScrubBoundaryTest {
         assertFalse(past.bgExtrapolated)
         assertEquals("BG" to "100", bgRow(past))
     }
+
+    @Test fun aCursorInsideADropoutWithholds() {
+        // 12:40, nothing, 14:20; the cursor at 13:25.
+        val gap = buildGraphFrame(listOf(reading(T0), reading(T0 + 100 * 60_000L)))
+        val inside = buildScrub(gap, emptyList(), null, null, null, null, T0 + 45 * 60_000.0)
+        assertNull(inside.bgValue)
+        assertFalse(inside.inPredZone)
+        assertEquals("BG" to "--", bgRow(inside))
+
+        val onReading = buildScrub(gap, emptyList(), null, null, null, null, T0.toDouble())
+        assertEquals("BG" to "100", bgRow(onReading))
+    }
 }

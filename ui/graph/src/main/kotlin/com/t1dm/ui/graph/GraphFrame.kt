@@ -40,6 +40,16 @@ class GraphFrame internal constructor(
         return if (target - xs[lo] <= xs[hi] - target) lo else hi
     }
 
+    /** [nearestIndex], or -1 strictly inside a dropout the trace leaves undrawn. */
+    fun drawnIndexAt(ms: Double): Int {
+        val i = nearestIndex(ms)
+        if (i < 0) return -1
+        val target = ((ms - t0Ms) / 60_000.0).toFloat()
+        val a = if (target < xs[i]) i - 1 else i
+        val inBreak = a in 0 until size - 1 && breakAfter[a] && target > xs[a] && target < xs[a + 1]
+        return if (inBreak) -1 else i
+    }
+
     companion object {
         const val FLAG_MEASURED = 0
         const val FLAG_INTERPOLATED = 1

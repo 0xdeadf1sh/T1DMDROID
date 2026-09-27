@@ -1150,7 +1150,7 @@ internal fun buildScrub(
     var bg: Float? = null
     var extrapolated = false
     if (!inPred && !frame.isEmpty) {
-        val i = frame.nearestIndex(ms)
+        val i = frame.drawnIndexAt(ms)
         if (i >= 0) bg = frame.ys[i]
     } else {
         bg = selectedMedianAt(predictions, ms)

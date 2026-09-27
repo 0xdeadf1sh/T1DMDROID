@@ -65,4 +65,27 @@ class GraphFrameTest {
         assertEquals(20, frame.size)
         assertTrue(frame.breakAfter.any { it })
     }
+
+    @Test fun drawnIndexWithholdsInsideADropout() {
+        val first = (0 until 10).map { reading(T0 + it * GRID, 100 + it) }
+        val resume = first.last().tsMs + 45 * 60 * 1000L
+        val second = (0 until 10).map { reading(resume + it * GRID, 100 + it) }
+        val frame = buildGraphFrame(first + second)
+        assertEquals(-1, frame.drawnIndexAt((first.last().tsMs + 20 * 60 * 1000L).toDouble()))
+        assertEquals(9, frame.drawnIndexAt(first.last().tsMs.toDouble()))
+        assertEquals(10, frame.drawnIndexAt(resume.toDouble()))
+        // Between two joined readings: the nearest.
+        assertEquals(3, frame.drawnIndexAt((T0 + 3 * GRID + 60_000L).toDouble()))
+    }
+
+    @Test fun drawnIndexWithholdsInsideADropoutAfterDecimation() {
+        val half = 4000
+        val first = (0 until half).map { reading(T0 + it * GRID, 100 + it % 40) }
+        val resume = first.last().tsMs + 3 * 60 * 60 * 1000L
+        val second = (0 until half).map { reading(resume + it * GRID, 100 + it % 40) }
+        val frame = buildGraphFrame(first + second)
+        assertTrue("series must decimate", frame.size < half * 2)
+        assertEquals(-1, frame.drawnIndexAt((first.last().tsMs + 90 * 60 * 1000L).toDouble()))
+        assertEquals(frame.size - 1, frame.drawnIndexAt(second.last().tsMs.toDouble()))
+    }
 }
