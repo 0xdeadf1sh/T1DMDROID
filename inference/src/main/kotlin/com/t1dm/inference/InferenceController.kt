@@ -43,6 +43,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import timber.log.Timber
+import java.io.File
+import java.security.MessageDigest
 import kotlin.math.max
 
 /** Owns running set, backend handles, state; cycleMutex serialises cycles off one APU/CPU queue. */
@@ -74,6 +76,10 @@ class InferenceController(
     private val loraStore: LoraStore? = null,
     /** Null ⇒ the choice lasts the session. */
     private val selectionStore: SelectionStore? = null,
+    /** Null ⇒ files replaced under a kept id go unnoticed. */
+    private val artifactLedger: ArtifactLedger? = null,
+    /** Runs holding [cycleMutex], so must not call back in; a throw retries next refresh. */
+    private val onArtifactReplaced: suspend (modelId: String) -> Unit = {},
 ) {
     private val _state = MutableStateFlow(InferenceState())
     val state: StateFlow<InferenceState> = _state.asStateFlow()
@@ -154,6 +160,7 @@ class InferenceController(
             storesLoaded = true
         }
         val discovered = store.discover()
+        val replaced = noteReplacedArtifacts(discovered)
 
         // Refresh is rare, so a full close/reload beats diffing and cannot leave a stale handle.
         loaded.values.forEach { runCatching { it.backend.close(it.handle) } }
@@ -197,6 +204,7 @@ class InferenceController(
                 emptyList()
             } else {
                 _state.value.predictions
+                    .filterNot { it.modelId in replaced }
                     .map { it.copy(selected = it.modelId == selectedId) }
                     .sortedByDescending { it.selected }
             },
@@ -208,6 +216,39 @@ class InferenceController(
             "refreshModels models=%s active=%s",
             installed.keys, loaded[selectedId]?.effectiveBackend,
         )
+    }
+
+    /** Ids whose files changed since recorded; a first sight or an absent .pte only records. */
+    private suspend fun noteReplacedArtifacts(discovered: List<ModelBundle>): Set<String> {
+        val ledger = artifactLedger ?: return emptySet()
+        val known = runCatching { ledger.load() }.getOrElse { return emptySet() }
+        val next = HashMap(known)
+        val replaced = HashSet<String>()
+        for (b in discovered) {
+            // Recording an absent .pte would make the same file pushed back read as new.
+            if (!b.pte.exists()) continue
+            val fp = fingerprint(b)
+            if (known[b.id]?.let { it != fp } == true) replaced += b.id
+            next[b.id] = fp
+        }
+        for (id in replaced) {
+            runCatching { onArtifactReplaced(id) }.onFailure {
+                Timber.tag(TAG).w(it, "dropping state of replaced %s failed", id)
+                next[id] = known.getValue(id)
+            }
+        }
+        if (next != known) {
+            runCatching { ledger.save(next) }.onFailure { Timber.tag(TAG).w(it, "artifact ledger persist failed") }
+        }
+        return replaced
+    }
+
+    /** Descriptor text by SHA-256; .pte and head by size and mtime, which a push rewrites. */
+    private fun fingerprint(b: ModelBundle): String {
+        fun stat(f: File?) = f?.takeIf { it.exists() }?.let { "${it.length()}@${it.lastModified()}" } ?: "-"
+        val sha = MessageDigest.getInstance("SHA-256").digest(b.descriptorJson.toByteArray())
+            .joinToString("") { "%02x".format(it) }
+        return "$sha|${stat(b.pte)}|${stat(b.head)}"
     }
 
     /** fp32 XNNPACK authority when .pte loads, else StubBackend: never real, forecasts nothing. */

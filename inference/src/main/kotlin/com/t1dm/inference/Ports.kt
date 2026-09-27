@@ -86,6 +86,12 @@ interface TelemetryStore {
     suspend fun save(all: Map<String, CumulativeTelemetry>)
 }
 
+/** Model id to artifact fingerprint, across restarts; fingerprints compare for equality only. */
+interface ArtifactLedger {
+    suspend fun load(): Map<String, String>
+    suspend fun save(all: Map<String, String>)
+}
+
 /** The selected model id across restarts; null [load] is no choice yet. */
 interface SelectionStore {
     suspend fun load(): String?

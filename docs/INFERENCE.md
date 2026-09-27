@@ -83,10 +83,11 @@ per model in the `conformal_delta` table.
   reaches; a change in the patient's own behaviour breaks that and is not
   detectable here, so the correction is trusted for no longer than the history it
   was fitted on. The drill-down keeps the figures and marks them expired.
-- **It belongs to the artifact.** Applying a staged model update renames the
-  `.pte` and descriptor in place under an unchanged id, so the correction and the
-  stored forecasts it was fitted on are dropped along with the artifact they
-  describe.
+- **It belongs to the artifact.** Every model refresh fingerprints each id's
+  descriptor text and the size and modification time of its `.pte` and head
+  file. An id whose fingerprint changed loses its correction and the stored
+  forecasts it was fitted on, and its adapters are detached. An id seen for the
+  first time, or with no `.pte`, is only recorded.
 - **Fail-closed.** Below 144 calibration windows the correction is zero, not an
   extrapolated one, and the panel names both counts. The crate additionally
   raises any threshold below the point at which the extreme levels' order

@@ -3,6 +3,7 @@ package com.t1dm.app.inference
 import com.t1dm.cgm.AidexXSourceRegistry
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
+import com.t1dm.inference.ArtifactLedger
 import com.t1dm.inference.BG_SERIES_ROW_MARGIN
 import com.t1dm.inference.BgHistoryProvider
 import com.t1dm.inference.BgSeries
@@ -148,6 +149,29 @@ class KvTelemetryStore(private val repository: T1dmRepository) : TelemetryStore 
 
     private companion object {
         const val KV_KEY = "inference.telemetry.cumulative"
+    }
+}
+
+/** One kv row of JSON; an unparseable row reads empty, so every id is a first sight. */
+class KvArtifactLedger(private val repository: T1dmRepository) : ArtifactLedger {
+
+    override suspend fun load(): Map<String, String> {
+        val raw = repository.getKv(KV_KEY) ?: return emptyMap()
+        return runCatching {
+            val obj = JSONObject(raw)
+            obj.keys().asSequence().associateWith { obj.getString(it) }
+        }.getOrElse {
+            Timber.tag("ArtifactLedger").w(it, "unparseable ledger; every model reads as new")
+            emptyMap()
+        }
+    }
+
+    override suspend fun save(all: Map<String, String>) {
+        repository.putKv(KV_KEY, JSONObject(all).toString(), System.currentTimeMillis())
+    }
+
+    private companion object {
+        const val KV_KEY = "inference.artifact_ledger"
     }
 }
 

@@ -24,6 +24,8 @@ fun buildInferenceController(
     loraStore: LoraStore? = null,
     probeInsulin: ProbeInsulinPort? = null,
     selectionStore: SelectionStore? = null,
+    artifactLedger: ArtifactLedger? = null,
+    onArtifactReplaced: suspend (modelId: String) -> Unit = {},
 ): InferenceController {
     val store = ModelStore(modelsDir, native)
     val controller = InferenceController(
@@ -42,6 +44,8 @@ fun buildInferenceController(
         loraStore = loraStore,
         probeInsulin = probeInsulin,
         selectionStore = selectionStore,
+        artifactLedger = artifactLedger,
+        onArtifactReplaced = onArtifactReplaced,
     )
     controller.registerBackend(ExecuTorchXnnpackBackend())
     return controller

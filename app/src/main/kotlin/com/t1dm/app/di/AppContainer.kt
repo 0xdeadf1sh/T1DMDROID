@@ -17,6 +17,7 @@ import com.t1dm.alerts.LiveConfig
 import com.t1dm.alerts.VibrationPreset
 import androidx.glance.appwidget.updateAll
 import com.t1dm.app.cgm.AppCgmRepository
+import com.t1dm.app.inference.KvArtifactLedger
 import com.t1dm.app.inference.KvSelectionStore
 import com.t1dm.app.inference.KvTelemetryStore
 import com.t1dm.app.inference.RoomBgHistoryProvider
@@ -615,6 +616,13 @@ class AppContainer(context: Context) {
             // Re-read for every discovered id.
             telemetryStore = KvTelemetryStore(repository),
             selectionStore = KvSelectionStore(repository),
+            artifactLedger = KvArtifactLedger(repository),
+            // New files under an old id: what the old ones produced or were fitted on goes.
+            onArtifactReplaced = { modelId ->
+                repository.deleteBandCalibration(modelId)
+                repository.deletePredictionsForModel(modelId)
+                repository.detachLoras(modelId, System.currentTimeMillis())
+            },
             // Re-read every cycle; deserialize failure ⇒ null ⇒ frozen model, never half-applied.
             loraStore = LoraStore { modelId ->
                 repository.attachedLora(modelId)?.let { row ->
