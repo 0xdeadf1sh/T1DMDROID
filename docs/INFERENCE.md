@@ -287,6 +287,7 @@ hidden)`; the masked set crosses as a one-hot selection matrix, so no int64
 tensor crosses the runtime boundary.
 
 `ModelStore` admits only an `executorch_xnnpack` descriptor, so a model built for
-another delegate never loads. A model whose `.pte` is absent or will not load runs on the `StubBackend`,
-which is never `real`: the forecast is a fixed shape and the dose calculator
-refuses (§3.6-E).
+another delegate never loads. A model whose `.pte` is absent or will not load is
+held by the `StubBackend`, which runs nothing: that model publishes, stores and
+fills nothing, the Models note names the file, and the dose calculator refuses
+(§3.6-E).

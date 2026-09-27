@@ -176,17 +176,7 @@ class InferenceController(
             }
             discovered.isEmpty() ->
                 "no model — adb push a .pte and its descriptor.json"
-            loaded.values.none { it.real } ->
-                listOfNotNull(
-                    "running on the StubBackend (no working .pte) — real forecast path blocked",
-                    truncated,
-                ).joinToString(" · ")
-            loaded[selectedId]?.effectiveBackend == BackendId.STUB ->
-                listOfNotNull(
-                    "selected model has no working .pte — running on the StubBackend (real forecast path blocked)",
-                    truncated,
-                ).joinToString(" · ")
-            else -> truncated
+            else -> listOfNotNull(noPteNote(), truncated).joinToString(" · ").ifEmpty { null }
         }
         // runFromHistory returns at descAny == null before its own clear; nothing else drops these.
         val noModel = installed.isEmpty()
@@ -206,7 +196,7 @@ class InferenceController(
         )
     }
 
-    /** fp32 XNNPACK authority when .pte loads, else StubBackend (never real, dose fails closed). */
+    /** fp32 XNNPACK authority when .pte loads, else StubBackend: never real, forecasts nothing. */
     private fun loadModel(id: String): Entry {
         val bundle = installed[id] ?: error("no bundle for $id")
         val backend = backends[BackendId.EXECUTORCH_XNNPACK_FP32]
@@ -220,6 +210,12 @@ class InferenceController(
         }
         val handle = stub.load(bundle.descriptor, bundle.pte)
         return Entry(bundle, stub, handle, BackendId.STUB, real = false)
+    }
+
+    /** Null unless the selected model has no working .pte. */
+    private fun noPteNote(): String? {
+        val pte = loaded[selectedId]?.takeIf { !it.real }?.bundle?.pte ?: return null
+        return "no forecast — ${pte.name} ${if (pte.exists()) "won't load" else "missing"}"
     }
 
     /** Debug-only, not wired in release. */
@@ -362,6 +358,7 @@ class InferenceController(
         synthetic: Boolean,
     ): MaskedRun = cycleMutex.withLock {
         val entry = loaded[modelId] ?: error("model $modelId is not loaded")
+        if (!entry.real) error("model $modelId has no working .pte")
         val desc = entry.bundle.descriptor
         val gi = buildGraphInput(desc, series.mgdl, channels, future, spans, smoothingWindow(), withForecast)
         val t0 = System.nanoTime()
@@ -828,6 +825,7 @@ class InferenceController(
 
         // Serial: never two forwards on the one command queue.
         for ((id, entry) in loaded) {
+            if (!entry.real) continue
             val pred = runCatching { runOne(entry, id == selectedId, series, doseChannels, futureChannels, cycleTs, stale) }
                 .getOrElse {
                     Timber.tag(TAG).w(it, "model %s cycle failed", id); null
@@ -861,7 +859,11 @@ class InferenceController(
             circadianLowContext = selHasTime && selPred?.predictedTime == null && _state.value.circadianLowContext,
             selectedHasTimeSection = selHasTime,
             warmup = null, // a published cycle clears the warmup banner
-            note = if (stale) "forecast STALE — last real BG is ${(nowMs - series.anchorTsMs) / 60_000} min old" else null,
+            note = if (stale) {
+                "forecast STALE — last real BG is ${(nowMs - series.anchorTsMs) / 60_000} min old"
+            } else {
+                noPteNote()
+            },
         )
         runCatching { predictionStore.persist(cycleTs, preds) }
             .onFailure { Timber.tag(TAG).w(it, "prediction persist failed") }
