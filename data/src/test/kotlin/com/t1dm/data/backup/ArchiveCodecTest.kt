@@ -4,6 +4,7 @@ import com.t1dm.core.model.CgmSensorModelId
 import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
+import com.t1dm.data.db.BgInfillEntity
 import com.t1dm.data.db.CgmReadingEntity
 import com.t1dm.data.db.ConformalDeltaEntity
 import com.t1dm.data.db.DoseKind
@@ -160,6 +161,30 @@ class ArchiveCodecTest {
         // Same blob, a shape it cannot hold.
         val bad = render { Archive.write(it, c.copy(steps = 11)) }
         assertTrue(runCatching { Archive.readConformal(parse(bad)) }.isFailure)
+    }
+
+    /** bg_infill is the only copy of a promoted span's fan; a re-tau reads it back. */
+    @Test
+    fun `an infill keeps its fan and tau`() {
+        val r = infill()
+        assertEquals(r, Archive.readInfill(parse(render { Archive.write(it, r) })))
+    }
+
+    @Test
+    fun `an infill from an older archive restores fanless at the median`() {
+        val old = """{"t":"infill","ts":300000,"mid":132.0,"lo":96.0,"hi":168.0,"m":"m.pte","ca":1,"sp":300000,"pa":2}"""
+        val back = Archive.readInfill(parse(old))
+        assertEquals(0, back.bandsMgdl.size)
+        assertEquals(0, back.bandsRisk.size)
+        assertEquals(0.5, back.tau, 0.0)
+    }
+
+    @Test
+    fun `an infill whose fan is not seven f64 is refused`() {
+        val six = infill().copy(bandsMgdl = DoubleArray(6) { 96.0 + it * 12.0 }.toBlob())
+        assertTrue(runCatching { Archive.readInfill(parse(render { Archive.write(it, six) })) }.isFailure)
+        val edge = infill().copy(tau = 1.0)
+        assertTrue(runCatching { Archive.readInfill(parse(render { Archive.write(it, edge) })) }.isFailure)
     }
 
     @Test
@@ -435,6 +460,15 @@ class ArchiveCodecTest {
     private fun insulinType() = InsulinTypeEntity(
         name = "Fiasp", kind = DoseKind.BOLUS, durationMin = 300.0, k = 2.0, theta = 22.0,
         kaPerHour = null, kePerHour = null, customCurve = null, builtin = false, updatedAt = 4L,
+    )
+
+    /** A re-tau'd span: line at τ.30, not the median. */
+    private fun infill() = BgInfillEntity(
+        ts = 300_000L, mgdl = 132.0, lo90 = 96.0, hi90 = 168.0, modelId = "m.pte",
+        createdAtMs = 1L, spanStartMs = 300_000L, promotedAtMs = 2L,
+        bandsMgdl = DoubleArray(7) { 96.0 + it * 12.0 }.toBlob(),
+        bandsRisk = DoubleArray(7) { -1.5 + it * 0.5 }.toBlob(),
+        tau = 0.3,
     )
 
     private fun conformal(steps: Int, nQuantiles: Int) = ConformalDeltaEntity(

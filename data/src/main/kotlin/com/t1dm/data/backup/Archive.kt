@@ -6,6 +6,7 @@ import com.t1dm.data.db.BasalScheduleEntity
 import com.t1dm.data.db.BgInfillEntity
 import com.t1dm.data.db.CgmReadingEntity
 import com.t1dm.data.db.EventTombstoneEntity
+import com.t1dm.data.db.FAN_LEVELS
 import com.t1dm.data.db.CgmSourceEntity
 import com.t1dm.data.db.ConformalDeltaEntity
 import com.t1dm.data.db.LoraEntity
@@ -329,20 +330,40 @@ object Archive {
         w.put("ca", r.createdAtMs)
         w.put("sp", r.spanStartMs)
         w.putOrSkip("pa", r.promotedAtMs)
+        w.putBlobOrSkip("bm", r.bandsMgdl.takeIf { it.isNotEmpty() })
+        w.putBlobOrSkip("br", r.bandsRisk.takeIf { it.isNotEmpty() })
+        w.put("tau", r.tau)
         w.close()
     }
 
-    fun readInfill(o: JsonObject) = BgInfillEntity(
-        ts = o.long("ts") ?: err("infill", "ts"),
-        mgdl = o.dbl("mid") ?: err("infill", "mid"),
-        lo90 = o.dbl("lo") ?: err("infill", "lo"),
-        hi90 = o.dbl("hi") ?: err("infill", "hi"),
-        modelId = o.str("m") ?: err("infill", "m"),
-        createdAtMs = o.long("ca") ?: err("infill", "ca"),
-        spanStartMs = o.long("sp") ?: o.long("ts") ?: 0L,
-        // Restored PROMOTED as written; sample rows carry bgProvenance=RECONSTRUCTED, must agree.
-        promotedAtMs = o.long("pa") ?: o.long("ca"),
-    )
+    fun readInfill(o: JsonObject): BgInfillEntity {
+        // Absent in an older archive: fanless at the median, as MIGRATION_23_24 backfills.
+        val tau = o.dbl("tau") ?: 0.5
+        if (!(tau > 0.0 && tau < 1.0)) throw IllegalArgumentException("infill tau $tau is outside (0, 1)")
+        return BgInfillEntity(
+            ts = o.long("ts") ?: err("infill", "ts"),
+            mgdl = o.dbl("mid") ?: err("infill", "mid"),
+            lo90 = o.dbl("lo") ?: err("infill", "lo"),
+            hi90 = o.dbl("hi") ?: err("infill", "hi"),
+            modelId = o.str("m") ?: err("infill", "m"),
+            createdAtMs = o.long("ca") ?: err("infill", "ca"),
+            spanStartMs = o.long("sp") ?: o.long("ts") ?: 0L,
+            // Restored PROMOTED as written: sample rows carry RECONSTRUCTED; the two must agree.
+            promotedAtMs = o.long("pa") ?: o.long("ca"),
+            bandsMgdl = readFan(o, "bm"),
+            bandsRisk = readFan(o, "br"),
+            tau = tau,
+        )
+    }
+
+    /** Refused at the door like a misshapen conformal delta: any other length draws no fan. */
+    private fun readFan(o: JsonObject, k: String): ByteArray {
+        val blob = o.blob(k) ?: return ByteArray(0)
+        if (blob.isNotEmpty() && blob.size != FAN_LEVELS * Double.SIZE_BYTES) {
+            throw IllegalArgumentException("infill $k is ${blob.size} bytes, not $FAN_LEVELS f64")
+        }
+        return blob
+    }
 
     fun write(w: RecordWriter, r: EventTombstoneEntity) {
         w.open(T_TOMBSTONE)

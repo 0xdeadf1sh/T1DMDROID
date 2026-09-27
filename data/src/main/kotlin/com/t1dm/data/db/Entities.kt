@@ -666,4 +666,4 @@ fun BgInfillEntity.toModel(): ReconstructedBg = ReconstructedBg(
 )
 
 /** The quantile levels the head emits (`SPEC/invariants.md` §6). */
-private const val FAN_LEVELS = 7
+internal const val FAN_LEVELS = 7
