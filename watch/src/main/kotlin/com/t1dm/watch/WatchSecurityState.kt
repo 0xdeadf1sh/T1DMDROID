@@ -16,9 +16,9 @@ data class WatchSecurityState(
     val sessionState: WatchSessionState = WatchSessionState.UNPAIRED,
     val epoch: Int = 0,
 
-    /** Truncated hex fingerprint of the phone→watch key, never the key itself. */
+    /** First 4 bytes of SHA-256 over the phone's X25519 public key. */
     val keyFingerprint: String? = null,
-    /** Windowed send-nonce counter: the seq of the last sealed push. */
+    /** The next seq to seal; after a restore, the persisted ceiling. */
     val sendSeq: Long = 0,
     /** Receive-nonce counter, on the watch→phone ACK path. */
     val recvSeq: Long = 0,

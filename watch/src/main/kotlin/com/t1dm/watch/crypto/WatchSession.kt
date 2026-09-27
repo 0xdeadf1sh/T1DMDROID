@@ -62,8 +62,9 @@ private val SAS_WORDS = listOf(
 data class WatchCryptoSnapshot(
     val state: WatchSessionState,
     val epoch: Int,
-    /** Short hex fingerprint of k_p2w; null before keys exist. */
+    /** First 4 bytes of SHA-256 over the phone's X25519 public key; null before one exists. */
     val keyFingerprint: String?,
+    /** The next seq to seal; after a restore, the persisted ceiling. */
     val sendSeq: Long,
     val recvSeq: Long,
     val sas: SasCode?,

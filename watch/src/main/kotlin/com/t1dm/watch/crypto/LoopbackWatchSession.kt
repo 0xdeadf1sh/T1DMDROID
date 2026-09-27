@@ -106,8 +106,8 @@ class LoopbackWatchSession internal constructor(
     override fun snapshot(): WatchCryptoSnapshot = WatchCryptoSnapshot(
         state = state,
         epoch = epoch,
-        keyFingerprint = kP2W?.let { fingerprint(it) },
-        sendSeq = sendSeq,
+        keyFingerprint = myPublic.takeIf { it.isNotEmpty() }?.let { fingerprint(it) },
+        sendSeq = sendSeq + 1,
         recvSeq = recvSeq,
         sas = if (state == WatchSessionState.AWAIT_SAS) sas() else null,
     )
