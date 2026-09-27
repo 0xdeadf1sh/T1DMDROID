@@ -7,8 +7,13 @@ import com.t1dm.watch.ble.WatchCentral
 import com.t1dm.watch.ble.WatchCentralEvent
 import com.t1dm.watch.ble.WatchConnection
 import com.t1dm.watch.ble.WatchTarget
+import com.t1dm.watch.crypto.InMemoryWatchStores
 import com.t1dm.watch.crypto.LoopbackWatchSession
 import com.t1dm.watch.crypto.LoopbackWatchSessionFactory
+import com.t1dm.watch.crypto.NonceStore
+import com.t1dm.watch.crypto.WatchDevice
+import com.t1dm.watch.crypto.WatchDeviceStore
+import com.t1dm.watch.crypto.WatchStores
 import com.t1dm.watch.proto.ControlFrame
 import com.t1dm.watch.proto.KexFrame
 import com.t1dm.watch.proto.WatchCodec
@@ -175,6 +180,28 @@ internal class FakeCentral(private val air: FakeAir) : WatchCentral {
     suspend fun drop() {
         isReady = false
         bus.emit(WatchCentralEvent.Disconnected("test drop"))
+    }
+}
+
+/** Pass-through stores whose reads throw on demand, as a Keystore or kv failure would. */
+internal class FlakyStores(private val inner: WatchStores = InMemoryWatchStores()) : WatchStores {
+    @Volatile var failDevices = false
+    @Volatile var failCeiling = false
+
+    override val devices = object : WatchDeviceStore {
+        override suspend fun load() = if (failDevices) error("devices unreadable") else inner.devices.load()
+        override suspend fun put(device: WatchDevice) = inner.devices.put(device)
+        override suspend fun remove(id: String) = inner.devices.remove(id)
+    }
+
+    override fun pairing(id: String) = inner.pairing(id)
+
+    override fun nonces(id: String): NonceStore {
+        val real = inner.nonces(id)
+        return object : NonceStore by real {
+            override suspend fun loadCeiling(epoch: Int) =
+                if (failCeiling) error("ceiling unreadable") else real.loadCeiling(epoch)
+        }
     }
 }
 

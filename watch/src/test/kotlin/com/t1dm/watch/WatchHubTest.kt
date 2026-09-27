@@ -1,8 +1,9 @@
 package com.t1dm.watch
 
-import com.t1dm.watch.crypto.InMemoryWatchStores
 import com.t1dm.watch.crypto.LoopbackWatchSessionFactory
 import com.t1dm.watch.proto.WatchOutlook
+import java.util.Collections
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -21,8 +22,11 @@ class WatchHubTest {
     private val desk = FakePeripheral(byteArrayOf(0x0a, 1, 1, 1, 1, 1, 1, 1), extended = true)
     private val watch = FakePeripheral(byteArrayOf(0x0b, 2, 2, 2, 2, 2, 2, 2), extended = false)
     private val air = FakeAir(desk, watch)
-    private val stores = InMemoryWatchStores()
-    private val scope = CoroutineScope(SupervisorJob() + testDispatchers.default)
+    private val stores = FlakyStores()
+    private val crashes: MutableList<Throwable> = Collections.synchronizedList(mutableListOf())
+    private val scope = CoroutineScope(
+        SupervisorJob() + testDispatchers.default + CoroutineExceptionHandler { _, e -> crashes += e },
+    )
     private val centrals = mutableListOf<FakeCentral>()
     private val config = WatchLinkConfig(
         enabled = true, autoConnect = false, backoffInitialMs = 50, backoffMaxMs = 100, handshakeTimeoutMs = 500,
@@ -254,6 +258,26 @@ class WatchHubTest {
         awaitValue { hub.devices.value.takeIf { it.isEmpty() } }
         hub.resumeAfterReset()
         assertEquals(deskId, awaitValue { hub.devices.value.singleOrNull() }.deviceId)
+    }
+
+    @Test fun `a store failure at resume ends in ERROR, not a crash`() = runBlocking<Unit> {
+        hub = newHub(config.copy(autoConnect = true))
+        hub.start(scope)
+        pairNext()
+        hub.stopForReset()
+        stores.failCeiling = true
+        hub.resumeAfterReset()
+        val failed = awaitValue { hub.devices.value.singleOrNull()?.takeIf { it.phase == WatchLinkPhase.ERROR } }
+        assertTrue(failed.lastError!!, failed.lastError!!.startsWith("Resume failed"))
+        assertEquals(emptyList<Throwable>(), crashes.toList())
+    }
+
+    @Test fun `a store failure at start is not a crash`() = runBlocking<Unit> {
+        stores.failDevices = true
+        hub.start(scope)
+        delay(200)
+        assertEquals(emptyList<Throwable>(), crashes.toList())
+        assertTrue(hub.devices.value.isEmpty())
     }
 
     @Test fun `a new service scope rebuilds the links`() = runBlocking<Unit> {

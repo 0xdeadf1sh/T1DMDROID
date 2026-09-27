@@ -100,11 +100,14 @@ class WatchLink internal constructor(
         startRssiPoll(scope)
         val d = device ?: return
         launchOp(scope) {
-            val pairing = stores.pairing(d.id).load()
-            when {
-                !config.enabled -> setPhase(WatchLinkPhase.UNPAIRED)
-                pairing?.bonded == true && config.autoConnect -> resumeAndConnect(pairing)
-                else -> setPhase(if (pairing?.bonded == true) WatchLinkPhase.RECONNECTING else WatchLinkPhase.UNPAIRED)
+            attempt(::fail, "Resume failed") {
+                val pairing = stores.pairing(d.id).load()
+                when {
+                    !config.enabled -> setPhase(WatchLinkPhase.UNPAIRED)
+                    pairing?.bonded == true && config.autoConnect -> resumeAndConnect(pairing)
+                    pairing?.bonded == true -> setPhase(WatchLinkPhase.RECONNECTING)
+                    else -> setPhase(WatchLinkPhase.UNPAIRED)
+                }
             }
         }
     }
@@ -390,9 +393,9 @@ class WatchLink internal constructor(
         val ceiling = stores.nonces(d.id).loadCeiling(pairing.epoch)
         val session = sessionFactory.resume(pairing.material, ceiling).also { this.session = it }
         _state.update { it.copy(bonded = true, epoch = pairing.epoch) }
-        // Restore burned the send window; reserve fresh now, no key/nonce reuse (§4.5).
-        if (session.state == WatchSessionState.LIVE) persistSession(d, session)
         try {
+            // Restore burned the send window; reserve fresh now, no key/nonce reuse (§4.5).
+            if (session.state == WatchSessionState.LIVE) persistSession(d, session)
             connectTransport()
             if (session.state == WatchSessionState.LIVE) {
                 onReconnected()

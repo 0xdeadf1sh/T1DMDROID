@@ -93,7 +93,9 @@ class WatchHub(
             }
         }
         // Undispatched: old links are gone before start returns, so a pairing begun next survives.
-        scope.launch(dispatchers.default, start = CoroutineStart.UNDISPATCHED) { rehost() }
+        scope.launch(dispatchers.default, start = CoroutineStart.UNDISPATCHED) {
+            runCatching { rehost() }.onFailure { Timber.tag(TAG).w(it, "rehost failed") }
+        }
     }
 
     /** After a service restart, links bound to the old scope are rebuilt from the stores. */
