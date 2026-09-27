@@ -5,13 +5,14 @@ import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Test
 
 class ThresholdAlarmTest {
 
-    private val thresholds = AlarmConfig.DEFAULT.thresholds // 55 / 70 / 180 / 250
+    private val config = AlarmConfig.DEFAULT // 55 / 70 / 180 / 250, clear margin 5
 
-    private fun alarm() = ThresholdAlarm(thresholds)
+    private fun alarm() = ThresholdAlarm(config)
 
     @Test
     fun `each band is classified from a measured reading`() {
@@ -76,6 +77,58 @@ class ThresholdAlarmTest {
         assertNull(alarm().onReading(reading(40, provenance = ReadingProvenance.INTERPOLATED)))
         assertNull(alarm().onReading(reading(40, flag = ReadingFlag.WARMUP)))
         assertNull(alarm().onReading(reading(40, flag = ReadingFlag.INVALID)))
+    }
+
+    @Test
+    fun `noise at the low threshold keeps one breach`() {
+        val a = alarm()
+        val low = a.onReading(reading(69))!!
+        assertSame(low, a.onReading(reading(71)))
+        assertSame(low, a.onReading(reading(74)))
+    }
+
+    @Test
+    fun `a reading at low plus the margin clears`() {
+        val a = alarm()
+        a.onReading(reading(69))
+        assertNull(a.onReading(reading(75)))
+    }
+
+    @Test
+    fun `noise at the urgent-low threshold stays urgent`() {
+        val a = alarm()
+        val urgent = a.onReading(reading(54))!!
+        assertSame(urgent, a.onReading(reading(56)))
+        assertEquals(AlertBand.LOW, a.onReading(reading(60))!!.band)
+    }
+
+    @Test
+    fun `a jump past urgent-low but not past low steps down to low`() {
+        val a = alarm()
+        a.onReading(reading(50))
+        val stepped = a.onReading(reading(72))!!
+        assertEquals(AlertBand.LOW, stepped.band)
+        assertEquals("72 mg/dL", stepped.message)
+    }
+
+    @Test
+    fun `the high side mirrors the margin`() {
+        val a = alarm()
+        val high = a.onReading(reading(181))!!
+        assertSame(high, a.onReading(reading(179)))
+        assertSame(high, a.onReading(reading(175)))
+        assertNull(a.onReading(reading(174)))
+
+        val urgent = a.onReading(reading(251))!!
+        assertSame(urgent, a.onReading(reading(249)))
+        assertEquals(AlertBand.HIGH, a.onReading(reading(244))!!.band)
+    }
+
+    @Test
+    fun `crossing to the other side switches at once`() {
+        val a = alarm()
+        a.onReading(reading(65))
+        assertEquals(AlertBand.HIGH, a.onReading(reading(200))!!.band)
     }
 
     @Test

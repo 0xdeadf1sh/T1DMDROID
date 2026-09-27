@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 class AlarmEngine(private var config: AlarmConfig = AlarmConfig.DEFAULT) {
 
-    private val threshold = ThresholdAlarm(config.thresholds)
+    private val threshold = ThresholdAlarm(config)
     private val lossOfSignal = LossOfSignalAlarm(config)
     private val weakSignal = WeakSignalAlarm(config)
     private val overTemp = OverTemperatureAlarm(config)
@@ -55,7 +55,7 @@ class AlarmEngine(private var config: AlarmConfig = AlarmConfig.DEFAULT) {
     @Synchronized
     fun updateConfig(config: AlarmConfig) {
         this.config = config
-        threshold.updateThresholds(config.thresholds)
+        threshold.updateConfig(config)
         lossOfSignal.updateConfig(config)
         weakSignal.updateConfig(config)
         overTemp.updateConfig(config)

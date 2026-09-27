@@ -32,8 +32,11 @@ class AlarmEngineConfigTest {
         e.onReading(reading(50, rxWallMs = 0)) // urgent low
         e.updateConfig(default.copy(thresholds = AlertThresholds(45, 48, 180, 250)))
 
-        // bg=50 vs the new bounds (urgentLow 45, low 48) ⇒ IN_RANGE.
+        // bg=50 vs the new bounds (urgentLow 45, low 48): in range, but inside the clear margin.
         e.onReading(reading(50, rxWallMs = 5 * MIN))
+        assertEquals(AlertBand.LOW, e.state.value.threshold!!.band)
+        // bg=53 = low 48 + margin 5.
+        e.onReading(reading(53, rxWallMs = 10 * MIN))
         assertNull(e.state.value.threshold)
     }
 

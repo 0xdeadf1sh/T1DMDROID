@@ -18,6 +18,8 @@ data class AlarmConfig(
     val weakSignalEnabled: Boolean = true,
     val weakSignalDbm: Int = -90,
     val weakSignalSustainMin: Int = 3,
+    /** Distance past its threshold before a breach clears or steps down; 5 mg/dL = 0.3 mmol/L. */
+    val clearMarginMgdl: Int = 5,
 ) {
     companion object {
         val DEFAULT = AlarmConfig(
