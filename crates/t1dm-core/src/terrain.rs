@@ -9,7 +9,7 @@ use crate::CoreError;
 pub(crate) const FIXED_DT: f32 = 1.0 / 120.0;
 /// Surplus dropped, not chased: a frame-loop spiral wedges the UI thread; a drop is just a hitch.
 pub(crate) const MAX_SUBSTEPS: u32 = 8;
-/// Longest frame delta honoured; a longer gap is truncated so a body cannot tunnel.
+/// Clamp on one frame's input delta; `MAX_SUBSTEPS` × `FIXED_DT` caps what is simulated.
 pub(crate) const MAX_FRAME_DT_S: f32 = 0.25;
 
 /// ~200 km at 1 m spacing; bounds the `Vec` so a hostile size is `Err`, not an alloc abort.
