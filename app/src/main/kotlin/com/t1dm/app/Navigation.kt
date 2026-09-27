@@ -1140,11 +1140,10 @@ private fun T1dmNavHost(
             val pdfLauncher = rememberLauncherForActivityResult(
                 ActivityResultContracts.CreateDocument("application/pdf"),
             ) { uri ->
-                val composite = container.statsViewModel.state.value.composite
                 if (uri == null) { exportStatus = "Export cancelled" }
-                else if (composite == null) { exportStatus = "No stats to export" }
                 else scope.launch {
-                    exportStatus = runCatching {
+                    val composite = container.statsViewModel.fresh()
+                    exportStatus = if (composite == null) "No stats to export" else runCatching {
                         ctx.contentResolver.openOutputStream(uri)?.use {
                             com.t1dm.app.stats.StatsPdf.write(it, composite, container.nativeCore.clinicalCuts())
                         } ?: error("could not open file")
@@ -1152,6 +1151,7 @@ private fun T1dmNavHost(
                     }.getOrElse { "Export failed — ${it.message ?: it::class.simpleName}" }
                 }
             }
+            LaunchedEffect(Unit) { container.statsViewModel.refresh() }
             StatsScreen(
                 state = statsState,
                 kovatchevF = container.nativeCore::kovatchevF,

@@ -53,7 +53,21 @@ class StatsViewModel(
         load(window, refresh = false)
     }
 
-    fun recompute() = load(_state.value.window, refresh = true)
+    fun recompute() {
+        load(_state.value.window, refresh = true)
+    }
+
+    /** Cheap: a memo hit unless a sample or the 5-min end edge changed. */
+    fun refresh() {
+        load(_state.value.window, refresh = false)
+    }
+
+    /** Reloads first: an export stamped now must not print an old load. */
+    suspend fun fresh(): StatsComposite? {
+        load(_state.value.window, refresh = false).join()
+        loadJob?.join() // a newer load may have cancelled ours
+        return _state.value.composite
+    }
 
     fun setUnitSpace(space: UnitSpace) {
         scope.launch { source.setUnitSpace(space) } // re-emits via unitSpace → repaint
@@ -63,9 +77,9 @@ class StatsViewModel(
         scope.launch { source.setTargetRange(lowMgdl, highMgdl) } // re-emits targetRange → reload
     }
 
-    private fun load(window: StatsWindow, refresh: Boolean) {
+    private fun load(window: StatsWindow, refresh: Boolean): Job {
         loadJob?.cancel()
-        loadJob = scope.launch {
+        return scope.launch {
             _state.update { it.copy(window = window, loading = true, recomputing = refresh) }
             val local = source.localStats(window, refresh)
             val unit = _state.value.unitSpace
@@ -89,6 +103,6 @@ class StatsViewModel(
                     },
                 )
             }
-        }
+        }.also { loadJob = it }
     }
 }

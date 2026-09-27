@@ -22,12 +22,18 @@ class StatsViewModelTest {
     private class FakeSource(
         var local: AdvancedStats = EMPTY,
     ) : StatsSource {
+        var calls = 0
+        var lastRefresh: Boolean? = null
         override val targetRange = MutableStateFlow(TargetRange.DEFAULT)
         override val unitSpace = MutableStateFlow(UnitSpace.MgDl)
         override suspend fun setUnitSpace(space: UnitSpace) { unitSpace.value = space }
         override suspend fun setTargetRange(lowMgdl: Int, highMgdl: Int) { targetRange.value = TargetRange(lowMgdl, highMgdl) }
         override fun kovatchevF(mgdl: Double): Double = 0.0
-        override suspend fun localStats(window: StatsWindow, refresh: Boolean) = local
+        override suspend fun localStats(window: StatsWindow, refresh: Boolean): AdvancedStats {
+            calls++
+            lastRefresh = refresh
+            return local
+        }
     }
 
     @Test
@@ -56,6 +62,33 @@ class StatsViewModelTest {
         vm.selectWindow(StatsWindow.D90)
         assertEquals(StatsWindow.D90, vm.state.value.window)
         assertEquals(StatsWindow.D90, vm.state.value.composite!!.window)
+    }
+
+    @Test
+    fun refresh_reloads_the_current_window() = runTest {
+        val src = FakeSource(local = populated())
+        val vm = StatsViewModel(src, CoroutineScope(UnconfinedTestDispatcher(testScheduler)))
+        val before = src.calls
+        src.local = populated().copy(nSamples = 288)
+
+        vm.refresh()
+
+        assertEquals(before + 1, src.calls)
+        assertEquals(false, src.lastRefresh)
+        assertEquals(288, vm.state.value.composite!!.local.nSamples)
+        assertEquals(false, vm.state.value.composite!!.recomputed)
+    }
+
+    @Test
+    fun fresh_returns_the_reloaded_composite() = runTest {
+        val src = FakeSource(local = populated())
+        val vm = StatsViewModel(src, CoroutineScope(UnconfinedTestDispatcher(testScheduler)))
+        src.local = populated().copy(nSamples = 288)
+
+        val c = vm.fresh()
+
+        assertEquals(288, c!!.local.nSamples)
+        assertEquals(false, src.lastRefresh)
     }
 
     private companion object {
