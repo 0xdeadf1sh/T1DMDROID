@@ -26,7 +26,6 @@ class T1dmApplication : Application() {
         }
 
         container = AppContainer(this)
-        // Before any UI: the launcher repair cannot presuppose the user could still launch us.
         RetiredThemeMigration.run(this)
         container.startInference()
         container.startBuilders() // off-main, idempotent
