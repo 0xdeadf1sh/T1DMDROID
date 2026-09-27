@@ -90,7 +90,6 @@ object StatsPdf {
             }
         }
 
-        // LOCAL time, unlike the diurnal card above it — see stats.rs's day-boundary block.
         if (s.heatmap.isNotEmpty() && cuts.isUsable) {
             p.section("Glucose by day and hour")
             p.caption(
