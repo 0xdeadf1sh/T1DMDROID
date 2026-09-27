@@ -108,8 +108,9 @@
         <!-- The single adaptive Glance widget (home + lock). It refreshes from the ingest cycle via
              updateAll — no Activity required.
              exported=true: HyperOS's com.miui.home renders the pin-dialog / picker preview from its own
-             process, so the provider must be resolvable cross-process. APPWIDGET_UPDATE is delivered only
-             by the system AppWidgetManager, so exposure is benign. -->
+             process, so the provider must be resolvable cross-process. APPWIDGET_UPDATE is not a
+             protected broadcast: any app can send it and force a recomposition. A BIND_APPWIDGET
+             permission guard is untested against that launcher preview. -->
         <receiver
             android:name=".widget.GlucoseWidgetReceiver"
             android:exported="true">
