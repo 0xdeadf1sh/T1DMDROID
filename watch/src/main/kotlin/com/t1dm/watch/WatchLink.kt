@@ -527,8 +527,10 @@ class WatchLink internal constructor(
 
     private fun setPhase(phase: WatchLinkPhase) = _state.update { it.copy(phase = phase) }
 
+    /** Nothing retries from ERROR, so the connection would only hold the peripheral. */
     private fun fail(reason: String) {
         Timber.tag(TAG).w(reason)
+        teardown()
         _state.update { it.copy(phase = WatchLinkPhase.ERROR, lastError = reason) }
     }
 

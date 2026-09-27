@@ -144,6 +144,15 @@ class WatchHubTest {
         assertTrue(stores.pairing(deskId).load()!!.bonded)
     }
 
+    @Test fun `a pairing nobody answers disconnects`() = runBlocking<Unit> {
+        hub.start(scope)
+        desk.answersHello = false
+        hub.beginPairing()
+        val failed = awaitValue { hub.pairing.value?.takeIf { it.phase == WatchLinkPhase.ERROR } }
+        assertTrue(failed.lastError!!, failed.lastError!!.contains("no answer"))
+        assertTrue(synchronized(centrals) { centrals.none { it.isReady } })
+    }
+
     @Test fun `each card confirms its own rotation`() = runBlocking<Unit> {
         hub.start(scope)
         pairNext(); pairNext()
