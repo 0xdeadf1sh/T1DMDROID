@@ -125,13 +125,15 @@ class InferenceController(
     /** After an IN-PLACE data wipe, re-earn warmup, or the forecast runs on empty context. */
     suspend fun resetWarmupLatch() = cycleMutex.withLock { warmupSatisfiedUpTo = 0 }
 
-    suspend fun restoreLast() {
+    suspend fun restoreLast(nowMs: Long = System.currentTimeMillis()) {
         val last = runCatching { predictionStore.loadLast() }.getOrNull() ?: return
         if (last.isNotEmpty()) {
             // Cold start won't show a lit forecast on a dark clock; null belief leaves it be.
             val sel = last.firstOrNull { it.selected }
             _state.value = _state.value.copy(
-                predictions = last.sortedByDescending { it.selected },
+                predictions = last
+                    .map { it.copy(stale = it.stale || nowMs - it.anchorTsMs > freshnessThresholdMs) }
+                    .sortedByDescending { it.selected },
                 circadianTime = sel?.predictedTime ?: _state.value.circadianTime,
                 circadianAnchorMs = sel?.predictedTime?.let { sel.anchorTsMs } ?: _state.value.circadianAnchorMs,
                 note = "restored ${last.size} prediction(s) from last run",

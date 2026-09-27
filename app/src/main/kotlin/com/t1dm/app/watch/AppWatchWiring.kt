@@ -148,6 +148,7 @@ class AppWatchExtendedSource(
     private val calibratedBands: suspend (ModelPrediction) -> List<Double>?,
     private val stats: StatsRepository,
     private val display: suspend () -> WatchDisplay,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : WatchExtendedSource {
 
     override suspend fun history(nowMs: Long, slots: Int): WatchHistory? {
@@ -179,7 +180,8 @@ class AppWatchExtendedSource(
             anchorTsMs = p.anchorTsMs,
             anchorMgdl = p.lastBg,
             status = p.status,
-            stale = p.stale,
+            // Stamped inside a cycle; once readings stop, only the anchor's age shows it.
+            stale = p.stale || clock() - p.anchorTsMs > AppWatchGlanceSource.STALE_MIN * 60_000L,
             calibrated = cal != null,
             stepMin = (p.stepMs / 60_000L).toInt(),
             levels = p.nQuantiles,
