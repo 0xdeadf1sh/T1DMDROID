@@ -108,9 +108,9 @@ class WatchHubTest {
         hub.start(scope)
         pairNext()
         val stale = synchronized(centrals) { centrals.last() }
+        desk.records.clear()
         stale.moved = true
         awaitValue { synchronized(centrals) { centrals.last() }.takeIf { it !== stale } }
-        desk.records.clear()
         awaitValue { desk.kinds().takeIf { 1 in it } }
         assertEquals(WatchLinkPhase.LIVE, device(deskId).phase)
     }
