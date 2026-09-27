@@ -1,4 +1,4 @@
-//! Reproduces `T1DMAI/realdata/metrics.py::compute_suite`.
+//! Reproduces `T1DMAI/metrics/core/suite.py::compute_suite`.
 
 use crate::cg_ega::{self, CgEgaCounts};
 use crate::curve::DT_MINUTES;
@@ -105,7 +105,7 @@ const OUTER_TAU_HI: f64 = 0.95;
 /// mg/dL slack on ascending-fan check (risk-space equal levels differ via f_inv rounding).
 const FAN_ORDER_TOL_MGDL: f64 = 1e-6;
 
-/// Persistence RMSE below which the skill score is `None` (`metrics.py`'s `> 1e-9` guard).
+/// Persistence RMSE below which the skill score is `None` (`suite.py`'s `> 1e-9` guard).
 const PERSIST_RMSE_EPS: f64 = 1e-9;
 
 /// Step index of a horizon `h` minutes past the anchor; `None` off the grid.
@@ -280,7 +280,7 @@ fn band_project(truth: f64, lo: f64, hi: f64) -> f64 {
     truth.max(lo).min(hi)
 }
 
-/// Clarke zones as (A,B,C,D,E) flags (metrics.py::_clarke); a partition, exactly one set.
+/// Clarke zones as (A,B,C,D,E) flags (suite.py::_clarke); a partition, exactly one set.
 fn clarke_zones(pred: f64, truth: f64) -> (bool, bool, bool, bool, bool) {
     let pb = pred.max(1.0);
     let tb = truth.max(1.0);
@@ -1055,7 +1055,7 @@ mod tests {
         assert_eq!(got.n_ep, want[format!("ep_{reg}")].as_u64().unwrap() as u32, "counts.ep_{reg}");
     }
 
-    /// The gate: reproduced from `T1DMAI/realdata/metrics.py::compute_suite` + `cg_ega.py`.
+    /// The gate: reproduced from `T1DMAI/metrics/core/suite.py::compute_suite` + `cg_ega.py`.
     #[test]
     fn metrics_suite_golden() {
         let g = suite_golden();
@@ -1183,7 +1183,7 @@ mod tests {
         assert!(clarke_zone_grid(vec![0.0; 2048], vec![0.0; 2048]).is_err());
     }
 
-    /// Pairs on each boundary of `metrics.py::_clarke`, and their neighbours just across it.
+    /// Pairs on each boundary of `suite.py::_clarke`, and their neighbours just across it.
     #[test]
     fn clarke_zone_boundaries_are_where_the_reference_puts_them() {
         for (pred, truth, want) in [

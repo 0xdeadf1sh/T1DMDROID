@@ -62,7 +62,7 @@ import com.t1dm.core.model.ModelTelemetry
 import com.t1dm.core.model.displayName
 import kotlin.math.abs
 
-/** Realized accuracy §6.1-6.3; CG-EGA diverges from T1DMAI's transposed metrics script. */
+/** Realized accuracy per §6.1-6.3. */
 @Composable
 fun ModelDetailScreen(
     state: InferenceState,
@@ -343,7 +343,7 @@ fun ModelDetailScreen(
     }
 }
 
-// Column order follows `T1DMAI/realdata/report.py::_suite_table`.
+// Column order follows `T1DMAI/metrics/core/report.py::_suite_table`.
 
 private fun col(header: String, weight: Float) =
     com.t1dm.core.design.TableColumn(header, weight, numeric = true)

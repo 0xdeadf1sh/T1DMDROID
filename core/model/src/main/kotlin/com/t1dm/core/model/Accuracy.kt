@@ -1,6 +1,6 @@
 package com.t1dm.core.model
 
-/** Mirrors t1dm-core::accuracy; core owns every number. Not comparable to T1DMAI's metrics.py. */
+/** Mirrors t1dm-core::accuracy; CG-EGA counts equal T1DMAI's (SPEC/invariants.md §6.3). */
 
 /** bandsMgdl: steps x nQuantiles row-major ascending τ; lastBg anchors CG-EGA's first rate. */
 data class ForecastWindow(
