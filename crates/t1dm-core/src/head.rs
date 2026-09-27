@@ -259,7 +259,7 @@ impl HeadModel {
     }
 }
 
-/// Reused across slots, so a training pass does not allocate per slot.
+/// One step's forward values; inference reuses one, training keeps one per step for backprop.
 struct Activations {
     h_in: Vec<f64>,
     z1: Vec<f64>,
