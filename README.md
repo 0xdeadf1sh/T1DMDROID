@@ -25,7 +25,7 @@ Designed by a T1DM patient, informed by lived experience.
 
 The AiDEX X broadcasts its current reading roughly once per minute and the app listens passively — no pairing, no bond, no GATT connection. Activation, calibration and warmup stay with the sensor's official app on a separate phone. Each reading is stamped with the phone's receive time snapped to a 5-minute grid.
 
-A small transformer runs over that feed entirely on the device. It predicts any withheld stretch of glucose rather than only the next two hours, so one artifact fills a gap the sensor left as well as it forecasts, and a low-rank adapter can personalise it from the wearer's own matured forecasts while the exported weights stay frozen. Around it sit meal and insulin logs, advisory statistics, and a deterministic, model-free alarm path for out-of-range and loss-of-signal. Optional integrations add a one-way Nightscout bridge and an encrypted BLE watch accessory.
+A small transformer runs over that feed entirely on the device. It predicts any withheld stretch of glucose rather than only the next two hours, so one artifact fills a gap the sensor left as well as it forecasts, and a low-rank adapter can personalise it from the wearer's own matured forecasts while the exported weights stay frozen. Around it sit meal and insulin logs, advisory statistics, and a deterministic, model-free alarm path for out-of-range and loss-of-signal. Optional integrations add a one-way Nightscout bridge and an encrypted BLE link to watch peripherals.
 
 The Bluetooth, inference, and watch protocols are documented under [`docs/`](docs): [`CGM.md`](docs/CGM.md), [`INFERENCE.md`](docs/INFERENCE.md), and [`WATCH_BLE.md`](docs/WATCH_BLE.md).
 
@@ -81,7 +81,7 @@ Restore merges: a record already present is kept, so importing the same file twi
 ## Architecture
 
 - **UI:** Jetpack Compose, organized as a multi-module Gradle build so the CGM-source and model-backend seams stay pluggable.
-- **Rust core (`t1dm-core`, via JNI/NDK):** the correctness-critical, hot numerics — AiDEX frame decode and its CRCs, session crypto, the model pre/post pipeline (causal Savitzky-Golay smoothing, normalize/denormalize, the Kovatchev risk transform, quantile assembly), and the watch AES-128-GCM. Kotlin keeps the UI, BLE plumbing, storage, and orchestration. `cargo test -p t1dm-core` tests the core bit-for-bit against golden vectors.
+- **Rust core (`t1dm-core`, via JNI/NDK):** the correctness-critical, hot numerics — AiDEX frame decode and its CRCs, the model pre/post pipeline (causal Savitzky-Golay smoothing, normalize/denormalize, the Kovatchev risk transform, quantile assembly), glycemic statistics, and the watch AES-128-GCM. Kotlin keeps the UI, BLE plumbing, storage, and orchestration. `cargo test -p t1dm-core` tests the core bit-for-bit against golden vectors.
 - **On-device inference:** [ExecuTorch](https://pytorch.org/executorch/). One exported model on one backend, behind a seam that keeps it replaceable: the CPU XNNPACK fp32 delegate, which the stock runtime registers. It is the only path a dose is scored on; a model whose artifact will not load there falls back to a fixed-output stub and the dose calculator refuses.
 - **Storage & orchestration:** Room on the bundled SQLite driver; an always-on foreground service plus WorkManager run the passive scan, the 5-minute grid, inference, the Nightscout bridge, and the alarm path off the main thread.
 
@@ -94,15 +94,15 @@ Restore merges: a record already present is kept, so importing the same file twi
 | `:cgm` | Passive AiDEX X advertisement scan, recognition, and the CGM-source registry |
 | `:inference` | The forecasting cycle: context build, backend dispatch, decode, degeneracy gating |
 | `:sensors` | Step counter, GPS track recording, and other phone sensors |
-| `:calc` | Advisory bolus calculator: rolled forecast, dose grid, fail-closed rails |
+| `:calc` | Advisory bolus/basal calculators, dose rails and the dose advisor |
 | `:alerts` | The deterministic, model-free alarm engine (out-of-range, loss-of-signal, device temperature) |
 | `:sync` | The durable outbox behind the one-way Nightscout bridge |
-| `:watch` | Encrypted BLE link to the optional ESP32-C3 watch |
-| `:data` | Room database, repositories, curve reconstruction, the backup archive codec |
+| `:watch` | Encrypted BLE link to watch peripherals (T1DMKDE on the desktop, T1DMAUTO on a car head unit) |
+| `:data` | Room database, repositories, statistics, curve reconstruction, the backup archive codec |
 | `:core:common`, `:core:model`, `:core:design`, `:core:native` | Shared dispatchers, domain types, theming, and the Rust-core JNI bindings |
 | `:ui:graph` | The custom Compose blood-glucose graph |
 | `:ui:game`, `:feature:game` | Drive and Golf, the cosmetic minigames drawn on the glucose trace over a rapier2d solver in `t1dm-core` |
-| `:feature:*` | Screen features — dashboard, stats, models, meals, insulin, security, settings, logs, backup |
+| `:feature:*` | Screen features — dashboard, stats, models, meals, insulin, exercise, security, settings, logs, backup |
 
 
 ## Building
