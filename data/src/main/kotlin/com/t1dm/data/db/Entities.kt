@@ -135,13 +135,15 @@ data class SampleEntity(
 
 data class StepBucketRow(val ts: Long, val steps: Int)
 
-/** Staleness key: n catches inserts, maxUpdatedAt merges, per-column counts gap-fills. */
+/** Staleness key: n catches inserts, maxUpdatedAt merges, counts gap-fills and provenance swaps. */
 data class SampleWindowFingerprint(
     val n: Int,
     val maxUpdatedAt: Long,
     val nBg: Int,
     val nSteps: Int,
     val nMood: Int,
+    /** BG rows toStatSample drops; nBg minus this is what the stats count. */
+    val nNotMeasured: Int,
 )
 
 @Entity(tableName = "dose_event", indices = [Index("tsMs")])

@@ -266,11 +266,12 @@ interface SampleDao {
     @Query("SELECT * FROM sample WHERE ts BETWEEN :fromMs AND :toMs ORDER BY ts")
     suspend fun rangeList(fromMs: Long, toMs: Long): List<SampleEntity>
 
-    /** `COALESCE` gives an empty window a defined `maxUpdatedAt` rather than a null. */
+    /** `COALESCE` gives an empty window a defined `maxUpdatedAt` and `nNotMeasured`, not null. */
     @Query(
         "SELECT COUNT(*) AS n, COALESCE(MAX(updatedAt), 0) AS maxUpdatedAt, " +
-            "COUNT(bgMgdl) AS nBg, COUNT(steps) AS nSteps, COUNT(mood) AS nMood FROM sample " +
-            "WHERE ts BETWEEN :fromMs AND :toMs",
+            "COUNT(bgMgdl) AS nBg, COUNT(steps) AS nSteps, COUNT(mood) AS nMood, " +
+            "COALESCE(SUM(bgMgdl IS NOT NULL AND bgProvenance IN ('INTERPOLATED', 'RECONSTRUCTED')), 0) " +
+            "AS nNotMeasured FROM sample WHERE ts BETWEEN :fromMs AND :toMs",
     )
     suspend fun windowFingerprint(fromMs: Long, toMs: Long): SampleWindowFingerprint
 

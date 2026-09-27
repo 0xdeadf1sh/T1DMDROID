@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertThrows
 import org.junit.Before
@@ -100,6 +101,22 @@ class RoomTest {
         assertEquals(140, sample!!.bgMgdl)
         assertEquals(ReadingProvenance.MEASURED, sample.bgProvenance)
         assertEquals(ReadingFlag.NORMAL, sample.bgFlag)
+    }
+
+    /** A backfilled measurement older than the gap-fill it replaces leaves maxUpdatedAt alone. */
+    @Test
+    fun fingerprintMovesOnAProvenanceSwap() = runTest {
+        repo.upsertSource(descriptor, authoritative = true, nowMs = 1_000L)
+        val ts = 900_000L
+        repo.upsertReading(reading(ts, bg = 110, provenance = ReadingProvenance.INTERPOLATED, rxWallMs = ts + 120_000L))
+        val before = repo.sampleWindowFingerprint(0L, 2 * ts)
+
+        repo.upsertReading(reading(ts, bg = 110, provenance = ReadingProvenance.MEASURED, rxWallMs = ts + 30_000L))
+        val after = repo.sampleWindowFingerprint(0L, 2 * ts)
+
+        assertEquals(ReadingProvenance.MEASURED, repo.sampleAt(ts)!!.bgProvenance)
+        assertEquals("the swap did not move the stamp", before.maxUpdatedAt, after.maxUpdatedAt)
+        assertNotEquals(before, after)
     }
 
     @Test
