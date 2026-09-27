@@ -14,6 +14,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.util.TimeZone
+import kotlin.math.abs
+import kotlin.math.max
 
 /** Logged dose carries its resolved PK curve in customCurve, reconstructs later preset changes. */
 class InsulinController(
@@ -45,36 +47,19 @@ class InsulinController(
     val types: Flow<List<InsulinType>> =
         repository.observeInsulinTypes().map { list -> list.map { it.toModel() } }
 
-    /** The PK-action curve, units per 5-min. */
-    suspend fun resolvePreview(type: InsulinType, units: Double): List<Double> = pkCurve(type, units)
-
-    private suspend fun pkCurve(type: InsulinType, units: Double): List<Double> {
-        val shape = type.customCurve
-        val k = type.k
-        val theta = type.theta
-        val ka = type.kaPerHour
-        val ke = type.kePerHour
-        return when {
-            shape != null && shape.isNotEmpty() -> {
-                val tot = shape.sum()
-                val scale = if (tot > 0.0) units / tot else 0.0
-                shape.map { it * scale }
-            }
-            type.kind == InsulinKind.BOLUS && k != null && theta != null ->
-                engine.gamma(units, k, theta, type.durationMin).toList()
-            type.kind == InsulinKind.BOLUS ->
-                engine.presetCurve(units, engine.defaultPreset(InsulinFamily.RapidGamma)).toList()
-            ka != null && ke != null -> engine.bateman(units, type.durationMin, ka, ke).toList()
-            else -> engine.presetCurve(units, engine.defaultPreset(InsulinFamily.BasalBateman)).toList()
-        }
-    }
+    /** The PK-action curve, units per 5-min; empty when it does not encode [units]. */
+    suspend fun resolvePreview(type: InsulinType, units: Double): List<Double> =
+        pkCurveOf(engine, type, units).takeIf { encodesDose(it, units) }.orEmpty()
 
     /** A dose-scaled bolus acts for its own curve's length, not the type's 5 U reference. */
     private fun actingMin(curve: List<Double>, type: InsulinType): Double =
         if (curve.isEmpty()) type.durationMin else curve.size * (CurveEngine.STEP_MS / 60_000.0)
 
-    suspend fun saveCustomType(type: InsulinType) =
+    /** Drops a type whose 1 U curve encodes no dose. */
+    suspend fun saveCustomType(type: InsulinType) {
+        if (!encodesDose(pkCurveOf(engine, type, 1.0), 1.0)) return
         repository.upsertInsulinType(type.copy(builtin = false).toEntity(now()))
+    }
 
     suspend fun deleteCustomType(id: Long) = repository.deleteCustomInsulinType(id)
 
@@ -82,7 +67,8 @@ class InsulinController(
         withContext(dispatchers.io) {
             // Round-to-nearest, not floor, lands in the SAME slot as CGM/snapToGrid writers.
             val gridTs = Math.floorDiv(tsMs + CurveEngine.STEP_MS / 2, CurveEngine.STEP_MS) * CurveEngine.STEP_MS
-            val curve = pkCurve(type, units)
+            val curve = pkCurveOf(engine, type, units)
+            require(encodesDose(curve, units)) { "${type.name} encodes no $units U curve." }
             val tz = TimeZone.getDefault().getOffset(gridTs) / 60_000
             repository.logLoggedDose(
                 LoggedDoseEntity(
@@ -113,7 +99,8 @@ class InsulinController(
     ): LoggedDoseEntity? = withContext(dispatchers.io) {
         val retimed = row.copy(tsMs = tsMs, units = units)
         val next = if (type == null) retimed else {
-            val curve = pkCurve(type, units)
+            val curve = pkCurveOf(engine, type, units)
+            if (!encodesDose(curve, units)) return@withContext null
             retimed.copy(
                 kind = if (type.kind == InsulinKind.BOLUS) DoseKind.BOLUS else DoseKind.BASAL,
                 durationMin = actingMin(curve, type),
@@ -137,3 +124,29 @@ class InsulinController(
         )
     }
 }
+
+internal suspend fun pkCurveOf(engine: CurveEngine, type: InsulinType, units: Double): List<Double> {
+    val shape = type.customCurve
+    val k = type.k
+    val theta = type.theta
+    val ka = type.kaPerHour
+    val ke = type.kePerHour
+    return when {
+        shape != null && shape.isNotEmpty() -> {
+            val tot = shape.sum()
+            val scale = if (tot > 0.0) units / tot else 0.0
+            shape.map { it * scale }
+        }
+        type.kind == InsulinKind.BOLUS && k != null && theta != null ->
+            engine.gamma(units, k, theta, type.durationMin).toList()
+        type.kind == InsulinKind.BOLUS ->
+            engine.presetCurve(units, engine.defaultPreset(InsulinFamily.RapidGamma)).toList()
+        ka != null && ke != null -> engine.bateman(units, type.durationMin, ka, ke).toList()
+        else -> engine.presetCurve(units, engine.defaultPreset(InsulinFamily.BasalBateman)).toList()
+    }
+}
+
+/** SPEC/invariants.md §5: the curve sums to the dose. */
+internal fun encodesDose(curve: List<Double>, units: Double): Boolean =
+    curve.isNotEmpty() && curve.all { it.isFinite() && it >= 0.0 } &&
+        abs(curve.sum() - units) <= 1e-9 * max(1.0, units)

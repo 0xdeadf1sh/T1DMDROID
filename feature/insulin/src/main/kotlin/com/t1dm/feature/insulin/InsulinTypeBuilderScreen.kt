@@ -89,15 +89,17 @@ fun InsulinTypeBuilderScreen(
             )
             if (units != null && units > 0.0) {
                 Text("PK action — units per 5 min", style = MaterialTheme.typography.labelMedium)
-                val curve by produceState(emptyList<Double>(), type, units) {
-                    value = runCatching { onResolve(type, units) }.getOrDefault(emptyList())
+                val resolved by produceState<Pair<Pair<InsulinType, Double>, List<Double>>?>(null, type, units) {
+                    value = (type to units) to runCatching { onResolve(type, units) }.getOrDefault(emptyList())
                 }
+                val curve = resolved?.second.orEmpty()
                 CurvePreview(values = curve)
                 Button(
                     onClick = {
                         haptics.perform(HapticEvent.Tap)
                         pending = type to PendingLog.Dose(units, type.kind, type.name)
                     },
+                    enabled = resolved?.first == (type to units) && curve.isNotEmpty(),
                 ) { Text("Log dose") }
             }
             if (!type.builtin) {
@@ -108,7 +110,7 @@ fun InsulinTypeBuilderScreen(
         }
 
         HorizontalDivider()
-        CustomTypeBuilder(onSaveType)
+        CustomTypeBuilder(onResolve, onSaveType)
     }
 
     pending?.let { (type, p) ->
@@ -121,7 +123,10 @@ fun InsulinTypeBuilderScreen(
 }
 
 @Composable
-private fun CustomTypeBuilder(onSaveType: (InsulinType) -> Unit) {
+private fun CustomTypeBuilder(
+    onResolve: suspend (InsulinType, Double) -> List<Double>,
+    onSaveType: (InsulinType) -> Unit,
+) {
     var name by remember { mutableStateOf("") }
     var kind by remember { mutableStateOf(InsulinKind.BOLUS) }
     var durText by remember { mutableStateOf("300") }
@@ -194,31 +199,41 @@ private fun CustomTypeBuilder(onSaveType: (InsulinType) -> Unit) {
             )
         }
     }
+    val draft = durText.toDoubleOrNull()?.let { dur ->
+        val p1 = p1Text.toDoubleOrNull()
+        val p2 = p2Text.toDoubleOrNull()
+        InsulinType(
+            id = 0L,
+            name = "",
+            kind = kind,
+            durationMin = if (drawCurve) curve.durationMin else dur,
+            k = if (!drawCurve && kind == InsulinKind.BOLUS) p1 else null,
+            theta = if (!drawCurve && kind == InsulinKind.BOLUS) p2 else null,
+            kaPerHour = if (!drawCurve && kind == InsulinKind.BASAL) p1 else null,
+            kePerHour = if (!drawCurve && kind == InsulinKind.BASAL) p2 else null,
+            customCurve = if (drawCurve) curve.sampleNormalized(1.0) else null,
+            builtin = false,
+        )
+    }
+    val verdict by produceState<Pair<InsulinType, Boolean>?>(null, draft) {
+        value = draft?.let { d -> d to runCatching { onResolve(d, 1.0) }.getOrDefault(emptyList()).isNotEmpty() }
+    }
+    val encodes = verdict?.takeIf { it.first == draft }?.second
+    if (!drawCurve && encodes == false) {
+        Text(
+            "Encodes no insulin — check duration and shape",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+    }
     Button(
         onClick = {
-            val dur = durText.toDoubleOrNull() ?: run {
-                haptics.perform(HapticEvent.Reject)
-                return@Button
-            }
+            val type = draft ?: return@Button
             haptics.perform(HapticEvent.Confirm)
-            val p1 = p1Text.toDoubleOrNull()
-            val p2 = p2Text.toDoubleOrNull()
-            val type = InsulinType(
-                id = 0L,
-                name = name.trim(),
-                kind = kind,
-                durationMin = if (drawCurve) curve.durationMin else dur,
-                k = if (!drawCurve && kind == InsulinKind.BOLUS) p1 else null,
-                theta = if (!drawCurve && kind == InsulinKind.BOLUS) p2 else null,
-                kaPerHour = if (!drawCurve && kind == InsulinKind.BASAL) p1 else null,
-                kePerHour = if (!drawCurve && kind == InsulinKind.BASAL) p2 else null,
-                customCurve = if (drawCurve) curve.sampleNormalized(1.0) else null,
-                builtin = false,
-            )
-            onSaveType(type)
+            onSaveType(type.copy(name = name.trim()))
             name = ""; p1Text = ""; p2Text = ""; drawCurve = false
         },
-        enabled = name.isNotBlank() && !curveDegenerate,
+        enabled = name.isNotBlank() && !curveDegenerate && encodes == true,
     ) { Text("Save type") }
 }
 
