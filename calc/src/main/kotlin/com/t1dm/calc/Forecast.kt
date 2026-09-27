@@ -5,7 +5,7 @@ import com.t1dm.core.model.ForecastStatus
 
 /** Only ELIGIBLE may score a candidate or clear a rail; anything else fails closed (§3.6-B/C/D). */
 enum class ForecastEligibility {
-    /** Finite, monotone, non-collapsed, anchored on a fresh MEASURED reading. */
+    /** Finite, monotone, non-collapsed. Anchor age unchecked. */
     ELIGIBLE,
 
     /** The Rust `forecast_degeneracy_check` rejected the fan. */
