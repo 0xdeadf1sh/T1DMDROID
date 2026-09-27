@@ -66,6 +66,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.LocalAnimationsEnabled
@@ -106,7 +107,6 @@ import com.t1dm.ui.graph.OverlayInput
 import com.t1dm.ui.graph.GlucoseGraph
 import com.t1dm.ui.graph.GraphFrame
 import com.t1dm.ui.graph.GraphInsets
-import com.t1dm.ui.graph.GraphScrub
 import com.t1dm.ui.graph.geometryOf
 import com.t1dm.ui.graph.PaintControls
 import com.t1dm.ui.graph.PaintFrame
@@ -374,8 +374,6 @@ fun DashboardScreen(
     var confirmCut by remember { mutableStateOf<MaskSelection?>(null) }
     // The panel has `weight`, so this is its complement: shrinking this grows the graph.
     var controlsHeightDp by remember { mutableStateOf(CONTROLS_HEIGHT_MAX_DP) }
-    // Held past release: a control that lived only while a finger was down could not be pressed.
-    var scrubbed by remember { mutableStateOf<GraphScrub?>(null) }
     var paintTool by remember { mutableStateOf(PaintTool.DEFAULT) }
     var paintErasing by remember { mutableStateOf(false) }
     var paintWidthDp by remember { mutableStateOf(PaintTool.DEFAULT.defaultWidthDp) }
@@ -579,7 +577,6 @@ fun DashboardScreen(
             stepsFrame = stepsFrame,
             logMarkers = logMarkers,
             onMarkerTap = { hits -> tappedLogs = hits.mapNotNull { logEntries.getOrNull(it) } },
-            onScrub = { s -> if (s != null) scrubbed = s },
             reconstructed = if (showFills) shown else emptyList(),
             kovatchevF = kovatchevF,
             // Null unless the chip is lit: a non-null `maskControls` IS edit mode in the graph.
@@ -715,7 +712,6 @@ fun DashboardScreen(
 
     confirmCut?.let { range ->
         val haptics = rememberT1dmHaptics()
-        val tz = scrubbed?.tzOffsetMin ?: readings.lastOrNull()?.tzOffsetMin ?: 0
         LaunchedEffect(range) { haptics.perform(HapticEvent.Warn) }
         AlertDialog(
             onDismissRequest = { haptics.perform(HapticEvent.Reject); confirmCut = null },
@@ -733,7 +729,10 @@ fun DashboardScreen(
                 }
             },
             title = {
-                Text("Cut $cutCount from " + hhmm(range.startMs, tz) + "–" + hhmm(range.endMs - STEP_MS, tz))
+                Text(
+                    "Cut $cutCount from " + cutClock(readings, range.startMs) + "–" +
+                        cutClock(readings, range.endMs - STEP_MS),
+                )
             },
             text = { Text("Undo holds until you leave the app") },
         )
@@ -756,6 +755,10 @@ private class PaintUndoOp(var stroke: PaintStroke, val added: Boolean)
 /** Spelled out: [PaintStroke] is not a data class — array fields would give it a lying `equals`. */
 private fun PaintStroke.withId(newId: Long): PaintStroke =
     PaintStroke(newId, createdAtMs, tool, colorArgb, widthDp, tsMs, yFrac)
+
+/** In the offset stored on the reading nearest [tsMs], never the phone's zone; UTC with none. */
+internal fun cutClock(readings: List<CgmReading>, tsMs: Long): String =
+    hhmm(tsMs, readings.minByOrNull { abs(it.tsMs - tsMs) }?.tzOffsetMin ?: 0)
 
 /** The slot's OWN stored offset, never the phone's current zone — `SPEC/invariants.md` §2. */
 private fun hhmm(tsMs: Long, tzOffsetMin: Int): String {
