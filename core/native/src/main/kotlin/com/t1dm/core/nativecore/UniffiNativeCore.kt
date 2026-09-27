@@ -386,7 +386,7 @@ class UniffiNativeCore : NativeCore {
             AdvancedStats.EMPTY
         }
 
-    /** Cannot fail; fail-closed map kept anyway — a guessed scale anchor is worse than none. */
+    /** Cannot fail; kept fail-closed anyway. */
     override fun clinicalCuts(): ClinicalCuts =
         try {
             uniffiClinicalCuts().let { ClinicalCuts(it.veryLowMgdl, it.veryHighMgdl) }
@@ -786,6 +786,7 @@ private fun StatSample.toUniffi(): UniffiStatSample = UniffiStatSample(
 
 private fun UniffiSubBands.toModel(): SubBands = SubBands(
     veryLow = veryLow, low = low, inRange = inRange, high = high, veryHigh = veryHigh,
+    veryLowBelow = veryLowBelow, veryHighAbove = veryHighAbove,
 )
 
 private fun UniffiAgpBin.toModel(): AgpBin = AgpBin(

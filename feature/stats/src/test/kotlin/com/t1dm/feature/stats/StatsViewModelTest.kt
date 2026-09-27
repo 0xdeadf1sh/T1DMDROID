@@ -65,7 +65,7 @@ class StatsViewModelTest {
             nSamples = 144,
             spanMs = 3L * 86_400_000L,
             tir = 0.7, tbr = 0.1, tar = 0.2,
-            subBands = SubBands(0.02, 0.08, 0.7, 0.15, 0.05),
+            subBands = SubBands(0.02, 0.08, 0.7, 0.15, 0.05, 54.0, 250.0),
             meanBg = 140.0, sd = 40.0, cv = 28.6, gmi = 6.66,
             totalCarbs = 150.0, totalBolus = 30.0, totalBasal = 20.0,
             meanDailyCarbs = 50.0, tdd = 16.6, bolusBasalRatio = 1.5,

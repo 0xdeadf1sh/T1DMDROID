@@ -47,6 +47,9 @@ pub struct SubBands {
     pub in_range: f64,
     pub high: f64,
     pub very_high: f64,
+    /// Cuts as applied, mg/dL: min(54, target low), max(250, target high); 0 when empty.
+    pub very_low_below: f64,
+    pub very_high_above: f64,
 }
 
 /// `minute_of_day` is the bin's start (0..1440). Only populated bins are emitted.
@@ -70,14 +73,13 @@ pub struct HeatCell {
     pub median_bg: f64,
 }
 
-/// The fixed level-2 cuts, mg/dL. Not configurable, unlike the target range.
+/// The fixed level-2 cuts, mg/dL; sub_bands clamps them to the target range.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct ClinicalCuts {
     pub very_low_mgdl: f64,
     pub very_high_mgdl: f64,
 }
 
-/// Exposed so a colour scale anchors on sub_bands' own cuts, not a second copy.
 #[uniffi::export]
 pub fn clinical_cuts() -> ClinicalCuts {
     ClinicalCuts { very_low_mgdl: VERY_LOW, very_high_mgdl: VERY_HIGH }
@@ -201,7 +203,15 @@ impl AdvancedStats {
             tir: 0.0,
             tbr: 0.0,
             tar: 0.0,
-            sub_bands: SubBands { very_low: 0.0, low: 0.0, in_range: 0.0, high: 0.0, very_high: 0.0 },
+            sub_bands: SubBands {
+                very_low: 0.0,
+                low: 0.0,
+                in_range: 0.0,
+                high: 0.0,
+                very_high: 0.0,
+                very_low_below: 0.0,
+                very_high_above: 0.0,
+            },
             gri: 0.0,
             lbgi: 0.0,
             hbgi: 0.0,
@@ -621,6 +631,8 @@ pub fn advanced_stats(
         in_range: w_in * inv,
         high: w_high * inv,
         very_high: w_vhigh * inv,
+        very_low_below: vlo_cut,
+        very_high_above: vhi_cut,
     };
     let gri = (w_gri * 100.0 * inv).min(100.0);
 
@@ -1342,6 +1354,12 @@ mod tests {
         close(sb.very_high, 0.2, 1e-12, "very_high");
         close(sb.very_low + sb.low + sb.in_range + sb.high + sb.very_high, 1.0, 1e-12, "bands partition");
         close(out.tir + out.tbr + out.tar, 1.0, 1e-12, "tir/tbr/tar partition");
+        close(sb.very_low_below, 50.0, 0.0, "very_low cut follows target low 50");
+        close(sb.very_high_above, 300.0, 0.0, "very_high cut follows target high 300");
+
+        let usual = advanced_stats(vec![s(0, 120.0)], 70, 180, 24).unwrap().sub_bands;
+        close(usual.very_low_below, 54.0, 0.0, "very_low cut at 54 for a 70-180 target");
+        close(usual.very_high_above, 250.0, 0.0, "very_high cut at 250 for a 70-180 target");
     }
 
     #[test]

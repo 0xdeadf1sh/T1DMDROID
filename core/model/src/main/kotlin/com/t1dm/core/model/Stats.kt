@@ -13,13 +13,16 @@ data class StatSample(
     val mood: Int?,
 )
 
-/** Time-weighted, sums to 1; [inRange] configurable, [veryLow]/[veryHigh] fixed 54/250 mg/dL. */
+/** Time-weighted, sums to 1; inRange uses target edges, veryLow/veryHigh the cuts below. */
 data class SubBands(
     val veryLow: Double,
     val low: Double,
     val inRange: Double,
     val high: Double,
     val veryHigh: Double,
+    /** mg/dL as applied: min(54, target low), max(250, target high); 0 when empty. */
+    val veryLowBelow: Double,
+    val veryHighAbove: Double,
 )
 
 /** [minuteOfDay] is the bin's start, 0..1440. */
@@ -135,7 +138,7 @@ data class AdvancedStats(
             nSamples = 0,
             spanMs = 0,
             tir = 0.0, tbr = 0.0, tar = 0.0,
-            subBands = SubBands(0.0, 0.0, 0.0, 0.0, 0.0),
+            subBands = SubBands(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
             gri = 0.0,
             lbgi = 0.0, hbgi = 0.0, mage = 0.0,
             meanBg = 0.0, sd = 0.0, cv = 0.0, gmi = 0.0,

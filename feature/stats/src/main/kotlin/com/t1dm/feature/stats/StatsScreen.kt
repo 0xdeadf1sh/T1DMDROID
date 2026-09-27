@@ -55,7 +55,7 @@ import com.t1dm.core.model.UnitSpace
 fun StatsScreen(
     state: StatsViewModel.UiState,
     kovatchevF: (Double) -> Double,
-    // ClinicalCuts.UNAVAILABLE (no native lib) suppresses heatmap, rather than a wrong scale cut.
+    // UNAVAILABLE (no native lib) withholds the heatmap.
     cuts: ClinicalCuts,
     onSelectWindow: (StatsWindow) -> Unit,
     onSetUnitSpace: (UnitSpace) -> Unit,

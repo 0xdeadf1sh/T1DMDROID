@@ -56,8 +56,8 @@ object StatsPdf {
         p.section("Time in range")
         p.tirStrip(s.subBands)
         p.kv("Below / In range / Above", "${pct(s.tbr)}  /  ${pct(s.tir)}  /  ${pct(s.tar)}")
-        p.kv("Very low <54 / low", "${pct(s.subBands.veryLow)}  /  ${pct(s.subBands.low)}")
-        p.kv("High / very high >250", "${pct(s.subBands.high)}  /  ${pct(s.subBands.veryHigh)}")
+        p.kv("Very low${cut("<", s.subBands.veryLowBelow)} / low", "${pct(s.subBands.veryLow)}  /  ${pct(s.subBands.low)}")
+        p.kv("High / very high${cut(">", s.subBands.veryHighAbove)}", "${pct(s.subBands.high)}  /  ${pct(s.subBands.veryHigh)}")
 
         if (s.agp.isNotEmpty()) {
             p.section("Ambulatory glucose profile")
@@ -93,7 +93,10 @@ object StatsPdf {
         // LOCAL time, unlike the diurnal card above it — see stats.rs's day-boundary block.
         if (s.heatmap.isNotEmpty() && cuts.isUsable) {
             p.section("Glucose by day and hour")
-            p.caption("Local time. Blue 70 → green 105 → red 140 mg/dL, clamped; an outlined cell has no reading.")
+            p.caption(
+                "Local time. Blue ${d(HEAT_FLOOR_MGDL, 0)} → green ${d(HEAT_MID_MGDL, 0)} → " +
+                    "red ${d(HEAT_CEIL_MGDL, 0)} mg/dL, clamped; an outlined cell has no reading.",
+            )
             p.heatLegend()
             HeatStat.entries.forEach { stat ->
                 p.heatGrid(s.heatmap, stat)
@@ -376,6 +379,8 @@ object StatsPdf {
         UnitSpace.MmolL -> "mmol/L"
         UnitSpace.Kovatchev -> "Kovatchev risk"
     }
+
+    private fun cut(sign: String, mgdl: Double): String = if (mgdl > 0) " $sign${d(mgdl, 0)}" else ""
 
     private fun pct(frac: Double): String = "${d(frac * 100, 1)}%"
     private fun d(v: Double, dp: Int): String = String.format(Locale.US, "%.${dp}f", v)
