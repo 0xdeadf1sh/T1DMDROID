@@ -13,9 +13,9 @@ interface GameWorld : AutoCloseable {
     /** The current frame without advancing. */
     fun state(): CarState
 
-    /** Start line, full tank, running. */
+    /** Start line, running. */
     fun reset(): CarState
 
-    /** First solid ground at or after [x] (world metres), full tank, running. */
+    /** First solid ground at or after [x] (world metres), running. */
     fun resetAt(x: Float): CarState
 }
