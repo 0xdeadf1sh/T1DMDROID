@@ -150,11 +150,11 @@ fun GlucoseGraph(
     predictions: List<PredSeries> = emptyList(),
     curveOverlay: CurveOverlayFrame? = null,
     curveToggles: CurveOverlayToggles = CurveOverlayToggles(),
-    // Separate from [curveOverlay], which carries the two MODEL-INPUT curves; steps are measured.
+    // Measured, apart from [curveOverlay]'s carb, insulin and exercise curves.
     stepsFrame: StepsFrame? = null,
-    // One icon per logged event, in two fixed lanes low in the plot. No amount, no row id.
+    // One icon per logged event, one lane per log kind, low in the plot. No amount, no row id.
     logMarkers: List<LogMarker> = emptyList(),
-    /** Positions behind the mark in [logMarkers] — a cluster, both lanes. Logs can share a slot. */
+    /** Positions behind the mark in [logMarkers] — a cluster, all lanes. Logs can share a slot. */
     onMarkerTap: ((List<Int>) -> Unit)? = null,
     /** DISPLAY ONLY: nothing drawn here is stored; the edit bar's Fill writes into the record. */
     reconstructed: List<ReconstructedBg> = emptyList(),
@@ -896,7 +896,7 @@ fun GlucoseGraph(
                     if (mask == null) strokes() else clipPath(mask, ClipOp.Difference) { strokes() }
                 }
 
-                // Steps first of 3 layers: bar is opaque measured context, curves are the model.
+                // Steps first of 3 layers: bar is opaque measured context, under the curves.
                 if (stepsFrame != null && curveToggles.exercise && !stepsFrame.isEmpty) {
                     fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
                     drawStepsBars(
