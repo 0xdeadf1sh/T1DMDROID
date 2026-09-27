@@ -826,6 +826,7 @@ private fun UniffiAdvancedStats.toModel(): AdvancedStats = AdvancedStats(
     spanMs = spanMs,
     tir = tir, tbr = tbr, tar = tar,
     subBands = subBands.toModel(),
+    gri = gri,
     lbgi = lbgi, hbgi = hbgi, mage = mage,
     meanBg = meanBg, sd = sd, cv = cv, gmi = gmi,
     totalCarbs = totalCarbs, totalBolus = totalBolus, totalBasal = totalBasal,

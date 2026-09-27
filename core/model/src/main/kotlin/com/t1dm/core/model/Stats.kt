@@ -94,6 +94,8 @@ data class AdvancedStats(
     val tbr: Double,
     val tar: Double,
     val subBands: SubBands,
+    /** Klonoff 2022, 0..100, on fixed 54/70/180/250 bands whatever the target. */
+    val gri: Double,
     val lbgi: Double,
     val hbgi: Double,
     val mage: Double,
@@ -134,6 +136,7 @@ data class AdvancedStats(
             spanMs = 0,
             tir = 0.0, tbr = 0.0, tar = 0.0,
             subBands = SubBands(0.0, 0.0, 0.0, 0.0, 0.0),
+            gri = 0.0,
             lbgi = 0.0, hbgi = 0.0, mage = 0.0,
             meanBg = 0.0, sd = 0.0, cv = 0.0, gmi = 0.0,
             totalCarbs = 0.0, totalBolus = 0.0, totalBasal = 0.0,

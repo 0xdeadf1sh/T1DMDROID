@@ -166,7 +166,7 @@ fun StatsScreen(
                     Metric("LBGI", fmt(local.lbgi, 1), "risk")
                     Metric("HBGI", fmt(local.hbgi, 1), "risk")
                     Metric("MAGE", fmtSpread(local.mage, unit), spreadUnit(unit))
-                    Metric("GRI", fmt(griOf(local.subBands), 0), "index")
+                    Metric("GRI", fmt(local.gri, 0), "index")
                     Metric("Samples", local.nSamples.toString(), "")
                 }
             }
@@ -522,10 +522,6 @@ private fun fmtLevel(mgdl: Double, unit: UnitSpace, kovatchevF: (Double) -> Doub
 }
 
 private fun fmtPct(frac: Double): String = "${fmt(frac * 100.0, 1)}%"
-
-/** Glycemia Risk Index (Klonoff 2022) = 3*VLow+2.4*Low+1.6*VHigh+0.8*High, cap 100; fractions. */
-internal fun griOf(b: SubBands): Double =
-    (3.0 * b.veryLow * 100 + 2.4 * b.low * 100 + 1.6 * b.veryHigh * 100 + 0.8 * b.high * 100).coerceIn(0.0, 100.0)
 
 private fun fmt(v: Double, dp: Int): String = String.format("%.${dp}f", v)
 

@@ -9,6 +9,9 @@ const DAY_MS: f64 = 86_400_000.0;
 /// Fixed clinical sub-band edges, mg/dL.
 const VERY_LOW: f64 = 54.0;
 const VERY_HIGH: f64 = 250.0;
+/// GRI (Klonoff 2022) range edges, mg/dL; fixed, never the target.
+const GRI_LOW: f64 = 70.0;
+const GRI_HIGH: f64 = 180.0;
 /// Glucose molar mass, 18.0182 mg/dL per mmol/L.
 const MMOL_PER_MGDL: f64 = 1.0 / 18.0182;
 /// Schlichtkrull M-value ideal reference, mg/dL.
@@ -150,6 +153,8 @@ pub struct AdvancedStats {
     pub tbr: f64,
     pub tar: f64,
     pub sub_bands: SubBands,
+    /// GRI (Klonoff 2022), 0..100, on fixed 54/70/180/250 bands whatever the target.
+    pub gri: f64,
     pub lbgi: f64,
     pub hbgi: f64,
     pub mage: f64,
@@ -197,6 +202,7 @@ impl AdvancedStats {
             tbr: 0.0,
             tar: 0.0,
             sub_bands: SubBands { very_low: 0.0, low: 0.0, in_range: 0.0, high: 0.0, very_high: 0.0 },
+            gri: 0.0,
             lbgi: 0.0,
             hbgi: 0.0,
             mage: 0.0,
@@ -228,6 +234,21 @@ impl AdvancedStats {
             hyper_episodes: EpisodeSummary::empty(),
             heatmap: Vec::new(),
         }
+    }
+}
+
+/// GRI weight per percent of time: 54 is Low, 70 and 180 in range, 250 High.
+fn gri_weight(bg: f64) -> f64 {
+    if bg < VERY_LOW {
+        3.0
+    } else if bg < GRI_LOW {
+        2.4
+    } else if bg <= GRI_HIGH {
+        0.0
+    } else if bg <= VERY_HIGH {
+        0.8
+    } else {
+        1.6
     }
 }
 
@@ -572,8 +593,10 @@ pub fn advanced_stats(
     let vlo_cut = VERY_LOW.min(tlo);
     let vhi_cut = VERY_HIGH.max(thi);
     let (mut w_vlow, mut w_low, mut w_in, mut w_high, mut w_vhigh) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    let mut w_gri = 0.0;
     for (i, &bg) in bgs.iter().enumerate() {
         let w = weights[i];
+        w_gri += w * gri_weight(bg);
         if bg < tlo {
             if bg < vlo_cut {
                 w_vlow += w;
@@ -599,6 +622,7 @@ pub fn advanced_stats(
         high: w_high * inv,
         very_high: w_vhigh * inv,
     };
+    let gri = (w_gri * 100.0 * inv).min(100.0);
 
     let mean_bg = bgs.iter().sum::<f64>() / n as f64;
     let var = bgs.iter().map(|v| (v - mean_bg).powi(2)).sum::<f64>() / n as f64;
@@ -716,6 +740,7 @@ pub fn advanced_stats(
         tbr,
         tar,
         sub_bands,
+        gri,
         lbgi,
         hbgi,
         mage: mage_v,
@@ -1317,5 +1342,37 @@ mod tests {
         close(sb.very_high, 0.2, 1e-12, "very_high");
         close(sb.very_low + sb.low + sb.in_range + sb.high + sb.very_high, 1.0, 1e-12, "bands partition");
         close(out.tir + out.tbr + out.tar, 1.0, 1e-12, "tir/tbr/tar partition");
+    }
+
+    #[test]
+    fn gri_reads_fixed_klonoff_bands_not_the_target() {
+        // 5-min grid → equal weights, 20 % each.
+        fn grid(bgs: &[f64]) -> Vec<StatSample> {
+            bgs.iter().enumerate().map(|(i, &bg)| s(i as i64 * 300_000, bg)).collect()
+        }
+        // Only 200 is High (0.8 · 20); a 70-140 target would count 160 and 170 too.
+        let narrow = advanced_stats(grid(&[100.0, 120.0, 160.0, 170.0, 200.0]), 70, 140, 24).unwrap();
+        close(narrow.gri, 16.0, 1e-9, "gri, 70-140 target");
+        // 52 VLow (3.0 · 20) + 200 High (0.8 · 20), though a 50-300 target holds both.
+        let wide = advanced_stats(grid(&[52.0, 120.0, 120.0, 120.0, 200.0]), 50, 300, 24).unwrap();
+        close(wide.gri, 76.0, 1e-9, "gri, 50-300 target");
+
+        for (bg, want) in [
+            (53.9, 60.0),
+            (54.0, 48.0),
+            (69.9, 48.0),
+            (70.0, 0.0),
+            (180.0, 0.0),
+            (180.1, 16.0),
+            (250.0, 16.0),
+            (250.1, 32.0),
+        ] {
+            let out = advanced_stats(grid(&[bg, 120.0, 120.0, 120.0, 120.0]), 70, 180, 24).unwrap();
+            close(out.gri, want, 1e-9, &format!("gri edge at {bg}"));
+        }
+
+        let all_vlow = advanced_stats(grid(&[40.0; 5]), 70, 180, 24).unwrap();
+        close(all_vlow.gri, 100.0, 1e-12, "gri caps at 100");
+        close(advanced_stats(vec![], 70, 180, 24).unwrap().gri, 0.0, 1e-12, "empty gri");
     }
 }

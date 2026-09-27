@@ -71,7 +71,7 @@ object StatsPdf {
         p.kv("CV / SD", "${d(s.cv, 1)} %  /  ${d(s.sd, 0)} mg/dL")
         p.kv("LBGI / HBGI", "${d(s.lbgi, 1)}  /  ${d(s.hbgi, 1)}")
         p.kv("MAGE", "${d(s.mage, 0)} mg/dL")
-        p.kv("GRI (glycemia risk index)", d(gri(s.subBands), 0))
+        p.kv("GRI (glycemia risk index)", d(s.gri, 0))
 
         p.section("Variability & risk")
         p.kv("MODD", "${d(s.modd, 0)} mg/dL")
@@ -370,9 +370,6 @@ object StatsPdf {
         val min = (ms / 60_000.0).toInt()
         return if (min >= 60) "${min / 60}h${(min % 60).toString().padStart(2, '0')}" else "${min}m"
     }
-
-    private fun gri(b: SubBands): Double =
-        (3.0 * b.veryLow * 100 + 2.4 * b.low * 100 + 1.6 * b.veryHigh * 100 + 0.8 * b.high * 100).coerceIn(0.0, 100.0)
 
     private fun unitName(u: UnitSpace): String = when (u) {
         UnitSpace.MgDl -> "mg/dL"
