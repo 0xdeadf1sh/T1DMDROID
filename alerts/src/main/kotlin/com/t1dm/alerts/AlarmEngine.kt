@@ -1,26 +1,32 @@
 package com.t1dm.alerts
 
 import com.t1dm.core.model.CgmReading
+import com.t1dm.core.model.ReadingProvenance
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
+class AlarmEngine(private var config: AlarmConfig = AlarmConfig.DEFAULT) {
 
     private val threshold = ThresholdAlarm(config.thresholds)
     private val lossOfSignal = LossOfSignalAlarm(config)
     private val weakSignal = WeakSignalAlarm(config)
     private val overTemp = OverTemperatureAlarm(config)
 
+    /** rxWallMs of the newest MEASURED reading taken; anything older is replayed history. */
+    private var newestMeasuredMs: Long? = null
+
     private val _state = MutableStateFlow(AlarmState.CLEAR)
     val state: StateFlow<AlarmState> = _state.asStateFlow()
 
     @Synchronized
     fun onReading(reading: CgmReading, nowMs: Long = reading.rxWallMs) {
-        threshold.onReading(reading)
-        lossOfSignal.onReading(reading)
+        if (take(reading, nowMs)) {
+            if (isFresh(reading, nowMs)) threshold.onReading(reading)
+            lossOfSignal.onReading(reading)
+            weakSignal.onReading(reading)
+        }
         lossOfSignal.evaluate(nowMs)
-        weakSignal.onReading(reading)
         weakSignal.evaluate(nowMs)
         publish()
     }
@@ -36,6 +42,7 @@ class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
     /** Swaps sub-evaluator params only; never clears a breach, so a standing low stays audible. */
     @Synchronized
     fun updateConfig(config: AlarmConfig) {
+        this.config = config
         threshold.updateThresholds(config.thresholds)
         lossOfSignal.updateConfig(config)
         weakSignal.updateConfig(config)
@@ -50,6 +57,19 @@ class AlarmEngine(config: AlarmConfig = AlarmConfig.DEFAULT) {
         overTemp.evaluate(tempC, nowMs)
         publish()
     }
+
+    /** A mark ahead of [nowMs] means the wall clock stepped back; it no longer orders readings. */
+    private fun take(reading: CgmReading, nowMs: Long): Boolean {
+        if (newestMeasuredMs?.let { it > nowMs } == true) newestMeasuredMs = null
+        val newest = newestMeasuredMs
+        if (newest != null && reading.rxWallMs < newest) return false
+        if (reading.provenance == ReadingProvenance.MEASURED) newestMeasuredMs = reading.rxWallMs
+        return true
+    }
+
+    /** Past the loss window a reading cannot stand for the current BG. */
+    private fun isFresh(reading: CgmReading, nowMs: Long): Boolean =
+        nowMs - reading.rxWallMs < config.lossMin * 60_000L
 
     private fun publish() {
         _state.value = AlarmState(

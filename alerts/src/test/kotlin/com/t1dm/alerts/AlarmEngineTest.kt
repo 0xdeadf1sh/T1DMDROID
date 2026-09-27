@@ -6,6 +6,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -75,6 +76,40 @@ class AlarmEngineTest {
         e.onTick(2 * MIN, tempC = 41.0)
         assertNull(e.state.value.overTemperature)
         assertFalse(e.state.value.isActive)
+    }
+
+    @Test
+    fun `an older reading never clears a live low`() {
+        val e = engine()
+        e.onReading(reading(50, rxWallMs = 30 * MIN), nowMs = 30 * MIN)
+        val live = e.state.value.threshold!!
+        e.onReading(reading(120, rxWallMs = 10 * MIN), nowMs = 30 * MIN + 5_000)
+        assertSame(live, e.state.value.threshold)
+    }
+
+    @Test
+    fun `an older reading never rewinds the loss clock`() {
+        val e = engine()
+        e.onReading(reading(120, rxWallMs = 30 * MIN), nowMs = 30 * MIN)
+        e.onReading(reading(120, rxWallMs = 5 * MIN), nowMs = 30 * MIN + 5_000)
+        e.onTick(45 * MIN)
+        assertNull(e.state.value.signalLoss)
+    }
+
+    @Test
+    fun `a reading older than lossMin raises no breach`() {
+        val e = engine()
+        e.onReading(reading(50, rxWallMs = 0), nowMs = 25 * MIN)
+        assertNull(e.state.value.threshold)
+        assertNotNull(e.state.value.signalLoss)
+    }
+
+    @Test
+    fun `after a wall-clock step back a live reading is still taken`() {
+        val e = engine()
+        e.onReading(reading(120, rxWallMs = 60 * MIN), nowMs = 60 * MIN)
+        e.onReading(reading(50, rxWallMs = 30 * MIN), nowMs = 30 * MIN)
+        assertEquals(AlertBand.URGENT_LOW, e.state.value.threshold!!.band)
     }
 
     @Test
