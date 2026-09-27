@@ -150,7 +150,16 @@ class BgGlanceComputerTest {
 
         assertNull(g.trend)
         assertEquals("", BgFormat.arrow(g.trend))
-        assertEquals(GlanceTrend.FALLING_FAST, g.fcTrend)
+        assertEquals("123 to 60 over 35 min", GlanceTrend.FALLING, g.fcTrend)
+    }
+
+    @Test fun `forecast trend is the per-minute rate over the whole horizon`() {
+        for ((end, expected) in listOf(150 to GlanceTrend.FLAT, 190 to GlanceTrend.RISING, 380 to GlanceTrend.RISING_FAST)) {
+            val median = List(24) { 120.0 + (end - 120.0) * (it + 1) / 24 }
+            val state = InferenceState(predictions = listOf(prediction(median)))
+            val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(120))), state, thresholds, edges, lossMin = 20, staleMin = 15, nowMs = now, trend = null)
+            assertEquals("120 to $end over 120 min", expected, g.fcTrend)
+        }
     }
 
     @Test fun `the arrow given is drawn and the forecast never overrides it`() {

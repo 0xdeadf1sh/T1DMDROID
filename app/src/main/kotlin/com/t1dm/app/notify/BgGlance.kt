@@ -229,7 +229,7 @@ object BgGlanceComputer {
             readingAgeMs = ageMs,
             band = band,
             trend = trend,
-            fcTrend = forecastTrend(bg, fcEnd),
+            fcTrend = forecastTrend(bg, fcEnd, horizon * stepMin),
             forecastEligible = eligible && !warmup,
             forecastStatus = sel?.status,
             fcEndMgdl = fcEnd,
@@ -319,8 +319,9 @@ object BgGlanceComputer {
     /** Null, never FLAT: a forecast's slope is not a measurement and must not be drawn as one. */
     fun measuredTrend(trendTenths: Int?): GlanceTrend? = trendTenths?.let { classify(it / 10.0) }
 
-    fun forecastTrend(bg: Int?, fcEnd: Int?): GlanceTrend =
-        if (bg == null || fcEnd == null) GlanceTrend.FLAT else classify((fcEnd - bg) / 24.0)
+    fun forecastTrend(bg: Int?, fcEnd: Int?, horizonMin: Int): GlanceTrend =
+        if (bg == null || fcEnd == null || horizonMin <= 0) GlanceTrend.FLAT
+        else classify((fcEnd - bg).toDouble() / horizonMin)
 
     private fun classify(rate: Double): GlanceTrend = when {
         rate > 2.0 -> GlanceTrend.RISING_FAST
