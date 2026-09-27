@@ -35,7 +35,7 @@ data class CgmReading(
     val provenance: ReadingProvenance,
     val flag: ReadingFlag,
     val tzOffsetMin: Int,
-    val rxWallMs: Long,                // when the phone received it
+    val rxWallMs: Long,                // receipt; a gap-fill's or reconstruction's slot instant
     val rssi: Int?,
     // Unsnapped instant tsMs came from: receipt passively, the sensor's own clock when connected.
     val measuredAtMs: Long? = null,
