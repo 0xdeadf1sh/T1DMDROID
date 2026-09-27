@@ -28,7 +28,7 @@ pub use accuracy::*;
 mod conformal;
 pub use conformal::*;
 
-/// Continuous Glucose-Error Grid Analysis (Kovatchev 2004).
+/// CG-EGA on dotXem's grid, not Kovatchev 2004's (SPEC/invariants.md §6.3).
 mod cg_ega;
 
 /// The heightfield both minigames stand on; cosmetic only, like them.
@@ -43,11 +43,11 @@ pub use game::*;
 mod golf;
 pub use golf::*;
 
-// PUBLISHED params (Kovatchev 1997, §5); NOT model risk space — never decode outputs with these.
+// Published Kovatchev 1997 params (SPEC/invariants.md §4); NOT model risk space: never decode.
 const KOV_CLINICAL_SCALE: f64 = 1.509;
 const KOV_CLINICAL_POWER: f64 = 1.084;
 const KOV_CLINICAL_OFFSET: f64 = 5.381;
-/// Clinical-scale BG bounds (INFERENCE.md §5); the model's own ride the descriptor.
+/// CLINICAL bounds, not the model's (SPEC/invariants.md §4); 500 not 600: Known deviation 1.
 pub(crate) const CLINICAL_BG_CLAMP_MIN: f64 = 20.0;
 pub(crate) const CLINICAL_BG_CLAMP_MAX: f64 = 500.0;
 
@@ -194,7 +194,7 @@ pub fn advert_crc32(payload: Vec<u8>) -> Result<i64, CoreError> {
     Ok(advert_crc(&payload) as i64)
 }
 
-/// mg/dL → risk, CLINICAL scale (§5); NaN = low bound. Model outputs use their own scale.
+/// mg/dL → risk, CLINICAL scale (SPEC/invariants.md §4); NaN = low bound. Models use their own.
 #[uniffi::export]
 pub fn kovatchev_f(mgdl: f64) -> f64 {
     let g = if mgdl.is_nan() {
