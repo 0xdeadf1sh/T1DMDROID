@@ -17,17 +17,25 @@ import timber.log.Timber
 /** connectedDevice type starts on BOOT_COMPLETED; widget pushed here too (no periodic update). */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        when (intent.action) {
-            Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_USER_UNLOCKED -> resumeMonitoring(context)
-            Intent.ACTION_LOCKED_BOOT_COMPLETED -> armUnlockResume(context)
-            else -> return
+        when {
+            resumesMonitoring(intent.action) -> resumeMonitoring(context)
+            intent.action == Intent.ACTION_LOCKED_BOOT_COMPLETED -> armUnlockResume(context)
         }
     }
 }
 
+/** MY_PACKAGE_REPLACED: an update kills the process and restarts no sticky service. */
+internal fun resumesMonitoring(action: String?): Boolean = action != null && action in RESUME_ACTIONS
+
+private val RESUME_ACTIONS = setOf(
+    Intent.ACTION_BOOT_COMPLETED,
+    Intent.ACTION_USER_UNLOCKED,
+    Intent.ACTION_MY_PACKAGE_REPLACED,
+)
+
 /** An extension: `goAsync` is only legal on the receiver currently inside `onReceive`. */
 private fun BroadcastReceiver.resumeMonitoring(context: Context) {
-    Timber.tag("CgmScan").i("boot/unlock — restarting CgmScanService")
+    Timber.tag("CgmScan").i("boot/unlock/update — restarting CgmScanService")
     runCatching { CgmScanService.start(context) }
         .onFailure { Timber.tag("CgmScan").w(it, "boot restart failed") }
     CgmWatchdog.enqueue(context)
