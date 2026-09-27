@@ -15,8 +15,7 @@ datastore = "1.1.1"
 work = "2.10.0"
 serialization = "1.7.3"
 timber = "5.0.1"
-# HTTP + WebSocket transport for :sync (REST outbox drain + /v1/stream). 4.x is the last
-# JDK-8 baseline line; mockwebserver ships its WebSocket test server at the same version.
+# :sync's Nightscout HTTP client; 4.x is the last JDK-8 line, mockwebserver pinned alongside.
 okhttp = "4.12.0"
 # ExecuTorch Android runtime — MUST match the exporter's reported version (descriptor.json
 # executorch_version). 1.3.1 ships arm64-v8a + x86_64 XNNPACK .so in the AAR.
