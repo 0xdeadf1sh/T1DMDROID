@@ -43,7 +43,7 @@ suspend fun assembleBgSeries(
     // A fill stands in for a slot the sensor never covered; no fill reaches a fit series.
     val filled = if (withReconstructed) fills(start, anchor) else emptyMap()
     val out = DoubleArray(nSteps)
-    var last = byTs.ceilingEntry(start)?.value ?: byTs.firstEntry()?.value ?: out[0]
+    var last = byTs.floorEntry(start)?.value ?: byTs.firstEntry()?.value ?: out[0]
     for (i in 0 until nSteps) {
         val ts = start + i * GRID_MS
         val v = byTs[ts] ?: filled[ts]

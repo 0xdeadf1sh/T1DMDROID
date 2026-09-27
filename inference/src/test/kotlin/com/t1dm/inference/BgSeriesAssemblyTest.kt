@@ -54,6 +54,18 @@ class BgSeriesAssemblyTest {
     }
 
     @Test
+    fun `an empty first slot carries a margin row, never a later reading`() = runTest {
+        // maxSteps 12 puts slot 0 before the window; slot 1 opens it empty.
+        val rows = (listOf(reading(0, 180)) + (2..12).map { reading(it, 90) }).asReversed()
+
+        val s = assembleBgSeries(rows, SRC, maxSteps = 12, minSteps = 6, withReconstructed = true) { _, _ -> emptyMap() }!!
+
+        assertEquals(slot(1), s.gridStartMs)
+        assertEquals(180.0, s.mgdl[0], 0.0)
+        assertEquals(90.0, s.mgdl[1], 0.0)
+    }
+
+    @Test
     fun `too few rows is no series`() = runTest {
         val rows = (0 until 5).map { reading(it, 100) }.asReversed()
         assertNull(assembleBgSeries(rows, SRC, 100, 6, withReconstructed = true) { _, _ -> emptyMap() })
