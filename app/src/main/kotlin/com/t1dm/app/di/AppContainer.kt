@@ -1114,7 +1114,15 @@ class AppContainer(context: Context) {
 
     /** The repository consults this on the CGM hot path. Call after every save. */
     suspend fun refreshNightscoutEnabled() {
-        repository.nightscoutBridgeEnabled = nightscoutConfigStore.current() != null
+        // Startup runs this on appScope, which has no handler: a throw kills the CGM service too.
+        repository.nightscoutBridgeEnabled = try {
+            nightscoutConfigStore.current() != null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.w(e, "Nightscout config unreadable; bridge off")
+            false
+        }
     }
 
     suspend fun saveNightscoutBridge(url: String, secret: String, enabled: Boolean): String {

@@ -2,6 +2,8 @@ package com.t1dm.sync.nightscout
 
 import com.t1dm.sync.TokenStore
 import java.security.MessageDigest
+import kotlin.coroutines.cancellation.CancellationException
+import timber.log.Timber
 
 /** Only ever built when the bridge is enabled AND both halves are present. */
 data class NightscoutConfig(val baseUrl: String, val secretSha1: String)
@@ -36,7 +38,7 @@ class NightscoutConfigStore(
     suspend fun current(): NightscoutConfig? {
         if (!enabled()) return null
         val url = url()?.takeIf { it.isNotBlank() } ?: return null
-        val secret = tokens.get(NightscoutKeys.SECRET_ID)?.takeIf { it.isNotBlank() } ?: return null
+        val secret = secret() ?: return null
         return NightscoutConfig(baseUrl = url, secretSha1 = secret)
     }
 
@@ -44,7 +46,20 @@ class NightscoutConfigStore(
 
     suspend fun enabled(): Boolean = getKv(NightscoutKeys.ENABLED) == "1"
 
-    suspend fun hasSecret(): Boolean = !tokens.get(NightscoutKeys.SECRET_ID).isNullOrBlank()
+    suspend fun hasSecret(): Boolean = secret() != null
+
+    /** Unreadable counts as absent: a restore brings the wrapped blob but not its Keystore key. */
+    private suspend fun secret(): String? {
+        val stored = try {
+            tokens.get(NightscoutKeys.SECRET_ID)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.tag(TAG).w(e, "api-secret unreadable; treated as absent")
+            null
+        }
+        return stored?.takeIf { it.isNotBlank() }
+    }
 
     /** Blank [secretInput] KEEPS the secret: field is write-only, reads blank; erase disarms it. */
     suspend fun save(baseUrl: String, secretInput: String, enabled: Boolean, nowMs: Long) {
@@ -54,4 +69,8 @@ class NightscoutConfigStore(
     }
 
     suspend fun clearSecret() = tokens.remove(NightscoutKeys.SECRET_ID)
+
+    private companion object {
+        const val TAG = "NightscoutConfig"
+    }
 }
