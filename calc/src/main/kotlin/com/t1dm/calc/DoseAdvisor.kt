@@ -2,6 +2,7 @@ package com.t1dm.calc
 
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.inference.InferenceControllerDefaults
+import kotlin.math.ceil
 import kotlin.math.max
 
 /** null ⇒ no selected model. */
@@ -55,7 +56,7 @@ class DoseAdvisor(
         val notes = ArrayList<String>()
 
         if (config.rails.hypoTreatment && inHypoTerritory(anchor, result.baseline, config)) {
-            val grams = rescueCarbs(anchor, iob, config)
+            val grams = rescueCarbs(anchor, config)
             notes.add("Hypo-treatment path: current/near-term BG is low — withholding insulin, recommend ~${grams.toInt()} g fast carbs.")
             val zero = result.ranked.firstOrNull { it.doseU == 0.0 } ?: Candidate(0.0, 0.0, result.baseline)
             return AdviceResult.Recommended(
@@ -114,12 +115,11 @@ class DoseAdvisor(
         return nowLow || nearLow
     }
 
-    private fun rescueCarbs(anchor: AnchorInfo?, iob: IobSnapshot?, config: CalcConfig): Double {
+    /** Whole grams, rounded up; no COB discount: the low was detected with that COB on board. */
+    private fun rescueCarbs(anchor: AnchorInfo?, config: CalcConfig): Double {
         val current = anchor?.currentBgMgdl ?: config.target.lowMgdl
         val liftNeeded = max(config.rescueTargetLiftMgdl, config.target.targetMgdl - current)
-        val grams = liftNeeded / config.carbSensitivityMgdlPerG
-        // Discount COB so a rescue isn't double-counted.
-        return max(0.0, grams - (iob?.cobG ?: 0.0))
+        return max(0.0, ceil(liftNeeded / config.carbSensitivityMgdlPerG))
     }
 
     private fun buildCard(

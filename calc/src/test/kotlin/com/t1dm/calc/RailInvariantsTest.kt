@@ -250,6 +250,16 @@ class RailInvariantsTest {
     }
 
     @Test
+    fun hypo_rescue_is_not_zeroed_by_slow_cob() = runTest {
+        val port = FakeForecastPort(startBg = 62.0, mgdlPerU = 15.0)
+        val advisor = advisorOf(port, anchor = fakeAnchor(now, currentBg = 62.0), iob = fakeIob(now, cobG = 40.0))
+        val r = advisor.recommendBolus(now, emptyList(), CalcConfig()) as AdviceResult.Recommended
+        val grams = r.rescueCarbsG!!
+        assertTrue("40 g COB must not cut the rescue (got $grams g)", grams >= 17.0)
+        assertEquals("rescue is whole grams", Math.floor(grams), grams, 0.0)
+    }
+
+    @Test
     fun decision_card_carries_every_point_of_decision_field() = runTest {
         val port = FakeForecastPort(startBg = 230.0, mgdlPerU = 15.0)
         val advisor = advisorOf(port, anchor = fakeAnchor(now, ageMin = 3, interpolatedFraction = 0.1), iob = fakeIob(now, iobU = 1.5, lastLoggedMinAgo = 20))
