@@ -1,5 +1,6 @@
 package com.t1dm.data.stats
 
+import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.TargetRange
 import com.t1dm.core.model.UnitSpace
 import com.t1dm.data.db.SampleEntity
@@ -57,17 +58,28 @@ class StatsMappingTest {
         assertEquals(-300, sample(ts = 0L, bg = 100, steps = null, mood = null, tz = -300).toStatSample().tzOffsetMin)
     }
 
+    @Test
+    fun toStatSample_drops_a_gap_fill_and_a_reconstruction_but_keeps_a_measurement() {
+        fun bg(p: ReadingProvenance?) = sample(ts = 0L, bg = 142, steps = null, mood = null, provenance = p)
+            .toStatSample().bgMgdl
+        assertEquals(0.0, bg(ReadingProvenance.INTERPOLATED), 0.0)
+        assertEquals(0.0, bg(ReadingProvenance.RECONSTRUCTED), 0.0)
+        assertEquals(142.0, bg(ReadingProvenance.MEASURED), 0.0)
+        assertEquals(142.0, bg(null), 0.0)
+    }
+
     private fun sample(
         ts: Long,
         bg: Int?,
         steps: Int?,
         mood: Int?,
         tz: Int = 0,
+        provenance: ReadingProvenance? = null,
     ) = SampleEntity(
         ts = ts,
         tzOffsetMin = tz,
         bgMgdl = bg, bgSource = null,
-        bgProvenance = null,
+        bgProvenance = provenance,
         bgFlag = null,
         steps = steps,
         mood = mood,

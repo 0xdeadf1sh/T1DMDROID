@@ -107,15 +107,17 @@ internal fun parseTargetRange(raw: String?): TargetRange {
 internal fun parseUnitSpace(raw: String?): UnitSpace =
     raw?.let { runCatching { UnitSpace.valueOf(it) }.getOrNull() } ?: UnitSpace.MgDl
 
-/** null/RECONSTRUCTED BG maps to 0.0, excluded from metrics (§1); carbs/bolus/basal null here. */
+/** Null or unmeasured BG maps to 0.0, excluded from metrics (§1); carbs/bolus/basal null here. */
 internal fun SampleEntity.toStatSample(): StatSample = StatSample(
     tsMs = ts,
     // The offset stamped on the ROW, never phone's now: a 90-day window may cross DST or a flight.
     tzOffsetMin = tzOffsetMin,
-    bgMgdl = bgMgdl?.takeIf { bgProvenance != ReadingProvenance.RECONSTRUCTED }?.toDouble() ?: 0.0,
+    bgMgdl = bgMgdl?.takeIf { bgProvenance !in NOT_MEASURED }?.toDouble() ?: 0.0,
     carbsG = null,
     bolusU = null,
     basalU = null,
     steps = steps?.toLong(),
     mood = mood,
 )
+
+private val NOT_MEASURED = setOf(ReadingProvenance.RECONSTRUCTED, ReadingProvenance.INTERPOLATED)
