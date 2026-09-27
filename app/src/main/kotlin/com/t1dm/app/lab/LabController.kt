@@ -26,7 +26,7 @@ import com.t1dm.inference.ModelChannels
 import java.io.File
 import kotlin.math.min
 
-/** Drives the adapter panel and BG reconstruction; writes nothing except runSpan's own table. */
+/** Adapters and BG-panel fills. Writes lora rows, verdicts, bg_infill, cgm_reading, exports. */
 class LabController(
     private val native: NativeCore,
     private val controller: InferenceController,
