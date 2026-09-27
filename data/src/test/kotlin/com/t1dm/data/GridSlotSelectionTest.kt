@@ -108,10 +108,17 @@ class GridSlotSelectionTest {
         )
     }
 
+    /** A gap-fill drawn from a stale anchor overwrote real rows a history pull had filed. */
     @Test
-    fun `an interpolated row is left to replace in place`() {
-        assertTrue(supersedesGridSlot(measured(SLOT, SLOT + 1_000), interpolated(SLOT)))
+    fun `an interpolated row never displaces a usable measurement`() {
+        assertFalse(supersedesGridSlot(measured(SLOT, SLOT + 140_000), interpolated(SLOT)))
         assertTrue(supersedesGridSlot(interpolated(SLOT), measured(SLOT, SLOT + 140_000)))
+    }
+
+    @Test
+    fun `an interpolated row may still take a slot holding nothing usable`() {
+        assertTrue(supersedesGridSlot(measured(SLOT, SLOT, flag = ReadingFlag.WARMUP), interpolated(SLOT)))
+        assertTrue(supersedesGridSlot(measured(SLOT, SLOT).copy(bgMgdl = null), interpolated(SLOT)))
     }
 
     @Test

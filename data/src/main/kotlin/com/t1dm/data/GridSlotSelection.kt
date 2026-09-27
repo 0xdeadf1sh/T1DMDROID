@@ -12,6 +12,10 @@ internal fun supersedesGridSlot(stored: CgmReadingEntity?, incoming: CgmReadingE
     if (incoming.provenance == ReadingProvenance.RECONSTRUCTED) {
         return stored.bgMgdl == null || stored.provenance == ReadingProvenance.RECONSTRUCTED
     }
+    // A gap-fill line never displaces a usable measurement; a suppressed one it still may.
+    if (incoming.provenance == ReadingProvenance.INTERPOLATED && stored.provenance == ReadingProvenance.MEASURED) {
+        return stored.flag != ReadingFlag.NORMAL || stored.bgMgdl == null
+    }
     if (stored.provenance != ReadingProvenance.MEASURED ||
         incoming.provenance != ReadingProvenance.MEASURED
     ) {
