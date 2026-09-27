@@ -34,9 +34,9 @@ Read the description of each before starting, not after being blocked.
 ## Two branches, one body of work
 
 `main` is public and reads the sensor by passive advertisement only. `private` is
-local-only and adds everything that is not merely listening: its `:cgm` sources
-and their Rust counterpart, the debug bring-up surfaces they need, and the
-unredacted sections of `docs/CGM.md`. Only `main` may ever be pushed;
+local-only and replaces that read path with connected sensor sessions: its `:cgm`
+sources and their Rust counterparts, the debug bring-up surfaces they need, and
+the unredacted `docs/CGM.md`. Only `main` may ever be pushed;
 `.git/hooks/pre-push` enforces that as an allowlist, and `publish-audit` greps for
 the private symbols by name — so do not name them in a file that lives on `main`,
 this one included.
@@ -55,6 +55,7 @@ mirroring it if it is one of these:
   `main` they are `pull_request`-only, and `publish-audit` fails the push if that
   changes: a `push` trigger there made GitHub build an APK on every push.
 - `LICENSE` — carried on `main`, the branch that is published.
+- `README.md` and `docs/CGM.md` — each branch describes its own read path.
 - The `:cgm` module's architecture, and every file that plugs into it.
 
 ## Build both branches, every time
@@ -103,7 +104,7 @@ installs straight over an existing debug build rather than failing on a signatur
 mismatch.
 
 The phone is the user's daily driver and this app is its CGM monitor. An install
-stops the foreground service and the passive scan until the app is relaunched, so
+stops the foreground service and the CGM read until the app is relaunched, so
 make it the last step of a task, relaunch, and confirm the service came back
 (`adb shell dumpsys activity services com.t1dm.app | grep isForeground`).
 

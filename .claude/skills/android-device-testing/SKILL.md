@@ -95,15 +95,15 @@ inspecting service + DB state, which is `adb` territory:
   `run-as` needs a debuggable build; personalRelease refuses it.
 
   `kv.last_alive_ts` advances every 60 s **iff the process lives**; the newest `cgm_reading.tsMs`
-  advances **iff the scan is delivering**. Heartbeat-advances-but-readings-stall ⇒ a scan problem,
-  not a process kill — the discriminator for background-collection bugs.
+  advances **iff the CGM source is delivering**. Heartbeat-advances-but-readings-stall ⇒ a CGM read
+  problem, not a process kill — the discriminator for background-collection bugs.
 
 - **Background / screen-off tests:** `adb shell input keyevent KEYCODE_HOME` then `… KEYCODE_SLEEP`
   reproduces "exit the app and lock the phone"; confirm the screen is dark with
   `dumpsys power | grep mWakefulness`. Pulling the DB does not wake the screen, so you can sample
-  across the dark window. **Reading the real CGM is a sensor test — announce it to the user first**:
-  a passive read only works while the official AiDEX app (on the user's other phone) isn't holding the
-  sensor in a connection, so they need to free it.
+  across the dark window. **Reading the real CGM is a sensor test — announce it to the user first**.
+  On `main`, a passive read only works while the official AiDEX app (on the user's other phone) isn't
+  holding the sensor in a connection, so they need to free it.
 
 ## Install gotchas on this device (HyperOS / K90 Max)
 
