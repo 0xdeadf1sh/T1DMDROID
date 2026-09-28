@@ -22,6 +22,7 @@ fun buildInferenceController(
     thermalProvider: suspend () -> ThermalStatus? = { null },
     smoothingWindowProvider: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
     loraStore: LoraStore? = null,
+    eventOnsets: EventOnsetSource? = null,
     probeInsulin: ProbeInsulinPort? = null,
     selectionStore: SelectionStore? = null,
     artifactLedger: ArtifactLedger? = null,
@@ -42,6 +43,7 @@ fun buildInferenceController(
         thermalProvider = thermalProvider,
         smoothingWindowProvider = smoothingWindowProvider,
         loraStore = loraStore,
+        eventOnsets = eventOnsets,
         probeInsulin = probeInsulin,
         selectionStore = selectionStore,
         artifactLedger = artifactLedger,
@@ -66,6 +68,6 @@ object InferenceControllerDefaults {
 
     /** The single coercion both `:app`'s store and the controller apply. */
     fun nearestSmoothingStop(window: Int): Int =
-        // Long deliberately: `abs(1 - Int.MIN_VALUE)` overflows small, snapping worst input wide.
+        // Long deliberately: `abs(1 - Int.MIN_VALUE)` overflows, snaps worst value to WIDEST.
         SAVGOL_STOPS.minByOrNull { kotlin.math.abs(it.toLong() - window.toLong()) } ?: SAVGOL_WINDOW
 }

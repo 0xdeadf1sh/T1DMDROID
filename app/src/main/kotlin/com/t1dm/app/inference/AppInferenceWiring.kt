@@ -1,6 +1,8 @@
 package com.t1dm.app.inference
 
 import com.t1dm.cgm.AidexXSourceRegistry
+import com.t1dm.core.model.CgmReading
+import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.inference.ArtifactLedger
@@ -8,6 +10,7 @@ import com.t1dm.inference.BG_SERIES_ROW_MARGIN
 import com.t1dm.inference.BgHistoryProvider
 import com.t1dm.inference.BgSeries
 import com.t1dm.inference.CumulativeTelemetry
+import com.t1dm.inference.FitSource
 import com.t1dm.inference.SelectionStore
 import com.t1dm.inference.TelemetryStore
 import com.t1dm.inference.assembleBgSeries
@@ -48,12 +51,33 @@ class RoomBgHistoryProvider(
     /** Fit series: MEASURED only, uncovered slots NaN not carried forward (SPEC §1). */
     override suspend fun fitBgSeries(maxSteps: Int, minSteps: Int): BgSeries? {
         val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return null
-        val readings = repository.recentReadings(srcId, maxSteps + BG_SERIES_ROW_MARGIN)
-            .filter {
-                it.bgMgdl != null &&
-                    it.flag == ReadingFlag.NORMAL &&
-                    it.provenance == ReadingProvenance.MEASURED
-            }
+        return measuredSeries(repository.recentReadings(srcId, maxSteps + BG_SERIES_ROW_MARGIN), srcId, maxSteps, minSteps)
+    }
+
+    /** Fills are spliced into the trusted sensor's stream only, so only it reads them. */
+    override suspend fun fitSources(maxSteps: Int, minSteps: Int): List<FitSource> {
+        val trusted = registry.authoritative.value ?: repository.authoritativeSourceId()
+        val ids = listOfNotNull(trusted) + repository.allSourceIds().filter { it != trusted }
+        val out = ArrayList<FitSource>(ids.size)
+        for (id in ids) {
+            val readings = repository.recentReadings(id, maxSteps + BG_SERIES_ROW_MARGIN)
+            val withFills = id == trusted
+            val dense = assembleBgSeries(readings, id.value, maxSteps, minSteps, withReconstructed = true) { a, b ->
+                if (!withFills) emptyMap()
+                else runCatching { repository.infillInRange(a, b).associate { it.ts to it.mgdl } }.getOrElse { emptyMap() }
+            } ?: continue
+            val measured = measuredSeries(readings, id, maxSteps, minSteps) ?: continue
+            out.add(FitSource(dense, measured, reconstructedOf(readings, withFills)))
+        }
+        return out
+    }
+
+    private fun measuredSeries(newestFirst: List<CgmReading>, srcId: CgmSourceId, maxSteps: Int, minSteps: Int): BgSeries? {
+        val readings = newestFirst.filter {
+            it.bgMgdl != null &&
+                it.flag == ReadingFlag.NORMAL &&
+                it.provenance == ReadingProvenance.MEASURED
+        }
         if (readings.size < minSteps) return null
 
         val byTs = TreeMap<Long, Double>()
@@ -72,7 +96,10 @@ class RoomBgHistoryProvider(
     override suspend fun reconstructedSlots(maxSteps: Int): Set<Long> {
         if (maxSteps <= 0) return emptySet()
         val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return emptySet()
-        val readings = repository.recentReadings(srcId, maxSteps + BG_SERIES_ROW_MARGIN)
+        return reconstructedOf(repository.recentReadings(srcId, maxSteps + BG_SERIES_ROW_MARGIN), withFills = true)
+    }
+
+    private suspend fun reconstructedOf(readings: List<CgmReading>, withFills: Boolean): Set<Long> {
         if (readings.isEmpty()) return emptySet()
         val covered = HashSet<Long>()
         val fromModel = HashSet<Long>()
@@ -83,7 +110,12 @@ class RoomBgHistoryProvider(
         }
         val oldest = readings.minOf { it.tsMs }
         val newest = readings.maxOf { it.tsMs }
-        for (f in runCatching { repository.infillInRange(oldest, newest) }.getOrElse { emptyList() }) {
+        val fills = if (withFills) {
+            runCatching { repository.infillInRange(oldest, newest) }.getOrElse { emptyList() }
+        } else {
+            emptyList()
+        }
+        for (f in fills) {
             covered.add(f.ts)
             fromModel.add(f.ts)
         }

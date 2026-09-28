@@ -14,6 +14,7 @@ import com.t1dm.core.model.isRealMeasurement
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ForecastWindow
 import com.t1dm.core.model.ForecastWindowSet
+import com.t1dm.core.model.MaskGeometry
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.PaintStroke
 import com.t1dm.core.model.ReadingFlag
@@ -236,6 +237,11 @@ class T1dmRepository(
 
     /** Refuses the authoritative source; the caller relies on that rather than re-checking. */
     suspend fun deactivateSource(id: CgmSourceId) = withContext(io) { sources.deactivate(id.value) }
+
+    /** Every sensor ever registered, hidden and inactive included, oldest first. */
+    suspend fun allSourceIds(): List<CgmSourceId> = withContext(io) {
+        sources.all().map { CgmSourceId(it.sourceId) }
+    }
 
     suspend fun activeSourceIds(): List<CgmSourceId> = withContext(io) {
         sources.activeSourceIds().map(::CgmSourceId)
@@ -1144,7 +1150,8 @@ class T1dmRepository(
 
     suspend fun loraById(id: Long): LoraEntity? = withContext(io) { loras.byId(id) }
 
-    suspend fun attachedLora(modelId: String): LoraEntity? = withContext(io) { loras.attachedFor(modelId) }
+    suspend fun attachedLora(modelId: String, kind: MaskGeometry): LoraEntity? =
+        withContext(io) { loras.attachedFor(modelId, kind.name) }
 
     suspend fun saveLora(row: LoraEntity): Long = withContext(io) { loras.upsert(row) }
 
@@ -1174,8 +1181,9 @@ class T1dmRepository(
     suspend fun markLoraHistoryMutated(nowMs: Long) =
         withContext(io) { loras.markHistoryMutated(nowMs) }
 
-    suspend fun attachLora(id: Long, modelId: String, nowMs: Long) = inWriteTx {
-        loras.detachAll(modelId, nowMs)
+    /** At most one adapter per model and kind: each run shape reads exactly one row. */
+    suspend fun attachLora(id: Long, modelId: String, kind: String, nowMs: Long) = inWriteTx {
+        loras.detachKind(modelId, kind, nowMs)
         loras.attach(id, nowMs)
     }
 

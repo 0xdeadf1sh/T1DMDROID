@@ -33,7 +33,14 @@ import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.LoraObjective
+import com.t1dm.core.model.MaskGeometry
 import kotlin.math.roundToInt
+
+val MaskGeometry.label: String get() = when (this) {
+    MaskGeometry.FORECAST -> "Forecast"
+    MaskGeometry.INFILL -> "Infill"
+    MaskGeometry.BACKCAST -> "Backcast"
+}
 
 data class LoraFitSpec(
     val name: String,
@@ -45,6 +52,7 @@ data class LoraFitSpec(
     val targetL1: Boolean = true,
     val targetL2: Boolean = true,
     val objective: LoraObjective = LoraObjective.DOSE_RESPONSE,
+    val kind: MaskGeometry = MaskGeometry.FORECAST,
 )
 
 /** Held-out metric, frozen → adapter; null [objective] falls back to held-out pinball. */
@@ -81,7 +89,7 @@ data class LoraAdapter(
     val improved: Boolean,
     val attached: Boolean,
     val updatedAtMs: Long,
-    /** Null when it may attach; same predicate as LabController.attach so button/gate agree. */
+    /** Null when it may attach; resolved by the same predicate LabController.attach enforces. */
     val attachRefusal: String? = null,
     /** Marginal dose response kept, as a ratio in risk space; 1.0 is preservation. */
     val guardRetention: Double = 0.0,
@@ -94,6 +102,7 @@ data class LoraAdapter(
     val objective: LoraObjective? = null,
     val metricBefore: Double? = null,
     val metricAfter: Double? = null,
+    val kind: MaskGeometry = MaskGeometry.FORECAST,
 )
 
 data class LoraPanelState(
@@ -115,7 +124,7 @@ fun LoraPanel(
     onAttach: (Long) -> Unit,
     /** The route out of `ABSENT` for an imported or restored adapter, short of the override. */
     onProbe: (Long) -> Unit = {},
-    /** Clears a guard refusal; the controller, not this dialog, compares the typed name. */
+    /** Clears a guard refusal; the controller compares the name, not this dialog. */
     onOverride: (Long, String) -> Unit = { _, _ -> },
     onDetach: () -> Unit,
     onRename: (Long, String) -> Unit,
@@ -186,7 +195,7 @@ fun LoraPanel(
                         )
                         Spacer()
                         if (!a.attached) {
-                            // `attach` enforces the same predicate; this is affordance, not gate.
+                            // LabController.attach enforces the predicate; this is affordance only.
                             TextButton(
                                 enabled = a.attachRefusal == null,
                                 onClick = { haptics.perform(HapticEvent.Commit); onAttach(a.id) },
@@ -209,7 +218,7 @@ fun LoraPanel(
                             color = MaterialTheme.colorScheme.error,
                         )
                     }
-                    // INCONCLUSIVE can carry non-finite retention (frozen, /0); NaN% misleads.
+                    // INCONCLUSIVE can carry a non-finite retention; NaN% reads as a measurement.
                     if (a.guardWindows > 0 && a.guardRetention.isFinite()) {
                         Text(
                             "dose response ${"%.0f".format(a.guardRetention * 100)}% over " +
@@ -220,7 +229,7 @@ fun LoraPanel(
                         )
                     }
                     Text(
-                        "r${a.rank} · ${a.nParams} params · ${a.nTrain}+${a.nHoldout} windows",
+                        "${a.kind.label} · r${a.rank} · ${a.nParams} params · ${a.nTrain}+${a.nHoldout} windows",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Text(
@@ -324,7 +333,7 @@ fun LoraPanel(
             text = {
                 Text(
                     if (a.attached) {
-                        "\"${a.name}\" is attached — the forecast goes back to the frozen model."
+                        "\"${a.name}\" is attached — ${a.kind.label.lowercase()} goes back to the frozen model."
                     } else {
                         "Delete \"${a.name}\"? A fit cannot be recovered without a backup."
                     },
@@ -360,6 +369,7 @@ private fun FitDialog(defaultName: String, onDismiss: () -> Unit, onFit: (LoraFi
     var tL1 by remember { mutableStateOf(true) }
     var tL2 by remember { mutableStateOf(true) }
     var objective by remember { mutableStateOf(LoraObjective.DOSE_RESPONSE) }
+    var kind by remember { mutableStateOf(MaskGeometry.FORECAST) }
     val noSite = !tHidden && !tL0 && !tL1 && !tL2
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -372,14 +382,23 @@ private fun FitDialog(defaultName: String, onDismiss: () -> Unit, onFit: (LoraFi
                     singleLine = true,
                     label = { Text("Name") },
                 )
-                Text("Objective", style = MaterialTheme.typography.bodySmall)
+                Text("Runs on", style = MaterialTheme.typography.bodySmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    for ((o, label) in listOf(
-                        LoraObjective.MEAN_RMSE to "RMSE",
-                        LoraObjective.DTS_A to "DTS A",
-                        LoraObjective.DOSE_RESPONSE to "Dose response",
-                    )) {
-                        FilterChip(objective == o, { objective = o }, { Text(label) })
+                    for (k in listOf(MaskGeometry.FORECAST, MaskGeometry.INFILL, MaskGeometry.BACKCAST)) {
+                        FilterChip(kind == k, { kind = k }, { Text(k.label) })
+                    }
+                }
+                // RMSE and DTS read forecast horizons; a fill adapter fits on pinball alone.
+                if (kind == MaskGeometry.FORECAST) {
+                    Text("Objective", style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        for ((o, label) in listOf(
+                            LoraObjective.MEAN_RMSE to "RMSE",
+                            LoraObjective.DTS_A to "DTS A",
+                            LoraObjective.DOSE_RESPONSE to "Dose response",
+                        )) {
+                            FilterChip(objective == o, { objective = o }, { Text(label) })
+                        }
                     }
                 }
                 Text("Rank ${rank.roundToInt()}", style = MaterialTheme.typography.bodySmall)
@@ -428,6 +447,7 @@ private fun FitDialog(defaultName: String, onDismiss: () -> Unit, onFit: (LoraFi
                             targetL1 = tL1,
                             targetL2 = tL2,
                             objective = objective,
+                            kind = kind,
                         ),
                     )
                 },

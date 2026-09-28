@@ -39,7 +39,7 @@ class LabController(
     suspend fun adaptersOf(modelId: String): List<LoraAdapter> =
         runCatching { repository.lorasFor(modelId).map { it.toUi() } }.getOrElse { emptyList() }
 
-    /** Stores adapter DETACHED; onReplay/onEpoch called on this coroutine's own thread. */
+    /** Stores the adapter DETACHED; [onReplay]/[onEpoch] run on this coroutine's own thread. */
     suspend fun fit(
         modelId: String,
         spec: LoraFitSpec,
@@ -48,11 +48,10 @@ class LabController(
     ): String {
         val desc = controller.descriptorOf(modelId) ?: return "Model not loaded"
         val head = desc.head ?: return "This model ships no head file — no adapter can attach"
-        // One hour: wider loses windows faster than it gains, starves a fresh sensor under 16.
-        val stride = desc.patchSize * 2
-        // RMSE and DTS read horizons only a forecast has; the crate drops any other geometry.
-        val forecastOnly = spec.objective != LoraObjective.DOSE_RESPONSE
-        val samples = controller.loraSamples(modelId, spec.windows, stride, onReplay, forecastOnly)
+        // RMSE and DTS read horizons only a forecast has; a fill fits on pinball alone.
+        val objective = if (spec.kind == MaskGeometry.FORECAST) spec.objective else LoraObjective.DOSE_RESPONSE
+        val windows = controller.loraSamples(modelId, spec.windows, spec.kind, onReplay)
+        val samples = windows.samples
         if (samples.size < 16) return "Only ${samples.size} usable windows — need more history"
         val config = LoraConfig(
             rank = spec.rank,
@@ -68,7 +67,7 @@ class LabController(
             holdoutFrac = 0.25,
             weightDecay = 1e-4,
             seed = clock(),
-            objective = spec.objective,
+            objective = objective,
         )
         val result = controller.trainLora(modelId, samples, config, opts) { epoch, epochs, _, _ ->
             onEpoch?.invoke(epoch, epochs)
@@ -110,14 +109,11 @@ class LabController(
                 // SQLite stores NaN as NULL; say so here rather than let the column decide.
                 metricBefore = result.report.metricBefore.takeIf { it.isFinite() },
                 metricAfter = result.report.metricAfter.takeIf { it.isFinite() },
+                kind = spec.kind.name,
             ),
         )
         val r = result.report
-        // At the one-hour stride windows are ~99% shared; non-overlap is the honest denominator.
-        val windowSteps = desc.minContextPatches * desc.patchSize +
-            (desc.predictionHorizonHours * 12 / desc.patchSize) * desc.patchSize
-        val independent = (windowSteps + (samples.size - 1) * stride) / windowSteps
-        return "${r.nTrain}+${r.nHoldout} windows (~$independent independent) · " +
+        return "${r.nTrain}+${r.nHoldout} windows (${windows.nAtEvent} at a meal or dose) · " +
             loraMetricLine(r.objective, r.metricBefore, r.metricAfter) +
             (if (r.improved) " @ epoch ${r.bestEpoch}" else " · no gain") +
             if (r.nEpochsGated > 0) " · ${r.nEpochsGated} epochs failed dose check" else ""
@@ -125,24 +121,17 @@ class LabController(
 
     suspend fun attach(modelId: String, id: Long): String? {
         val row = repository.loraById(id) ?: return "Adapter is gone"
-        // Blob before the gate: an unloadable one attaches clean and runs as NOTHING silently.
+        // Checked before the gate: an unloadable blob attaches clean, then runs as NOTHING.
         val head = controller.descriptorOf(modelId)?.head
             ?: return "This model ships no head file — nothing to attach an adapter to"
         val w = native.loraDeserialize(row.blob) ?: return "This adapter will not load"
         if (w.headSha256 != head.sha256) return "This adapter belongs to another head"
-        // Sites are written with the weights; disagreement means the row was edited/restored raw.
+        // Sites are written with the weights; a mismatch means edited/restored without them.
         if (w.config.targetBits() != row.targets) return "Stored sites do not match the weights"
         // Structural, not a disabled button: a composable-only gate is one deeplink from bypass.
-        val refusal = loraAttachRefusal(
-            verdict = runCatching { LoraGuardVerdict.valueOf(row.guardVerdict) }
-                .getOrDefault(LoraGuardVerdict.ABSENT),
-            overrideAtMs = row.guardOverrideAtMs,
-            historyMutatedAtMs = row.historyMutatedAtMs,
-            fittedAtMs = row.fittedAtMs,
-            why = row.guardWhy,
-        )
+        val refusal = row.attachRefusal()
         if (refusal != null) return refusal
-        repository.attachLora(id, modelId, clock())
+        repository.attachLora(id, modelId, row.kindOf().name, clock())
         return null
     }
 
@@ -159,7 +148,8 @@ class LabController(
         val w = native.loraDeserialize(row.blob) ?: return "This adapter will not load"
         // A verdict measured against another head describes an adapter that can never run here.
         if (w.headSha256 != head.sha256) return "This adapter belongs to another head"
-        val samples = controller.loraSamples(modelId, windows, desc.patchSize * 2, onReplay)
+        // The probe is a forecast whatever the adapter's kind: the guard reads a horizon.
+        val samples = controller.loraSamples(modelId, windows, MaskGeometry.FORECAST, onReplay).samples
         val report = controller.guardAdapter(modelId, w, samples)
         repository.setLoraGuard(
             id = id,
@@ -177,7 +167,7 @@ class LabController(
         }
     }
 
-    /** typedName must equal the adapter's name, compared here not the dialog; re-fit resets it. */
+    /** [typedName] checked here, not the dialog: composable-only confirm is one deeplink away. */
     suspend fun overrideGuard(id: Long, typedName: String): String? {
         val row = repository.loraById(id) ?: return "Adapter is gone"
         if (typedName.trim() != row.name) return "Type the adapter's name exactly to override"
@@ -233,7 +223,7 @@ class LabController(
                     blob = bytes,
                     rank = w.config.rank,
                     alpha = w.config.alpha,
-                    // From the blob, not assumed: an import touches only its fitted sites.
+                    // From the blob, not assumed: imported adapter touches only fitted sites.
                     targets = w.config.targetBits(),
                     nParams = w.params.size,
                     nTrain = 0,
@@ -254,16 +244,16 @@ class LabController(
 
     data class Gap(val startMs: Long, val endMs: Long, val steps: Int)
 
-    /** Reconstructs one span, stores the fill; geometry (§4) only differs the refusals below. */
+    /** Reconstructs one span, stores fill; [geometry] from caller (SPEC/inference.md §4). */
     suspend fun runSpan(modelId: String, startMs: Long, endMs: Long, geometry: MaskGeometry): String {
         val gap = Gap(startMs = startMs, endMs = endMs, steps = ((endMs - startMs) / STEP_MS).toInt())
         val desc = controller.descriptorOf(modelId) ?: return "Model not loaded"
-        // ATTACHED adapter as live cycle; refused, not frozen-fallback, else a fill lies.
-        val attached = repository.attachedLora(modelId)
+        // This shape's own adapter; refuse rather than fall back and store the wrong output.
+        val attached = repository.attachedLora(modelId, geometry)
         val lora = if (attached == null) {
             null
         } else {
-            // loraDeserialize returns null not throws; unhandled it reconstructs FROZEN.
+            // loraDeserialize returns null, not throws; unhandled, runMasked uses FROZEN silently.
             runCatching { native.loraDeserialize(attached.blob) }.getOrNull()
                 ?: return "Attached adapter could not be read — detach it first"
         }
@@ -275,7 +265,7 @@ class LabController(
         val gapEnd = ((gap.endMs - dense.gridStartMs) / STEP_MS).toInt()
         if (gapStart < 0 || gapEnd > dense.mgdl.size) return "Gap is outside the window"
         val trailing = min(dense.mgdl.size - gapEnd, steps / 3)
-        // Aligned LAST, re-checked after: post-align clamp undoes it when the window can't slide.
+        // Align last, re-check after: clamping post-align undoes it when the window can't slide.
         val from = alignedWindowOrigin(
             preferred = gapEnd + trailing - steps,
             gridStartMs = dense.gridStartMs,
@@ -290,7 +280,7 @@ class LabController(
             return "Span does not land on a patch boundary"
         }
 
-        // A forecast isn't masked: future zone masks by construction, none writes to bg_infill.
+        // Forecast != masked span: future zone masked by construction, never written.
         if (geometry == MaskGeometry.FORECAST) {
             val series = BgSeries(
                 dense.mgdl.copyOfRange(from, to),
@@ -318,14 +308,14 @@ class LabController(
 
         val firstPatch = (gapStart - from) / s
         val lastPatch = (gapEnd - 1 - from) / s
-        // LEFT-edge span is a BACKCAST (§7.4): drawable, refused at promotion, one-anchor extend.
+        // LEFT edge is a BACKCAST (SPEC/inference.md §7.4): drawable, refused at promotion.
         if (firstPatch < 0 || (firstPatch == 0 && geometry != MaskGeometry.BACKCAST)) {
             return "Gap sits at the window edge"
         }
         if (lastPatch >= nCtx - 1) return "Gap sits at the window edge"
         val span = MaskSpan(firstPatch, lastPatch - firstPatch + 1)
         if (span.length > desc.maxMaskedPatches) return "Gap is longer than the head's ${desc.maxMaskedPatches} slots"
-        // Past the longest trained span, model still answers plausibly, no off-distribution signal.
+        // Past the sampler's longest span, model still answers; fan hides off-distribution.
         if (span.length > desc.maskSpanMax) {
             return "Gap spans ${span.length} patches; the model was trained to ${desc.maskSpanMax}"
         }
@@ -355,7 +345,7 @@ class LabController(
             val step = from + spanStartStep + i
             val ts = dense.gridStartMs + step.toLong() * STEP_MS
             if (ts in gap.startMs until gap.endMs) {
-                // Whole fan, both spaces: only place it survives the run; tau slider reads it.
+                // Whole fan, both spaces: only place it survives; τ slider reads emitted level.
                 val mgdlFan = List(N_QUANTILES) { k -> out.forecast.bandsMgdl[i * N_QUANTILES + k] }
                 val riskFan = List(N_QUANTILES) { k -> out.forecast.qTauRisk[i * N_QUANTILES + k] }
                 rows.add(
@@ -381,7 +371,7 @@ class LabController(
         return "Filled ${rows.size} steps"
     }
 
-    /** Moves a span's line to tau; traces the emitted fan in risk space, stored not re-derived. */
+    /** Moves the line to the fan's τ-th quantile; no re-run, traces the already-emitted fan. */
     suspend fun retau(spanStartMs: Long, tau: Double): String {
         val rows = repository.infillSpan(spanStartMs)
         if (rows.isEmpty()) return "Span is gone"
@@ -450,14 +440,7 @@ class LabController(
         attached = attached,
         updatedAtMs = updatedAtMs,
         // The same predicate [attach] enforces; the panel renders it, it does not decide it.
-        attachRefusal = loraAttachRefusal(
-            verdict = runCatching { LoraGuardVerdict.valueOf(guardVerdict) }
-                .getOrDefault(LoraGuardVerdict.ABSENT),
-            overrideAtMs = guardOverrideAtMs,
-            historyMutatedAtMs = historyMutatedAtMs,
-            fittedAtMs = fittedAtMs,
-            why = guardWhy,
-        ),
+        attachRefusal = attachRefusal(),
         guardRetention = guardRetention,
         guardWindows = guardWindows,
         guardFrozenMgdl = guardFrozenMgdl,
@@ -466,6 +449,20 @@ class LabController(
         objective = objective?.let { runCatching { LoraObjective.valueOf(it) }.getOrNull() },
         metricBefore = metricBefore,
         metricAfter = metricAfter,
+        kind = kindOf(),
+    )
+
+    // An unknown name fails closed to FORECAST, the one kind the dose check still gates.
+    private fun LoraEntity.kindOf(): MaskGeometry =
+        runCatching { MaskGeometry.valueOf(kind) }.getOrDefault(MaskGeometry.FORECAST)
+
+    private fun LoraEntity.attachRefusal(): String? = loraAttachRefusal(
+        verdict = runCatching { LoraGuardVerdict.valueOf(guardVerdict) }.getOrDefault(LoraGuardVerdict.ABSENT),
+        overrideAtMs = guardOverrideAtMs,
+        historyMutatedAtMs = historyMutatedAtMs,
+        fittedAtMs = fittedAtMs,
+        why = guardWhy,
+        kind = kindOf(),
     )
 
     private companion object {
@@ -477,7 +474,7 @@ class LabController(
     }
 }
 
-/** Context window origin index, on an ABSOLUTE patch boundary; null if no aligned window fits. */
+/** Window origin on an ABSOLUTE patch boundary; gridStartMs need not align. Null if none fits. */
 internal fun alignedWindowOrigin(
     preferred: Int,
     gridStartMs: Long,

@@ -687,6 +687,16 @@ object MigrationRunner {
         }
     }
 
+    internal const val SQL_31_32_LORA_KIND =
+        "ALTER TABLE `lora` ADD COLUMN `kind` TEXT NOT NULL DEFAULT 'FORECAST'"
+
+    /** Before v32 one attached adapter ran on forecasts and fills alike; it stays a forecast. */
+    val MIGRATION_31_32 = object : Migration(31, 32) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_31_32_LORA_KIND)
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -718,6 +728,7 @@ object MigrationRunner {
         MIGRATION_28_29,
         MIGRATION_29_30,
         MIGRATION_30_31,
+        MIGRATION_31_32,
     )
 
     fun <T : RoomDatabase> configure(builder: RoomDatabase.Builder<T>): RoomDatabase.Builder<T> =

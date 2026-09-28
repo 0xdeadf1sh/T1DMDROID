@@ -1,9 +1,10 @@
 package com.t1dm.inference
 
+import com.t1dm.core.model.LoraSample
 import com.t1dm.core.model.LoraWeights
 import com.t1dm.core.model.ModelPrediction
 
-/** Trailing per-5-min mg/dL. [sourceId] sensors differ ~28 mg/dL median; null=synthetic. */
+/** mg/dL per 5-min step; anchorTsMs is the last MEASURED sample, never reset by carry-forward. */
 data class BgSeries(
     val mgdl: DoubleArray,
     val anchorTsMs: Long,
@@ -23,36 +24,55 @@ data class BgSeries(
     }
 }
 
-/** A port, not a constant: a whole unit in 5min is ~19σ OOD. Null ⇒ no counterfactual, ABSENT. */
+/** Null port: counterfactual branch doesn't run — no verdict, ABSENT, attach refused. */
 fun interface ProbeInsulinPort {
-    /** [units] rapid insulin action per 5-min step, [steps] long, zero-padded past curve end. */
+    /** Absolute rapid-insulin action per 5-min step, steps long, zero-padded past curve end. */
     suspend fun action(units: Double, steps: Int): DoubleArray
 }
 
 interface BgHistoryProvider {
-    /** Newest-last mg/dL, ≤[maxSteps], null under [minSteps]. May splice recon; dosing may not. */
+    /** Newest-last mg/dL, ≤maxSteps steps, null under minSteps. May splice reconstructed gaps. */
     suspend fun recentBgSeries(maxSteps: Int, minSteps: Int): BgSeries?
 
-    /** Series a DOSE may score on: no recon sample, so no model output feeds its own advice. */
+    /** Dose-scoring series: no reconstructed sample, so a model's output never feeds advice. */
     suspend fun dosingBgSeries(maxSteps: Int, minSteps: Int): BgSeries?
 
-    /** MEASURED (non-interp, NORMAL) readings in [windowSteps] — the WARMUP gates numerator. */
+    /** MEASURED (non-interpolated, NORMAL) in trailing windowSteps slots; WARMUP numerator. */
     suspend fun measuredStepsInWindow(windowSteps: Int): Int = 0
 
-    /** Gaps as NaN, not carried forward: a fit never learns fake persistence (§1). */
+    /** Fit input: gaps stay NaN, never carried forward (SPEC/invariants.md §1). Default null. */
     suspend fun fitBgSeries(maxSteps: Int, minSteps: Int): BgSeries? = null
 
-    /** Slots in [maxSteps] holding a MODELS OWN OUTPUT (§1): never a fit target. NaN cant tell. */
+    /** Slots holding the model's own output; never a fit target/window (SPEC/invariants.md §1). */
     suspend fun reconstructedSlots(maxSteps: Int): Set<Long> = emptySet()
+
+    /** Every sensor's fit input, trusted first. Default: the trusted one alone. */
+    suspend fun fitSources(maxSteps: Int, minSteps: Int): List<FitSource> {
+        val dense = recentBgSeries(maxSteps, minSteps) ?: return emptyList()
+        val measured = fitBgSeries(maxSteps, minSteps) ?: return emptyList()
+        val fromModel = runCatching { reconstructedSlots(maxSteps) }.getOrElse { emptySet() }
+        return listOf(FitSource(dense, measured, fromModel))
+    }
 }
 
-/** Carb-appearance (feat 1)/insulin-action (feat 2) channels over a window. Null ⇒ no-dose. */
+/** One sensor: [dense] as the model reads it, [measured] NaN at gaps, [reconstructed] slot ms. */
+class FitSource(val dense: BgSeries, val measured: BgSeries, val reconstructed: Set<Long>)
+
+/** A fit's windows; [nAtEvent] of them sit right beside a meal or bolus. */
+class LoraWindows(val samples: List<LoraSample>, val nAtEvent: Int)
+
+/** Carb and bolus start instants in `[fromMs, toMs)`, ms, ascending; basal is not an event. */
+fun interface EventOnsetSource {
+    suspend fun onsets(fromMs: Long, toMs: Long): LongArray
+}
+
+/** Carb (feat1) and insulin-action (feat2) channels over grid window; null ⇒ no-dose baseline. */
 fun interface ContextChannelSource {
     /** Per-5-min amounts over `[gridStartMs, gridStartMs + nSteps·STEP)`. */
     suspend fun channels(gridStartMs: Long, nSteps: Int): ModelChannels
 }
 
-/** Index-aligned to a grid window: carb grams and insulin action, the model's only two signals. */
+/** Grid-aligned per-5-min amounts: carb grams and insulin action, the model's only two signals. */
 data class ModelChannels(
     val carb: DoubleArray,
     val insulin: DoubleArray,
@@ -67,9 +87,9 @@ data class ModelChannels(
     }
 }
 
-/** COMMITTED tails into PRED ZONE (§3.3), not what-if; excl. announced/candidate. Null=no-dose. */
+/** Committed dose tails into the prediction zone (SPEC §3.3), not what-if; null ⇒ no-dose. */
 fun interface FutureOverrideSource {
-    /** Per-5-min committed amounts over the roll window. An ended bout still disposes; counts. */
+    /** Per-5-min committed amounts; an ended bout still disposes glucose, so its tail counts. */
     suspend fun overrides(rollStartMs: Long, nFutureSteps: Int): ModelChannels
 }
 
@@ -98,7 +118,7 @@ interface SelectionStore {
     suspend fun save(id: String)
 }
 
-/** Read fresh per cycle: attach/detach take effect next tick. */
+/** Read fresh each cycle; null is the frozen model. */
 fun interface LoraStore {
     suspend fun attached(modelId: String): LoraWeights?
 }

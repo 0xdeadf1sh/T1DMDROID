@@ -1,6 +1,7 @@
 package com.t1dm.inference
 
 import com.t1dm.core.model.LoraGuardVerdict
+import com.t1dm.core.model.MaskGeometry
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -47,5 +48,13 @@ class LoraAttachGateTest {
     @Test
     fun a_history_edit_older_than_the_fit_is_not_a_refusal() {
         assertNull(loraAttachRefusal(LoraGuardVerdict.PASS, null, fitted - 1, fitted))
+    }
+
+    @Test
+    fun a_fill_adapter_needs_no_dose_verdict_but_still_refuses_an_edited_history() {
+        for (kind in listOf(MaskGeometry.INFILL, MaskGeometry.BACKCAST)) {
+            assertNull(loraAttachRefusal(LoraGuardVerdict.ABSENT, null, null, fitted, kind = kind))
+            assertNotNull(loraAttachRefusal(LoraGuardVerdict.PASS, null, fitted + 1, fitted, kind = kind))
+        }
     }
 }

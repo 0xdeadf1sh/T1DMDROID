@@ -135,10 +135,21 @@ the head over those states and puts a low-rank adapter in front of it.
 - **What it cannot do.** The trunk's attention and FFN blocks are frozen inside
   the graph and no gradient reaches them. This adapts the representation the head
   reads and the head itself; it does not retrain the model.
-- **How it is fitted.** Historical windows are replayed through the graph to
+- **One kind per adapter.** An adapter is a forecast, infill or backcast adapter
+  and runs only on that shape: the forecast one in the cycle, the dose path and the
+  backtest, the other two in the BG panel's fills of their shape. One per kind may
+  be attached to a model at once.
+- **Which windows it sees.** Windows of the adapter's own kind only, from up to a
+  year of every sensor's measured readings, trusted sensor first; a window whose
+  time another sensor earlier in that order has measured is left to that sensor. No
+  meal or bolus may start inside the predicted span. Candidates sit on an hourly
+  grid, and beside each meal or bolus: the span opens on the step after it, or, for
+  a backcast, closes on the step before it. Onsets at most 15 min apart are one
+  event; basal is not an event.
+- **How it is fitted.** Those windows are replayed through the graph to
   recover their hidden states — not stored, since they are a function of the model
   and would go stale the moment the artifact was replaced — and paired with the BG
-  that actually followed. A window whose horizon carries a gap is dropped. The loss
+  that actually followed. A window whose span carries a gap is dropped. The loss
   is read on the ASSEMBLED fan and is set by the objective the fit is asked for:
   - **RMSE** — the median line's squared error in mg/dL at every step through
     120 min, plus the pinball loss of the six other levels with the median held,
@@ -147,8 +158,8 @@ the head over those states and puts a low-rank adapter in front of it.
     of 120 min is refused.
   - **DTS A** — the same, with the DTS error grid's `|risk|` in place of the
     squared error.
-  - **Dose response** — the pinball loss over the seven levels, in risk space,
-    across every geometry.
+  - **Dose response** — the pinball loss over the seven levels, in risk space.
+    The only objective an infill or backcast adapter fits on.
 
   The gradient is analytic through the assembly and is gated by a
   finite-difference check in the crate's tests.
@@ -166,7 +177,7 @@ the head over those states and puts a low-rank adapter in front of it.
   that is checked once per model at first run. A mismatch disables
   the adapter path for that model rather than forecasting differently from
   everything already stored.
-- **Attaching changes what the model is.** The adapted fan is the one the panel
+- **Attaching a forecast adapter changes what the model is.** The adapted fan is the one the panel
   draws, the one that is stored and pushed, the one the alarm engine classifies and
   the one the dose calculator rolls — there is one forecaster, not a display variant
   and a real one. Attaching or detaching keeps the band correction and the stored
@@ -226,9 +237,9 @@ brackets it on the left, so storing one extends the history backwards on a singl
 anchor.
 
 **A promoted sample is neither a fit TARGET nor a fit WINDOW'S CONTEXT.**
-`fitBgSeries` excludes it from the target, and the replay drops any window whose
+The fit's measured series excludes it from the target, and the replay drops any window whose
 context holds a reconstruction at all — promoted into `cgm_reading`, or spliced in
-from `bg_infill`. The provider names those slots (`reconstructedSlots`) rather than
+from `bg_infill`. The provider names those slots (`FitSource.reconstructed`) rather than
 the replay inferring them, because the fit series is `NaN` at an ordinary sensor
 gap too: testing it for `NaN` across the window cannot tell the rule's subject from
 a dropout, and refusing both leaves a record with one sensor change contributing no
@@ -271,7 +282,9 @@ Two things stand against it, and they are independent:
   are stored on the adapter's row, and attach is refused STRUCTURALLY — in
   `LabController.attach`, not merely in the panel — on Blocked, on Inconclusive,
   and on an adapter nobody has measured at all. An adapter arriving by import or by
-  an archive restore is in that last state, and silence is not a pass.
+  an archive restore is in that last state, and silence is not a pass. An infill or
+  backcast adapter needs no verdict: the probe reads a forecast horizon, and a fill
+  never reaches the dose calculator.
 
 The refusal is overridable by a deliberate second action, which sticks to that
 adapter's row: a re-fit makes a fresh row with no override.

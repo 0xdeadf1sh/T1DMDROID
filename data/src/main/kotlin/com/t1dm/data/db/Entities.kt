@@ -500,9 +500,11 @@ data class LoraEntity(
     /** Held-out objective metric, frozen head then adapter; null when not recorded. */
     val metricBefore: Double? = null,
     val metricAfter: Double? = null,
+    /** `MaskGeometry` by name: the one run shape this adapter applies to. */
+    @ColumnInfo(defaultValue = "FORECAST") val kind: String = "FORECAST",
 ) {
     override fun equals(other: Any?): Boolean =
-        other is LoraEntity && id == other.id && modelId == other.modelId && name == other.name &&
+        other is LoraEntity && id == other.id && modelId == other.modelId && name == other.name && kind == other.kind &&
             blob.contentEquals(other.blob) && rank == other.rank && alpha == other.alpha &&
             targets == other.targets && nParams == other.nParams && nTrain == other.nTrain &&
             nHoldout == other.nHoldout && epochs == other.epochs &&

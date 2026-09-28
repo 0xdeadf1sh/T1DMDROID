@@ -163,6 +163,7 @@ import com.t1dm.feature.models.LoraFitProgress
 import com.t1dm.feature.models.LoraPanelState
 import com.t1dm.inference.HeadCache
 import com.t1dm.inference.ContextChannelSource
+import com.t1dm.inference.EventOnsetSource
 import com.t1dm.inference.LoraStore
 import com.t1dm.inference.ModelChannels
 import com.t1dm.inference.FutureOverrideSource
@@ -625,8 +626,10 @@ class AppContainer(context: Context) {
                 repository.detachLoras(modelId, System.currentTimeMillis())
             },
             // Re-read every cycle; deserialize failure ⇒ null ⇒ frozen model, never half-applied.
+            eventOnsets = EventOnsetSource { fromMs, toMs -> channelBuilder.eventOnsets(fromMs, toMs) },
+            // The forecast adapter only; a fill reads its own kind in LabController.runSpan.
             loraStore = LoraStore { modelId ->
-                repository.attachedLora(modelId)?.let { row ->
+                repository.attachedLora(modelId, MaskGeometry.FORECAST)?.let { row ->
                     nativeCore.loraDeserialize(row.blob)
                         ?: null.also { Timber.w("adapter %d for %s failed to load; running frozen", row.id, modelId) }
                 }

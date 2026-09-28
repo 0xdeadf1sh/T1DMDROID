@@ -647,6 +647,7 @@ object Archive {
         r.objective?.let { w.put("obj", it) }
         r.metricBefore?.let { w.put("mb", it) }
         r.metricAfter?.let { w.put("ma", it) }
+        w.put("knd", r.kind)
         w.close()
     }
 
@@ -690,6 +691,8 @@ object Archive {
             objective = o.str("obj"),
             metricBefore = o.dbl("mb"),
             metricAfter = o.dbl("ma"),
+            // Absent in a pre-v32 archive: every adapter then ran on the forecast.
+            kind = o.str("knd") ?: "FORECAST",
         )
     }
 

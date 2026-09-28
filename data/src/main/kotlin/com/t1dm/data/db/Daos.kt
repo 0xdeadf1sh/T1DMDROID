@@ -847,11 +847,14 @@ interface LoraDao {
     @Query("SELECT * FROM lora WHERE id = :id")
     suspend fun byId(id: Long): LoraEntity?
 
-    @Query("SELECT * FROM lora WHERE modelId = :modelId AND attached = 1 LIMIT 1")
-    suspend fun attachedFor(modelId: String): LoraEntity?
+    @Query("SELECT * FROM lora WHERE modelId = :modelId AND kind = :kind AND attached = 1 LIMIT 1")
+    suspend fun attachedFor(modelId: String, kind: String): LoraEntity?
 
     @Query("UPDATE lora SET attached = 0, updatedAtMs = :nowMs WHERE modelId = :modelId")
     suspend fun detachAll(modelId: String, nowMs: Long)
+
+    @Query("UPDATE lora SET attached = 0, updatedAtMs = :nowMs WHERE modelId = :modelId AND kind = :kind")
+    suspend fun detachKind(modelId: String, kind: String, nowMs: Long)
 
     @Query("UPDATE lora SET attached = 1, updatedAtMs = :nowMs WHERE id = :id")
     suspend fun attach(id: Long, nowMs: Long)

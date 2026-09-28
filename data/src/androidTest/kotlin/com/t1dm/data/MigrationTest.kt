@@ -845,10 +845,28 @@ class MigrationTest {
     }
 
     @Test
-    fun migrate1To31_fullChain() {
+    fun migrate31To32_keepsEveryAdapterAForecastOne() {
+        val seed = helper.createDatabase(31)
+        val cols = "`modelId`,`name`,`blob`,`rank`,`alpha`,`targets`,`nParams`,`nTrain`,`nHoldout`," +
+            "`epochs`,`holdoutBefore`,`holdoutAfter`,`improved`,`attached`,`createdAtMs`,`updatedAtMs`"
+        seed.execSQL("INSERT INTO `lora` ($cols) VALUES ('m','fit',X'00',4,8.0,12,100,90,30,20,0.12,0.11,1,1,1,2)")
+        seed.close()
+
+        val db = helper.runMigrationsAndValidate(32, listOf(MigrationRunner.MIGRATION_31_32))
+
+        assertEquals(
+            "an adapter attached before v32 ran on the forecast, and still does",
+            1,
+            countRows(db, "SELECT COUNT(*) FROM `lora` WHERE `kind` = 'FORECAST' AND `attached` = 1"),
+        )
+        db.close()
+    }
+
+    @Test
+    fun migrate1To32_fullChain() {
         helper.createDatabase(1).close()
         helper.runMigrationsAndValidate(
-            31,
+            32,
             listOf(
                 MigrationRunner.MIGRATION_1_2,
                 MigrationRunner.MIGRATION_2_3,
@@ -880,6 +898,7 @@ class MigrationTest {
                 MigrationRunner.MIGRATION_28_29,
                 MigrationRunner.MIGRATION_29_30,
                 MigrationRunner.MIGRATION_30_31,
+                MigrationRunner.MIGRATION_31_32,
             ),
         )
     }
