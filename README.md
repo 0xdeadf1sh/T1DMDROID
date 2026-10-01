@@ -1,11 +1,11 @@
 # T1DMDROID
 
-A personal Android app for Type 1 Diabetes that reads a continuous glucose monitor — Microtech/Ottai **AiDEX X / LinX**, **Anytime CT5** or **Libre 3** — over a held, paired Bluetooth-LE GATT session and runs **on-device** glucose forecasting. It is advisory-only — it never actuates insulin delivery. It runs on Android 12 and later, on arm64 and x86_64, and is sideloaded rather than published to any app store.
+A personal Android app for Type 1 Diabetes that reads up to four continuous glucose monitors at once — Microtech/Ottai **AiDEX X / LinX**, **Anytime CT5** and **Libre 3** — each over its own held, paired Bluetooth-LE GATT session, and runs **on-device** glucose forecasting. One sensor at a time is authoritative and alone feeds the forecast, statistics, alarms and outbound destinations; the others are recorded and can be shown on the BG panel. It is advisory-only — it never actuates insulin delivery. It runs on Android 12 and later, on arm64 and x86_64, and is sideloaded rather than published to any app store.
 
 Designed by a T1DM patient, informed by lived experience.
 
 > [!CAUTION]
-> **Personal project, research use only.** T1DMDROID solves one patient's niche problem — one sensor, one phone — and is published for reference, not for anyone else to install or depend on. It is not a medical device, not clinically validated, and unsupported. Its forecasts and calculators may be wrong and **must not** be used for medical, diagnostic, or dosing decisions, nor to replace a real CGM, its official app, or professional care. Provided "as is", without warranty; the authors accept no liability.
+> **Personal project, research use only.** T1DMDROID solves one patient's niche problem and is published for reference, not for anyone else to install or depend on. It is not a medical device, not clinically validated, and unsupported. Its forecasts and calculators may be wrong and **must not** be used for medical, diagnostic, or dosing decisions, nor to replace a real CGM, its official app, or professional care. Provided "as is", without warranty; the authors accept no liability.
 
 
 ## Table of contents
