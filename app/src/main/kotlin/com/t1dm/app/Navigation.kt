@@ -1048,6 +1048,7 @@ private fun T1dmNavHost(
                 thresholds = container.alarmConfig.thresholds,
                 predictions = if (viewingOther) emptyList() else inference.predictions,
                 kovatchevF = container.nativeCore::kovatchevF,
+                kovatchevFBatch = container.nativeCore::kovatchevFBatch,
                 calibrateBands = calibrateBands,
                 calibrateFans = calibrateFans,
                 iobCob = iobCob,
@@ -1542,7 +1543,7 @@ private fun T1dmNavHost(
                 else graphFrameOf(
                     container.sessionReadings(w.first, w.last),
                     unit,
-                    kovatchevF = container.nativeCore::kovatchevF,
+                    kovatchevFBatch = container.nativeCore::kovatchevFBatch,
                 )
             }
             // Not live Logs feed (bounded, empty for old bouts).

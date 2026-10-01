@@ -50,7 +50,10 @@ suspend fun loadGameScene(
     thresholds: AlertThresholds? = null,
     propDensity: GamePropDensity = GamePropDensity.Sparse,
 ): GameScene = withContext(Dispatchers.Default) {
-    val frame = buildGraphFrame(readings, unit, maxPoints = TRACK_MAX_POINTS, kovatchevF = kovatchevF)
+    val frame = buildGraphFrame(
+        readings, unit, maxPoints = TRACK_MAX_POINTS,
+        kovatchevFBatch = kovatchevF?.let { f -> { mgdl -> DoubleArray(mgdl.size) { f(mgdl[it]) } } },
+    )
     val track = buildGameTrack(TrackTrace.of(frame), rangeMinMgdl, rangeMaxMgdl, kovatchevF)
     val paint = if (strokes.isEmpty() || !track.isPlayable) {
         WorldPaint.EMPTY

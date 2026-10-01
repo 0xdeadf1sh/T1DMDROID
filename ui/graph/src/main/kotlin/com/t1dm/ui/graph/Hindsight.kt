@@ -5,6 +5,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.Dispatchers
@@ -58,7 +59,7 @@ private const val BANDS = 3
 suspend fun hindsightFrameOf(
     rows: List<ModelPrediction>,
     unit: UnitSpace = UnitSpace.MgDl,
-    kovatchevF: ((Double) -> Double)? = null,
+    kovatchevFBatch: ((DoubleArray) -> DoubleArray)? = null,
     calibrateFans: ((fansMgdl: () -> List<Double>, steps: Int, nQuantiles: Int) -> List<Double>?)? = null,
 ): HindsightFrame? = withContext(Dispatchers.Default) {
     if (rows.isEmpty()) return@withContext null
@@ -98,53 +99,40 @@ suspend fun hindsightFrameOf(
 
     val madeMs = LongArray(kept)
     val anchorMs = LongArray(kept)
+    val degenerate = BooleanArray(kept)
+    val stale = BooleanArray(kept)
+    val laneLen = PRED_LANES * span
+    val mgdl = DoubleArray(kept * laneLen)
+    var c = 0
+    for (p in rows) {
+        if (!admits(p)) continue
+        // A view, not a copy: `writePredLanes` only indexes into it.
+        val fan = calibrated?.subList(c * fanLen, (c + 1) * fanLen)
+        writePredLanes(p, fan ?: p.bandsMgdl, mgdl, c * laneLen)
+        madeMs[c] = p.cycleTsMs
+        anchorMs[c] = p.anchorTsMs
+        degenerate[c] = p.status != ForecastStatus.OK
+        stale[c] = p.stale
+        c++
+    }
+    val v = toUnit(mgdl, unit, kovatchevFBatch) ?: return@withContext null
+
     val median = FloatArray(kept * span)
     val lo = FloatArray(BANDS * kept * span)
     val hi = FloatArray(BANDS * kept * span)
-    val degenerate = BooleanArray(kept)
-    val stale = BooleanArray(kept)
-
-    var c = 0
-    var a = 0 // index among ADMITTED rows, which `calibrated` is laid out by; `c` skips refusals
-    for (p in rows) {
-        if (!admits(p)) continue
-        // A view, not a copy: `buildPredSeries` only indexes into it.
-        val fan = calibrated?.subList(a * fanLen, (a + 1) * fanLen)
-        a++
-        val s = buildPredSeries(p, unit, kovatchevF, fan) ?: continue
-        if (s.size != span) continue
-        madeMs[c] = p.cycleTsMs
-        anchorMs[c] = p.anchorTsMs
-        degenerate[c] = s.degenerate
-        stale[c] = s.stale
-        System.arraycopy(s.median, 0, median, c * span, span)
+    for (r in 0 until kept) {
+        val at = r * laneLen
+        System.arraycopy(v, at, median, r * span, span)
         for (b in 0 until BANDS) {
-            val base = (b * kept + c) * span
-            System.arraycopy(s.lo[b], 0, lo, base, span)
-            System.arraycopy(s.hi[b], 0, hi, base, span)
+            val base = (b * kept + r) * span
+            System.arraycopy(v, at + (1 + b) * span, lo, base, span)
+            System.arraycopy(v, at + (1 + BANDS + b) * span, hi, base, span)
         }
-        c++
     }
-    // A row that passed shape but was refused leaves a tail hole; trim it, not draw epoch-0 zeroes.
-    if (c == 0) return@withContext null
-    if (c == kept) {
-        HindsightFrame(
-            madeMs, anchorMs, stepMs, span, cadenceOf(madeMs, stepMs),
-            median, lo, hi, degenerate, stale,
-        )
-    } else {
-        val lo2 = FloatArray(BANDS * c * span)
-        val hi2 = FloatArray(BANDS * c * span)
-        for (b in 0 until BANDS) {
-            System.arraycopy(lo, (b * kept) * span, lo2, (b * c) * span, c * span)
-            System.arraycopy(hi, (b * kept) * span, hi2, (b * c) * span, c * span)
-        }
-        val trimmedMade = madeMs.copyOf(c)
-        HindsightFrame(
-            trimmedMade, anchorMs.copyOf(c), stepMs, span, cadenceOf(trimmedMade, stepMs),
-            median.copyOf(c * span), lo2, hi2, degenerate.copyOf(c), stale.copyOf(c),
-        )
-    }
+    HindsightFrame(
+        madeMs, anchorMs, stepMs, span, cadenceOf(madeMs, stepMs),
+        median, lo, hi, degenerate, stale,
+    )
 }
 
 /** Median not mean/min: holes drag a mean up, a tight pair pulls a min down; falls to stepMs. */

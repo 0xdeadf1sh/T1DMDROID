@@ -71,18 +71,18 @@ suspend fun graphFrameOf(
     unit: UnitSpace = UnitSpace.MgDl,
     maxGapMin: Float = 30f,
     maxPoints: Int = 6000,
-    kovatchevF: ((Double) -> Double)? = null,
+    kovatchevFBatch: ((DoubleArray) -> DoubleArray)? = null,
 ): GraphFrame = withContext(Dispatchers.Default) {
-    buildGraphFrame(readings, unit, maxGapMin, maxPoints, kovatchevF)
+    buildGraphFrame(readings, unit, maxGapMin, maxPoints, kovatchevFBatch)
 }
 
-/** Pure CPU, callable from @Preview or a test; missing kovatchevF falls to mg/dL, never fakes. */
+/** Pure CPU, callable from @Preview or a test; missing kovatchevFBatch falls to mg/dL. */
 fun buildGraphFrame(
     readings: List<CgmReading>,
     unit: UnitSpace = UnitSpace.MgDl,
     maxGapMin: Float = 30f,
     maxPoints: Int = 6000,
-    kovatchevF: ((Double) -> Double)? = null,
+    kovatchevFBatch: ((DoubleArray) -> DoubleArray)? = null,
 ): GraphFrame {
     val kept = readings.asSequence()
         .filter { it.bgMgdl != null && it.flag != ReadingFlag.INVALID }
@@ -92,13 +92,13 @@ fun buildGraphFrame(
 
     val t0 = kept.first().tsMs
     val n = kept.size
+    var ys = toUnit(DoubleArray(n) { kept[it].bgMgdl!!.toDouble() }, unit, kovatchevFBatch)
+        ?: return GraphFrame.EMPTY
     var xs = FloatArray(n)
-    var ys = FloatArray(n)
     var flags = IntArray(n)
     for (i in 0 until n) {
         val r = kept[i]
         xs[i] = ((r.tsMs - t0).toDouble() / 60_000.0).toFloat()
-        ys[i] = convert(r.bgMgdl!!.toDouble(), unit, kovatchevF).toFloat()
         flags[i] = when {
             r.flag == ReadingFlag.WARMUP -> GraphFrame.FLAG_WARMUP
             r.provenance == ReadingProvenance.INTERPOLATED -> GraphFrame.FLAG_INTERPOLATED
@@ -136,12 +136,19 @@ fun buildGraphFrame(
     return GraphFrame(t0, kept.last().tzOffsetMin, unit, xs, ys, flags, breakAfter, minY, maxY)
 }
 
-internal fun convert(mgdl: Double, unit: UnitSpace, kovatchevF: ((Double) -> Double)?): Double =
-    when (unit) {
-        UnitSpace.MgDl -> mgdl
-        UnitSpace.MmolL -> mgdl / 18.0182
-        UnitSpace.Kovatchev -> kovatchevF?.invoke(mgdl) ?: mgdl
+/** Null when the batch answers a different length; without one, the risk axis gets mg/dL. */
+internal fun toUnit(
+    mgdl: DoubleArray,
+    unit: UnitSpace,
+    kovatchevFBatch: ((DoubleArray) -> DoubleArray)?,
+): FloatArray? = when (unit) {
+    UnitSpace.MgDl -> FloatArray(mgdl.size) { mgdl[it].toFloat() }
+    UnitSpace.MmolL -> FloatArray(mgdl.size) { (mgdl[it] / 18.0182).toFloat() }
+    UnitSpace.Kovatchev -> {
+        val risk = kovatchevFBatch?.invoke(mgdl) ?: mgdl
+        if (risk.size != mgdl.size) null else FloatArray(risk.size) { risk[it].toFloat() }
     }
+}
 
 /** [srcIdx] is each kept point's pre-decimation index, for re-mapping real dropouts. */
 private class Decimated(

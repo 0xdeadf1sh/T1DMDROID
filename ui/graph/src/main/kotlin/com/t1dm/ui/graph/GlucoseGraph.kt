@@ -170,6 +170,8 @@ fun GlucoseGraph(
     predictedClock: PredictedClock? = null,
     smoothed: SmoothedTrace? = null,
     showSmoothed: Boolean = false,
+    /** A smoothed trace can be swapped in; [smoothed] is left unbuilt while hidden. */
+    smoothable: Boolean = false,
     // Display-only; never drives an alert or a dose.
     rolled: RolledSeries? = null,
     // Extends the pannable right edge past now, without auto-following into that empty region.
@@ -1052,7 +1054,7 @@ fun GlucoseGraph(
                     flush()
                     val leg = measurer.measure("sensor — smoothed", traceLegendStyle)
                     drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotTop + 2f))
-                } else if (smoothed != null && !smoothed.isEmpty) {
+                } else if (smoothable || (smoothed != null && !smoothed.isEmpty)) {
                     // Label the raw trace, so the toggle's state is legible.
                     val leg = measurer.measure("sensor — raw", traceLegendStyle)
                     drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotTop + 2f))

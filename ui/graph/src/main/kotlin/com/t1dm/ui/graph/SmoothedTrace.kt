@@ -31,46 +31,61 @@ internal fun SmoothedTrace.visibleRange(viewStartMs: Double, viewSpanMs: Double)
     return lo..hi
 }
 
-/** Off main thread. [smoothMgdl] causal SavGol, mg/dL, so this module avoids the JNI seam. */
-suspend fun smoothedTraceOf(
-    readings: List<CgmReading>,
-    unit: UnitSpace,
-    smoothMgdl: (DoubleArray) -> DoubleArray,
-    kovatchevF: ((Double) -> Double)? = null,
-    maxGapMin: Float = 30f,
-): SmoothedTrace = withContext(Dispatchers.Default) {
-    buildSmoothedTrace(readings, unit, smoothMgdl, kovatchevF, maxGapMin)
+/** The unit-free half of [SmoothedTrace], so a unit switch converts without re-smoothing. */
+class SmoothedMgdl internal constructor(
+    val tsMs: LongArray,
+    val mgdl: DoubleArray,
+    val breakAfter: BooleanArray,
+) {
+    val isEmpty: Boolean get() = tsMs.isEmpty()
+
+    /** Empty when [kovatchevFBatch] answers a different length. */
+    fun inUnit(unit: UnitSpace, kovatchevFBatch: ((DoubleArray) -> DoubleArray)?): SmoothedTrace {
+        if (isEmpty) return SmoothedTrace.EMPTY
+        val ys = toUnit(mgdl, unit, kovatchevFBatch) ?: return SmoothedTrace.EMPTY
+        return SmoothedTrace(tsMs, ys, breakAfter)
+    }
+
+    companion object {
+        val EMPTY = SmoothedMgdl(LongArray(0), DoubleArray(0), BooleanArray(0))
+    }
 }
 
-/** Pure; safe from a `@Preview` or a test with an injected smoother. */
-fun buildSmoothedTrace(
+/** Off main thread. [smoothMgdl] causal SavGol, mg/dL, so this module avoids the JNI seam. */
+suspend fun smoothedMgdlOf(
     readings: List<CgmReading>,
-    unit: UnitSpace,
     smoothMgdl: (DoubleArray) -> DoubleArray,
-    kovatchevF: ((Double) -> Double)? = null,
     maxGapMin: Float = 30f,
-): SmoothedTrace {
+): SmoothedMgdl = withContext(Dispatchers.Default) { buildSmoothedMgdl(readings, smoothMgdl, maxGapMin) }
+
+/** Pure; safe from a `@Preview` or a test with an injected smoother. */
+fun buildSmoothedMgdl(
+    readings: List<CgmReading>,
+    smoothMgdl: (DoubleArray) -> DoubleArray,
+    maxGapMin: Float = 30f,
+): SmoothedMgdl {
     val kept = readings.asSequence()
         .filter { it.bgMgdl != null && it.flag != ReadingFlag.INVALID }
         .sortedBy { it.tsMs }
         .toList()
-    if (kept.isEmpty()) return SmoothedTrace.EMPTY
+    if (kept.isEmpty()) return SmoothedMgdl.EMPTY
 
     val raw = DoubleArray(kept.size) { kept[it].bgMgdl!!.toDouble() }
     val sm = smoothMgdl(raw)
-    if (sm.size != kept.size) return SmoothedTrace.EMPTY // fail closed rather than draw misaligned
+    if (sm.size != kept.size) return SmoothedMgdl.EMPTY // fail closed rather than draw misaligned
 
     val ts = LongArray(kept.size) { kept[it].tsMs }
-    val ys = FloatArray(kept.size) { i ->
-        val v = sm[i]
-        (when (unit) {
-            UnitSpace.MgDl -> v
-            UnitSpace.MmolL -> v / 18.0182
-            UnitSpace.Kovatchev -> kovatchevF?.invoke(v) ?: v
-        }).toFloat()
-    }
     val gapMs = maxGapMin.toDouble() * 60_000.0
     val breakAfter = BooleanArray(kept.size)
     for (i in 0 until kept.size - 1) breakAfter[i] = (ts[i + 1] - ts[i]) > gapMs
-    return SmoothedTrace(ts, ys, breakAfter)
+    return SmoothedMgdl(ts, sm, breakAfter)
 }
+
+/** [buildSmoothedMgdl] then [SmoothedMgdl.inUnit]. */
+fun buildSmoothedTrace(
+    readings: List<CgmReading>,
+    unit: UnitSpace,
+    smoothMgdl: (DoubleArray) -> DoubleArray,
+    kovatchevFBatch: ((DoubleArray) -> DoubleArray)? = null,
+    maxGapMin: Float = 30f,
+): SmoothedTrace = buildSmoothedMgdl(readings, smoothMgdl, maxGapMin).inUnit(unit, kovatchevFBatch)

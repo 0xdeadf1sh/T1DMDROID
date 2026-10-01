@@ -41,7 +41,11 @@ class GameTrackTest {
         TrackTrace.of(
             buildGraphFrame(
                 readings, unit, maxPoints = readings.size + 1,
-                kovatchevF = if (unit == UnitSpace.Kovatchev) kovatchevF else null,
+                kovatchevFBatch = if (unit == UnitSpace.Kovatchev) {
+                    { mgdl -> DoubleArray(mgdl.size) { kovatchevF(mgdl[it]) } }
+                } else {
+                    null
+                },
             ),
         )
 

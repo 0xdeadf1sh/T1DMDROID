@@ -40,37 +40,40 @@ class RolledSeries internal constructor(
 suspend fun rolledSeriesOf(
     rolled: RolledForecast?,
     unit: UnitSpace = UnitSpace.MgDl,
-    kovatchevF: ((Double) -> Double)? = null,
-): RolledSeries? = withContext(Dispatchers.Default) { buildRolledSeries(rolled, unit, kovatchevF) }
+    kovatchevFBatch: ((DoubleArray) -> DoubleArray)? = null,
+): RolledSeries? = withContext(Dispatchers.Default) { buildRolledSeries(rolled, unit, kovatchevFBatch) }
 
 /** Pure. Null when there is nothing to draw. */
 fun buildRolledSeries(
     rolled: RolledForecast?,
     unit: UnitSpace,
-    kovatchevF: ((Double) -> Double)?,
+    kovatchevFBatch: ((DoubleArray) -> DoubleArray)?,
 ): RolledSeries? {
     if (rolled == null || rolled.isEmpty) return null
     val n = rolled.size
-    fun conv(mgdl: Double): Float = when (unit) {
-        UnitSpace.MgDl -> mgdl
-        UnitSpace.MmolL -> mgdl / 18.0182
-        UnitSpace.Kovatchev -> kovatchevF?.invoke(mgdl) ?: mgdl
-    }.toFloat()
     val ts = LongArray(n) { i -> rolled.anchorTsMs + (i + 1L) * rolled.stepMs }
-    val median = FloatArray(n) { conv(rolled.medianBg[it]) }
     // Ascending-τ: 0=.05 1=.10 2=.25 3=.50 4=.75 5=.90 6=.95. Pairs outer→inner as buildPredSeries.
     val q = if (n > 0 && rolled.bandsMgdl.size % n == 0) rolled.bandsMgdl.size / n else 0
-    val lo: Array<FloatArray>
-    val hi: Array<FloatArray>
-    if (q >= N_QUANTILES) {
-        val loCols = intArrayOf(0, 1, 2)
-        val hiCols = intArrayOf(q - 1, q - 2, q - 3)
-        lo = Array(3) { b -> FloatArray(n) { i -> conv(rolled.bandsMgdl[i * q + loCols[b]]) } }
-        hi = Array(3) { b -> FloatArray(n) { i -> conv(rolled.bandsMgdl[i * q + hiCols[b]]) } }
-    } else {
-        lo = arrayOf(FloatArray(n) { conv(rolled.lowerBg.getOrElse(it) { rolled.medianBg[it] }) })
-        hi = arrayOf(FloatArray(n) { conv(rolled.upperBg.getOrElse(it) { rolled.medianBg[it] }) })
+    val pairs = if (q >= N_QUANTILES) 3 else 1
+    // Lanes of n: median, then lo outer→inner, then hi outer→inner.
+    val mgdl = DoubleArray((1 + 2 * pairs) * n)
+    for (i in 0 until n) {
+        mgdl[i] = rolled.medianBg[i]
+        if (pairs == 3) {
+            for (b in 0 until 3) {
+                mgdl[(1 + b) * n + i] = rolled.bandsMgdl[i * q + b]
+                mgdl[(4 + b) * n + i] = rolled.bandsMgdl[i * q + q - 1 - b]
+            }
+        } else {
+            mgdl[n + i] = rolled.lowerBg.getOrElse(i) { rolled.medianBg[i] }
+            mgdl[2 * n + i] = rolled.upperBg.getOrElse(i) { rolled.medianBg[i] }
+        }
     }
+    val v = toUnit(mgdl, unit, kovatchevFBatch) ?: return null
+    fun lane(k: Int) = v.copyOfRange(k * n, (k + 1) * n)
+    val median = lane(0)
+    val lo = Array(pairs) { lane(1 + it) }
+    val hi = Array(pairs) { lane(1 + pairs + it) }
     return RolledSeries(
         tsMs = ts, median = median, lo = lo, hi = hi,
         validatedSteps = rolled.validatedSteps.coerceIn(0, n),

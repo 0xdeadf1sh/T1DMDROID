@@ -32,47 +32,55 @@ class PredSeries internal constructor(
 suspend fun predOverlayOf(
     predictions: List<ModelPrediction>,
     unit: UnitSpace = UnitSpace.MgDl,
-    kovatchevF: ((Double) -> Double)? = null,
+    kovatchevFBatch: ((DoubleArray) -> DoubleArray)? = null,
     calibrateBands: ((ModelPrediction) -> List<Double>?)? = null,
 ): List<PredSeries> = withContext(Dispatchers.Default) {
-    predictions.mapNotNull { buildPredSeries(it, unit, kovatchevF, calibrateBands?.invoke(it)) }
+    predictions.mapNotNull { buildPredSeries(it, unit, kovatchevFBatch, calibrateBands?.invoke(it)) }
+}
+
+/** Lanes of horizonSteps+1 values each: median, lo outer→inner, hi outer→inner. */
+internal const val PRED_LANES = 7
+
+/** [p]'s mg/dL lanes into [dst] from [at]; [bands] is bandsMgdl's layout, raw or §8.4. */
+internal fun writePredLanes(p: ModelPrediction, bands: List<Double>, dst: DoubleArray, at: Int) {
+    val n = p.horizonSteps
+    val q = p.nQuantiles
+    val w = n + 1
+    // Element 0 is the ANCHOR: last BG at anchorTsMs, fan zero-width, median grows from it.
+    for (lane in 0 until PRED_LANES) dst[at + lane * w] = p.lastBg
+    // Ascending-τ columns: 0=.05 1=.10 2=.25 3=.50 4=.75 5=.90 6=.95. Fan pairs (outer→inner).
+    for (i in 0 until n) {
+        dst[at + 1 + i] = p.medianBg[i]
+        for (b in 0 until 3) {
+            dst[at + (1 + b) * w + 1 + i] = bands[i * q + b]
+            dst[at + (4 + b) * w + 1 + i] = bands[i * q + q - 1 - b]
+        }
+    }
 }
 
 /** Pure. calibratedBandsMgdl is an applied §8.4 fan; a length mismatch IGNORED, raw fan drawn. */
 fun buildPredSeries(
     p: ModelPrediction,
     unit: UnitSpace,
-    kovatchevF: ((Double) -> Double)?,
+    kovatchevFBatch: ((DoubleArray) -> DoubleArray)?,
     calibratedBandsMgdl: List<Double>? = null,
 ): PredSeries? {
     val n = p.horizonSteps
     if (n == 0 || p.bandsMgdl.size != n * p.nQuantiles) return null
-    val q = p.nQuantiles
-    val bands = calibratedBandsMgdl?.takeIf { it.size == n * q } ?: p.bandsMgdl
-    fun conv(mgdl: Double): Float = when (unit) {
-        UnitSpace.MgDl -> mgdl
-        UnitSpace.MmolL -> mgdl / 18.0182
-        UnitSpace.Kovatchev -> kovatchevF?.invoke(mgdl) ?: mgdl
-    }.toFloat()
-
-    // Element 0 is the ANCHOR: last BG at anchorTsMs, fan zero-width, median grows from it.
-    val anchorVal = conv(p.lastBg)
-    val ts = LongArray(n + 1) { i -> p.anchorTsMs + i.toLong() * p.stepMs }
-    val median = FloatArray(n + 1) { i -> if (i == 0) anchorVal else conv(p.medianBg[i - 1]) }
-    // Ascending-τ columns: 0=.05 1=.10 2=.25 3=.50 4=.75 5=.90 6=.95. Fan pairs (outer→inner).
-    val loCols = intArrayOf(0, 1, 2)
-    val hiCols = intArrayOf(q - 1, q - 2, q - 3)
-    val lo = Array(3) { b -> FloatArray(n + 1) { i -> if (i == 0) anchorVal else conv(bands[(i - 1) * q + loCols[b]]) } }
-    val hi = Array(3) { b -> FloatArray(n + 1) { i -> if (i == 0) anchorVal else conv(bands[(i - 1) * q + hiCols[b]]) } }
+    val bands = calibratedBandsMgdl?.takeIf { it.size == n * p.nQuantiles } ?: p.bandsMgdl
+    val w = n + 1
+    val src = DoubleArray(PRED_LANES * w).also { writePredLanes(p, bands, it, 0) }
+    val v = toUnit(src, unit, kovatchevFBatch) ?: return null
+    fun lane(k: Int) = v.copyOfRange(k * w, (k + 1) * w)
     return PredSeries(
         modelId = p.modelId,
         selected = p.selected,
         degenerate = p.status != ForecastStatus.OK,
         stale = p.stale,
-        tsMs = ts,
-        median = median,
-        lo = lo,
-        hi = hi,
+        tsMs = LongArray(w) { i -> p.anchorTsMs + i.toLong() * p.stepMs },
+        median = lane(0),
+        lo = Array(3) { lane(1 + it) },
+        hi = Array(3) { lane(4 + it) },
     )
 }
 

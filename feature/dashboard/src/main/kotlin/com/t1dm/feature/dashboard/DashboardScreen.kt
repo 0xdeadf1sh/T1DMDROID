@@ -65,7 +65,11 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import com.t1dm.core.design.HapticEvent
@@ -105,22 +109,17 @@ import com.t1dm.ui.graph.CurveOverlayFrame
 import com.t1dm.ui.graph.CurveOverlayToggles
 import com.t1dm.ui.graph.OverlayInput
 import com.t1dm.ui.graph.GlucoseGraph
-import com.t1dm.ui.graph.GraphFrame
 import com.t1dm.ui.graph.GraphInsets
 import com.t1dm.ui.graph.geometryOf
 import com.t1dm.ui.graph.PaintControls
 import com.t1dm.ui.graph.PaintFrame
-import com.t1dm.ui.graph.PredSeries
-import com.t1dm.ui.graph.HindsightFrame
 import com.t1dm.ui.graph.PredictedClock
-import com.t1dm.ui.graph.RolledSeries
-import com.t1dm.ui.graph.SmoothedTrace
 import com.t1dm.ui.graph.StepsFrame
 import com.t1dm.ui.graph.hindsightFrameOf
 import com.t1dm.ui.graph.paintFrameOf
 import com.t1dm.ui.graph.paintsBand
 import com.t1dm.ui.graph.rolledSeriesOf
-import com.t1dm.ui.graph.smoothedTraceOf
+import com.t1dm.ui.graph.smoothedMgdlOf
 import com.t1dm.ui.graph.stepsFrameOf
 import com.t1dm.ui.graph.curveOverlayOf
 import com.t1dm.ui.graph.graphFrameOf
@@ -137,6 +136,7 @@ fun DashboardScreen(
     unit: UnitSpace = UnitSpace.MgDl,
     predictions: List<ModelPrediction> = emptyList(),
     kovatchevF: ((Double) -> Double)? = null,
+    kovatchevFBatch: ((DoubleArray) -> DoubleArray)? = null,
     // `SPEC/inference.md` §8.4; DISPLAY ONLY — [predictions] stays raw for alarms, rails, storage.
     calibrateBands: ((ModelPrediction) -> List<Double>?)? = null,
     // Hindsight sweep's correction, batched: one apply, so no fan draws a different basis.
@@ -238,27 +238,6 @@ fun DashboardScreen(
     var gameReady by remember { mutableStateOf(false) }
     LaunchedEffect(gameKind) { gameStartMs = null; gameReady = false }
     LaunchedEffect(gameStartMs) { if (gameStartMs == null) gameReady = false }
-    val frame by produceState(GraphFrame.EMPTY, readings, unit) {
-        value = graphFrameOf(readings, unit, kovatchevF = kovatchevF)
-    }
-    // Built BEFORE the forecast overlay: the correction below is decided on it.
-    val rolledSeries by produceState<RolledSeries?>(null, rolledForecast, unit) {
-        value = rolledSeriesOf(rolledForecast, unit, kovatchevF)
-    }
-
-    // [RolledSeries.paintsBand]: a roll exists but past the validated horizon only a median draws.
-    val rollOnPanel = rolledSeries?.paintsBand() == true
-
-    // Only the selected fan paints; §8.4 correction drops with a rolled band up (avoids 2 bases).
-    val overlay by produceState(emptyList<PredSeries>(), predictions, unit, calibrateBands, rollOnPanel) {
-        value = predOverlayOf(
-            predictions.filter { it.selected },
-            unit,
-            kovatchevF = kovatchevF,
-            calibrateBands = calibrateBands.takeIf { !rollOnPanel },
-        )
-    }
-
     var toggles by remember { mutableStateOf(CurveOverlayToggles()) }
     var windowHours by remember(initialWindowHours) { mutableStateOf(initialWindowHours) }
     var showRollDialog by remember { mutableStateOf(false) }
@@ -291,11 +270,6 @@ fun DashboardScreen(
         noFutureInsulinOverForecast(curveOverlay, predictions, System.currentTimeMillis())
     }
 
-    val smoothed by produceState<SmoothedTrace?>(null, readings, unit, smoothMgdl, smoothingWindow) {
-        val f = smoothMgdl
-        value = if (f == null || readings.isEmpty()) null
-        else smoothedTraceOf(readings, unit, f, kovatchevF)
-    }
     var showSmoothed by remember { mutableStateOf(false) }
 
     // Steps window's right edge is the CLOCK, not readings — steps accrue while CGM is dropped.
@@ -342,24 +316,70 @@ fun DashboardScreen(
     val hindsightModelId = hindsightSelected?.modelId
     // A key, not a producer value: without it the sweep misses cycles since the bucket last moved.
     val hindsightLatestCycleMs = hindsightSelected?.cycleTsMs
-    // Keyed on [calibrateFans] so a fresh §8.4 fit redraws the sweep.
-    val hindsight by produceState<HindsightFrame?>(
-        null, hindsightBucket, hindsightModelId, hindsightLatestCycleMs, unit, kovatchevF, hindsightIn,
-        calibrateFans, rollOnPanel,
+    // One job, one unit: a series landing alone would draw on the other unit's axis.
+    val memo = remember { PanelMemo() }
+    val panel by produceState(
+        PanelSeries.EMPTY, readings, unit, kovatchevFBatch, rolledForecast, predictions, calibrateBands,
+        smoothMgdl, smoothingWindow, showSmoothed, hindsightBucket, hindsightModelId,
+        hindsightLatestCycleMs, hindsightIn, calibrateFans,
     ) {
-        val resolve = hindsightIn
-        val bucket = hindsightBucket
-        val modelId = hindsightModelId
-        // Gated with the overlay: a calibrated sweep beside a raw fan is two bases on one plot.
-        val calibrate = calibrateFans.takeIf { !rollOnPanel }
-        value = if (resolve == null || bucket == null || modelId == null) null
-        else hindsightFrameOf(
-            resolve(modelId, bucket.first, bucket.second),
-            unit,
-            kovatchevF,
-            calibrate?.let { cf -> { fans, steps, nq -> cf(modelId, fans, steps, nq) } },
-        )
+        value = coroutineScope {
+            val frame = async {
+                memo.frame.get(readings, unit) { graphFrameOf(readings, unit, kovatchevFBatch = kovatchevFBatch) }
+            }
+            // Smoothed in mg/dL, so a unit switch only converts; skipped while hidden.
+            val smoothed = async {
+                val f = smoothMgdl
+                if (f == null || !showSmoothed || readings.isEmpty()) null
+                else {
+                    val mgdl = memo.smoothedMgdl.get(readings, f, smoothingWindow) { smoothedMgdlOf(readings, f) }
+                    memo.smoothed.get(mgdl, unit) {
+                        withContext(Dispatchers.Default) { mgdl.inUnit(unit, kovatchevFBatch) }
+                    }
+                }
+            }
+            // Built BEFORE the forecast overlay: the correction below is decided on it.
+            val rolled = memo.rolled.get(rolledForecast, unit) {
+                rolledSeriesOf(rolledForecast, unit, kovatchevFBatch)
+            }
+            // Same predicate the draw uses; a roll may still draw only a median line.
+            val rollOnPanel = rolled?.paintsBand() == true
+            // Selected model's fan only, keyed on calibrateBands; dropped while a roll band shows.
+            val overlay = async {
+                memo.overlay.get(predictions, unit, calibrateBands, rollOnPanel) {
+                    predOverlayOf(
+                        predictions.filter { it.selected },
+                        unit,
+                        kovatchevFBatch = kovatchevFBatch,
+                        calibrateBands = calibrateBands.takeIf { !rollOnPanel },
+                    )
+                }
+            }
+            // Keyed on [calibrateFans] so a fresh §8.4 fit redraws the sweep.
+            val hindsight = async {
+                memo.hindsight.get(
+                    hindsightBucket, hindsightModelId, hindsightLatestCycleMs, unit, hindsightIn,
+                    calibrateFans, rollOnPanel,
+                ) {
+                    val resolve = hindsightIn
+                    val bucket = hindsightBucket
+                    val modelId = hindsightModelId
+                    // Gated with the overlay; calibrated beside raw is two bases on one picture.
+                    val calibrate = calibrateFans.takeIf { !rollOnPanel }
+                    if (resolve == null || bucket == null || modelId == null) null
+                    else hindsightFrameOf(
+                        resolve(modelId, bucket.first, bucket.second),
+                        unit,
+                        kovatchevFBatch,
+                        calibrate?.let { cf -> { fans, steps, nq -> cf(modelId, fans, steps, nq) } },
+                    )
+                }
+            }
+            PanelSeries(unit, frame.await(), rolled, overlay.await(), smoothed.await(), hindsight.await())
+        }
     }
+    // Advances only once [panel] is rebuilt in [unit], so the dissolve spans the swap itself.
+    val fadeKey = heldWhile(panel.unit == unit, swapKey)
 
     // Transient like [showSmoothed]: only the strokes are durable, and live behind the callbacks.
     val paintHaptics = rememberT1dmHaptics()
@@ -564,14 +584,14 @@ fun DashboardScreen(
                     Modifier
                         .fillMaxSize()
                         .graphicsLayer { alpha = chartAlpha }
-                        .crossfadeOnSwap(swapKey),
+                        .crossfadeOnSwap(fadeKey),
                 ) {
                 GlucoseGraph(
-                frame = frame,
+                frame = panel.frame,
                 modifier = Modifier.fillMaxSize(),
             thresholds = thresholds,
             initialWindowMin = windowHours * 60f,
-            predictions = overlay,
+            predictions = panel.overlay,
             curveOverlay = curveOverlay,
             curveToggles = toggles,
             stepsFrame = stepsFrame,
@@ -586,10 +606,11 @@ fun DashboardScreen(
             rangeMinMgdl = rangeMinMgdl,
             rangeMaxMgdl = rangeMaxMgdl,
             predictedClock = predictedClock,
-            smoothed = smoothed,
+            smoothed = panel.smoothed,
             showSmoothed = showSmoothed,
-            rolled = rolledSeries,
-            hindsight = hindsight,
+            smoothable = smoothMgdl != null,
+            rolled = panel.rolled,
+            hindsight = panel.hindsight,
             futureExtentMs = FUTURE_VIEW_MS,
             reservedEndMs = forecastEndMs,
             domainFloorMs = historyFloorMs,
