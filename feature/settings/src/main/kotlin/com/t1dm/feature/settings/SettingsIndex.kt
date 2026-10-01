@@ -33,6 +33,7 @@ enum class SettingsScreenKey(val breadcrumb: String, internal val indexed: Boole
     NIGHTSCOUT("Nightscout"),
     WATCH("Watch"),
     POWER("Low power"),
+    BACKGROUND("Background"),
     DATA("Reset"),
 
     /** Rendered outside this module; indexed so a search for it still lands there. */
@@ -60,6 +61,7 @@ object SettingsIndex {
         addAll(settingsNightscoutKnobs)
         addAll(settingsWatchKnobs)
         addAll(settingsPowerKnobs)
+        addAll(settingsBackgroundKnobs)
         addAll(settingsDataKnobs)
         addAll(settingsBackupKnobs)
         addAll(settingsAboutKnobs)

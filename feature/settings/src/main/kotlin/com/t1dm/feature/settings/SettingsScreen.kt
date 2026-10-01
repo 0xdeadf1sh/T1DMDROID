@@ -25,6 +25,7 @@ fun SettingsScreen(
     onOpenNightscout: () -> Unit = {},
     onOpenWatch: () -> Unit = {},
     onOpenPower: () -> Unit = {},
+    onOpenBackground: () -> Unit = {},
     onOpenData: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onOpenDeath: () -> Unit = {},
@@ -71,6 +72,7 @@ fun SettingsScreen(
                 SettingsNavRow("Nightscout bridge", "Mirror BG, carbs & bolus to a Nightscout host", onClick = onOpenNightscout)
                 SettingsNavRow("Watch", "ESP32-C3 glance: pair, status", onClick = onOpenWatch)
                 SettingsNavRow("Low-power mode", "Battery-saver entry % and behaviour", onClick = onOpenPower)
+                SettingsNavRow("Background", "Battery, alarms, autostart", onClick = onOpenBackground)
 
                 SettingsSectionHeader("Data")
                 SettingsNavRow("Backup & reset", "Export/import JSON, or erase everything", onClick = onOpenData)

@@ -158,6 +158,10 @@ class SettingsStore(
     suspend fun currentLowPowerPercent(): Int = getInt(K_POWER_PCT, DEFAULT_LOW_POWER_PCT)
     suspend fun currentLowPowerUseOsSaver(): Boolean = getBool(K_POWER_OS_SAVER, true)
 
+    // Not exportable: whether THIS install has shown the battery-exemption prompt.
+    suspend fun batteryPromptShown(): Boolean = getBool(K_BATTERY_PROMPTED, false)
+    suspend fun setBatteryPromptShown() = put(K_BATTERY_PROMPTED, "1")
+
     // ADAPTIVE re-forecasts on every CGM reading; TIMED fires on a phone-clock grid of N minutes.
 
     val forecastMode: Flow<String> =
@@ -734,6 +738,7 @@ class SettingsStore(
         private const val K_POWER_ENABLED = "power.low_enabled"
         private const val K_POWER_PCT = "power.low_pct"
         private const val K_POWER_OS_SAVER = "power.use_os_saver"
+        private const val K_BATTERY_PROMPTED = "background.battery_prompted"
 
         private const val K_CALC_TARGET_LOW = "calc.target_low"
         private const val K_CALC_TARGET_HIGH = "calc.target_high"

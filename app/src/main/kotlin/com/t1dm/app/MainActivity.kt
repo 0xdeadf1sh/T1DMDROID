@@ -12,12 +12,16 @@ import androidx.core.content.ContextCompat
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.lifecycle.lifecycleScope
 import com.t1dm.app.di.AppContainer
+import com.t1dm.app.service.BackgroundControls
 import com.t1dm.app.service.CgmScanService
 import com.t1dm.core.design.HapticStrength
 import com.t1dm.core.design.T1dmFontId
 import com.t1dm.core.design.T1dmTheme
 import com.t1dm.core.design.resolvePalette
+import com.t1dm.feature.settings.BackgroundFix
+import kotlinx.coroutines.launch
 import timber.log.Timber
 
 class MainActivity : ComponentActivity() {
@@ -34,6 +38,7 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
             grants.forEach { (perm, granted) -> Timber.tag(TAG).i("perm %s granted=%b", perm, granted) }
             CgmScanService.start(this)
+            promptBatteryOnce()
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -104,8 +109,20 @@ class MainActivity : ComponentActivity() {
         }
         if (missing.isEmpty()) {
             CgmScanService.start(this)
+            promptBatteryOnce()
         } else {
             permissionLauncher.launch(missing.toTypedArray())
+        }
+    }
+
+    /** Once per install; Settings › Background reopens it. */
+    private fun promptBatteryOnce() {
+        if (BackgroundControls.batteryUnrestricted(this)) return
+        lifecycleScope.launch {
+            val ss = container.settingsStore
+            if (ss.batteryPromptShown()) return@launch
+            ss.setBatteryPromptShown()
+            BackgroundControls.open(this@MainActivity, BackgroundFix.BATTERY)
         }
     }
 

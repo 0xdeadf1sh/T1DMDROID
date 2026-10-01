@@ -227,6 +227,7 @@ private val SCREEN_SOURCES = mapOf(
     SettingsScreenKey.NIGHTSCOUT to "NightscoutSettingsScreen.kt",
     SettingsScreenKey.WATCH to "WatchSettingsScreen.kt",
     SettingsScreenKey.POWER to "PowerSettingsScreen.kt",
+    SettingsScreenKey.BACKGROUND to "BackgroundSettingsScreen.kt",
     SettingsScreenKey.DATA to "DataSettingsScreen.kt",
     SettingsScreenKey.DEATH_CLOCK to "DeathClockSettingsScreen.kt",
     SettingsScreenKey.CGM to "CgmSettingsScreen.kt",

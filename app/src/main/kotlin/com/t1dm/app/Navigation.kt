@@ -88,6 +88,7 @@ import com.t1dm.app.di.AppContainer.BolusAdviceUi
 import com.t1dm.app.di.LogHandle
 import com.t1dm.app.di.logReceipt
 import com.t1dm.app.di.undoReceipt
+import com.t1dm.app.service.BackgroundControls
 import com.t1dm.app.service.DoseCalcService
 import com.t1dm.app.service.ExerciseService
 import com.t1dm.calc.AdviceGate
@@ -103,6 +104,7 @@ import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.InsulinPresetSpec
 import com.t1dm.core.model.BezierCurve
 import com.t1dm.core.model.DkaTimeline
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -170,6 +172,7 @@ import com.t1dm.feature.settings.SettingsScreenKey
 import com.t1dm.feature.settings.ForecastSettingsScreen
 import com.t1dm.feature.settings.GraphSettingsScreen
 import com.t1dm.feature.settings.GameSettingsScreen
+import com.t1dm.feature.settings.BackgroundSettingsScreen
 import com.t1dm.feature.settings.PowerSettingsScreen
 import com.t1dm.feature.settings.SettingsScreen
 import com.t1dm.feature.settings.SignalSafetyScreen
@@ -377,6 +380,7 @@ internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = nu
         "settings/nightscout" -> settings(Crumb("Nightscout", null))
         "settings/watch" -> settings(Crumb("Watch", null))
         "settings/power" -> settings(Crumb("Low power", null))
+        "settings/background" -> settings(Crumb("Background", null))
         "settings/data" -> settings(Crumb("Reset", null))
         "settings/death" -> settings(Crumb("Death mode", null))
         else -> listOf(Crumb(route, null))
@@ -401,6 +405,7 @@ internal fun settingsRouteFor(screen: SettingsScreenKey): String = when (screen)
     SettingsScreenKey.NIGHTSCOUT -> "settings/nightscout"
     SettingsScreenKey.WATCH -> "settings/watch"
     SettingsScreenKey.POWER -> "settings/power"
+    SettingsScreenKey.BACKGROUND -> "settings/background"
     SettingsScreenKey.DATA -> "settings/data"
     SettingsScreenKey.BACKUP -> "backup"
     SettingsScreenKey.ABOUT -> "about"
@@ -1686,6 +1691,7 @@ private fun T1dmNavHost(
                 onOpenNightscout = { navController.navigate("settings/nightscout") },
                 onOpenWatch = { navController.navigate("settings/watch") },
                 onOpenPower = { navController.navigate("settings/power") },
+                onOpenBackground = { navController.navigate("settings/background") },
                 onOpenData = { navController.navigate("settings/data") },
                 onOpenAbout = { navController.navigate("about") },
                 onOpenDeath = { navController.navigate("settings/death") },
@@ -1945,6 +1951,16 @@ private fun T1dmNavHost(
                 props = props,
                 onSetProps = { d -> scope.launch { container.settingsStore.setGameProps(d) } },
             )
+        }
+        composable("settings/background") {
+            val context = LocalContext.current
+            var access by remember { mutableStateOf(BackgroundControls.read(context)) }
+            // Every fix happens on a system page; the state is re-read on the way back.
+            LifecycleResumeEffect(Unit) {
+                access = BackgroundControls.read(context)
+                onPauseOrDispose {}
+            }
+            BackgroundSettingsScreen(access = access, onFix = { BackgroundControls.open(context, it) })
         }
         composable("settings/power") {
             val scope = rememberCoroutineScope()
