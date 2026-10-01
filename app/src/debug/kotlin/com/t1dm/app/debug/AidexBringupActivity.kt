@@ -21,6 +21,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
@@ -36,6 +37,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.annotation.RequiresApi
 import java.util.Calendar
 import java.util.Date
 import java.util.TimeZone
@@ -59,6 +61,7 @@ import uniffi.t1dm_core.aidexParseRealtime
 import uniffi.t1dm_core.aidexParseResponse
 
 /** F001 CCCD write pairs the link, its 0x05 the trigger (CGM.md §4); createBond is the fallback. */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 class AidexBringupActivity : Activity() {
 
     private enum class Option { B, A }

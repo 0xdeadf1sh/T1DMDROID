@@ -21,12 +21,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.ParcelUuid
 import android.os.SystemClock
 import android.util.Log
+import androidx.annotation.RequiresApi
 import java.util.Calendar
 import java.util.Date
 import java.util.TimeZone
@@ -50,6 +52,7 @@ import uniffi.t1dm_core.aidexParseRealtime
 import uniffi.t1dm_core.aidexParseResponse
 
 /** ACTIVATE writes to the sensor; its sequence deliberately omits 0x31 prepareNewSensor. */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 class AidexProbeService : Service() {
 
     private enum class Mode { SURVIVAL, BOND, HANDSHAKE, BRINGUP, ACTIVATE, REALTIME, HISTORY }

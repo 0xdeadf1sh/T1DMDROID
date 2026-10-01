@@ -11,6 +11,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":core:ble"))
     implementation(project(":core:native"))
     implementation(project(":data"))
     implementation(project(":core:model"))

@@ -9,7 +9,10 @@ plugins {
 extensions.configure<LibraryExtension> {
     compileSdk = 36
     defaultConfig {
-        minSdk = 34
+        minSdk = 31
+    }
+    lint {
+        fatal += "NewApi"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21

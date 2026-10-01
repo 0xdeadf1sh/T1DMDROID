@@ -18,6 +18,7 @@ android {
 // Only :app depends on :watch, which reaches out only through ports.
 // Crypto and record codecs live in Rust `t1dm-watch`; this module ships only a loopback session.
 dependencies {
+    implementation(project(":core:ble"))
     implementation(project(":core:model"))
     implementation(project(":core:common"))
 

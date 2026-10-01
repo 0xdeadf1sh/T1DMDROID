@@ -9,8 +9,13 @@ plugins {
 extensions.configure<ApplicationExtension> {
     compileSdk = 36
     defaultConfig {
-        minSdk = 34
+        minSdk = 31
         targetSdk = 36
+    }
+    // Library and JVM modules are linted through the app, so the release lint pass covers them.
+    lint {
+        checkDependencies = true
+        fatal += "NewApi"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21

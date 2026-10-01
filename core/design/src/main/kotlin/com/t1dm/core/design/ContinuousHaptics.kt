@@ -167,13 +167,16 @@ internal interface HapticRenderer {
     fun oneShot(steps: List<HapticStep>)
 }
 
-private val GAME_ATTRIBUTES: VibrationAttributes by lazy {
-    VibrationAttributes.Builder(
-        AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_GAME)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-            .build(),
-    ).build()
+private val GAME_AUDIO: AudioAttributes by lazy {
+    AudioAttributes.Builder()
+        .setUsage(AudioAttributes.USAGE_GAME)
+        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+        .build()
+}
+
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+private object GameVibration {
+    val attributes: VibrationAttributes = VibrationAttributes.Builder(GAME_AUDIO).build()
 }
 
 /** Emits as media (USAGE_GAME) so it doesn't arbitrate as UNKNOWN against the app's UI ticks. */
@@ -184,7 +187,14 @@ private abstract class VibratorRenderer(
 
     protected fun emit(effect: VibrationEffect) {
         // Never throws: an absent, busy, or policy-blocked vibrator must not cost a frame.
-        runCatching { vibrator.vibrate(effect, GAME_ATTRIBUTES) }
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                vibrator.vibrate(effect, GameVibration.attributes)
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(effect, GAME_AUDIO)
+            }
+        }
     }
 
     override fun oneShot(steps: List<HapticStep>) {

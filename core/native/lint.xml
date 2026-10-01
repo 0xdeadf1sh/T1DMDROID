@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!-- uniffi probes java.lang.ref.Cleaner by reflection and falls back to JNA's below API 33. -->
+    <issue id="NewApi">
+        <ignore path="build/generated/uniffi/**" />
+    </issue>
+</lint>

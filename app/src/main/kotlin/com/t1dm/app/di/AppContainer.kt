@@ -44,6 +44,7 @@ import com.t1dm.watch.proto.WatchPalette
 import androidx.compose.ui.graphics.toArgb
 import kotlinx.coroutines.flow.drop
 import com.t1dm.app.watch.UniffiWatchSessionFactory
+import com.t1dm.core.ble.remoteLeDeviceCompat
 import com.t1dm.cgm.AidexXFamilyDriver
 import com.t1dm.cgm.ConnectedCgmRegistry
 import com.t1dm.cgm.Ct5FamilyDriver
@@ -285,6 +286,17 @@ private fun sensorStartMs(latest: CgmReading, heldStartMs: Long?): Long? =
 private fun sensorAgeMin(latest: CgmReading, heldStartMs: Long?): Int? =
     sensorStartMs(latest, heldStartMs)?.let { ((latest.tsMs - it) / 60_000L).coerceAtLeast(0L).toInt() }
 
+private fun java.io.InputStream.readAtMost(limit: Int): ByteArray {
+    val out = java.io.ByteArrayOutputStream()
+    val buf = ByteArray(DEFAULT_BUFFER_SIZE)
+    while (out.size() < limit) {
+        val n = read(buf, 0, minOf(buf.size, limit - out.size()))
+        if (n < 0) break
+        out.write(buf, 0, n)
+    }
+    return out.toByteArray()
+}
+
 /** BG only; null BG = 0.0, which the reduction excludes. */
 private fun CgmReading.toStatSample() = com.t1dm.core.model.StatSample(
     tsMs = tsMs,
@@ -385,7 +397,7 @@ class AppContainer(context: Context) {
                     // AiDEX advertises a public address (CGM.md §4).
                     deviceAt = { address ->
                         runCatching {
-                            bluetoothAdapter()?.getRemoteLeDevice(
+                            bluetoothAdapter()?.remoteLeDeviceCompat(
                                 address,
                                 android.bluetooth.BluetoothDevice.ADDRESS_TYPE_PUBLIC,
                             )
@@ -413,7 +425,7 @@ class AppContainer(context: Context) {
                     // CT5 advertises a static random address; a public-typed handle never connects.
                     deviceAt = { address ->
                         runCatching {
-                            bluetoothAdapter()?.getRemoteLeDevice(
+                            bluetoothAdapter()?.remoteLeDeviceCompat(
                                 address,
                                 android.bluetooth.BluetoothDevice.ADDRESS_TYPE_RANDOM,
                             )
@@ -714,7 +726,7 @@ class AppContainer(context: Context) {
                 open().use { repository.readArchive(it) }
             } catch (e: NotAnArchiveException) {
                 // The legacy document's own format tag still refuses a foreign JSON.
-                val bytes = open().use { it.readNBytes(MAX_LEGACY_BACKUP_BYTES + 1) }
+                val bytes = open().use { it.readAtMost(MAX_LEGACY_BACKUP_BYTES + 1) }
                 if (bytes.size > MAX_LEGACY_BACKUP_BYTES) {
                     throw IllegalArgumentException("file is too large to be a backup")
                 }

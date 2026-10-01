@@ -15,7 +15,12 @@ class AlertRepeatScheduler(context: Context) {
     fun schedule(cadenceMin: Int) {
         val triggerAt = SystemClock.elapsedRealtime() + cadenceMin.coerceAtLeast(1) * 60_000L
         runCatching {
-            am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent())
+            // Revoked exact-alarm access (31-32): a late repeat beats none.
+            if (am.canScheduleExactAlarms()) {
+                am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent())
+            } else {
+                am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent())
+            }
         }.onFailure { Timber.w(it, "AlertRepeatScheduler: exact alarm schedule failed") }
     }
 

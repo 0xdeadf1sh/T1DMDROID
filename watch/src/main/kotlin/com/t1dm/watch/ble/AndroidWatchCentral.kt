@@ -3,12 +3,14 @@ package com.t1dm.watch.ble
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
+import com.t1dm.core.ble.GattCallbackCompat
+import com.t1dm.core.ble.writeCharacteristicCompat
+import com.t1dm.core.ble.writeDescriptorCompat
 import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.watch.WatchGatt
 import kotlinx.coroutines.CompletableDeferred
@@ -130,7 +132,7 @@ class AndroidWatchCentral(
             val type = if (withResponse) BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
             else BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
             writeDone = CompletableDeferred()
-            val status = g.writeCharacteristic(ch, bytes, type)
+            val status = g.writeCharacteristicCompat(ch, bytes, type)
             check(status == BluetoothGatt.GATT_SUCCESS) { "writeCharacteristic($uuid) rejected: $status" }
             check(withTimeout(OP_TIMEOUT_MS) { writeDone!!.await() }) { "write to $uuid failed" }
         }
@@ -147,12 +149,12 @@ class AndroidWatchCentral(
         val cccd = control.getDescriptor(WatchGatt.CCCD)
             ?: throw IllegalStateException("CONTROL characteristic has no CCCD")
         cccdDone = CompletableDeferred()
-        val status = g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        val status = g.writeDescriptorCompat(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
         check(status == BluetoothGatt.GATT_SUCCESS) { "CCCD write rejected: $status" }
         check(withTimeout(OP_TIMEOUT_MS) { cccdDone!!.await() }) { "CCCD write failed" }
     }
 
-    private val callback = object : BluetoothGattCallback() {
+    private val callback = object : GattCallbackCompat() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             // A closed attempt's late callback must not fail or drop the live one.
             if (gatt != null && g != gatt) return
@@ -189,21 +191,21 @@ class AndroidWatchCentral(
             cccdDone?.complete(status == BluetoothGatt.GATT_SUCCESS)
         }
 
-        override fun onCharacteristicRead(
-            g: BluetoothGatt,
-            ch: BluetoothGattCharacteristic,
+        override fun onRead(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
             status: Int,
         ) {
             readDone?.complete(if (status == BluetoothGatt.GATT_SUCCESS) value else null)
         }
 
-        override fun onCharacteristicChanged(
-            g: BluetoothGatt,
-            ch: BluetoothGattCharacteristic,
+        override fun onNotify(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
-            if (ch.uuid == WatchGatt.CONTROL) emit(WatchCentralEvent.Notified(value.copyOf()))
+            if (characteristic.uuid == WatchGatt.CONTROL) emit(WatchCentralEvent.Notified(value.copyOf()))
         }
 
         override fun onReadRemoteRssi(g: BluetoothGatt, rssi: Int, status: Int) {

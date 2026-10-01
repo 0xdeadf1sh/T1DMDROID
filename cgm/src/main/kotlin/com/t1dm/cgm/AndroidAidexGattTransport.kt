@@ -3,12 +3,14 @@ package com.t1dm.cgm
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
+import com.t1dm.core.ble.GattCallbackCompat
+import com.t1dm.core.ble.writeCharacteristicCompat
+import com.t1dm.core.ble.writeDescriptorCompat
 import com.t1dm.core.model.CgmLogLevel
 import com.t1dm.core.model.CgmLogTopic
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -48,7 +50,7 @@ class AndroidAidexGattTransport(
         val cccd = c.getDescriptor(CCCD) ?: return false
         val value = if (enable) BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
         else BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
-        val status = g.writeDescriptor(cccd, value)
+        val status = g.writeDescriptorCompat(cccd, value)
         log.gatt(TAG, "CCCD $char notify=$enable → status $status")
         return status == BluetoothStatusCodes.SUCCESS
     }
@@ -58,7 +60,7 @@ class AndroidAidexGattTransport(
         val c = chars[char] ?: return false
         val type = if (withResponse) BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
         else BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-        val status = g.writeCharacteristic(c, value, type)
+        val status = g.writeCharacteristicCompat(c, value, type)
         if (status != BluetoothStatusCodes.SUCCESS) log.gatt(TAG, "write $char → status $status", CgmLogLevel.W)
         return status == BluetoothStatusCodes.SUCCESS
     }
@@ -81,7 +83,7 @@ class AndroidAidexGattTransport(
         chars.clear()
     }
 
-    private val callback = object : BluetoothGattCallback() {
+    private val callback = object : GattCallbackCompat() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             val connected = newState == BluetoothProfile.STATE_CONNECTED
             log.gatt(
@@ -111,8 +113,8 @@ class AndroidAidexGattTransport(
             )
         }
 
-        override fun onCharacteristicChanged(
-            g: BluetoothGatt,
+        override fun onNotify(
+            gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
@@ -136,8 +138,8 @@ class AndroidAidexGattTransport(
             _events.tryEmit(AidexGattEvent.Notify(char, value.copyOf(), rx))
         }
 
-        override fun onCharacteristicRead(
-            g: BluetoothGatt,
+        override fun onRead(
+            gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
             status: Int,

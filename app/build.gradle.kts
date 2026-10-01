@@ -82,6 +82,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":core:ble"))
     implementation(project(":core:common"))
     implementation(project(":core:model"))
     implementation(project(":core:native"))

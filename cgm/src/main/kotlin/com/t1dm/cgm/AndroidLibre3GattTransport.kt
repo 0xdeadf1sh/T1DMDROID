@@ -3,13 +3,15 @@ package com.t1dm.cgm
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.os.SystemClock
+import com.t1dm.core.ble.GattCallbackCompat
+import com.t1dm.core.ble.writeCharacteristicCompat
+import com.t1dm.core.ble.writeDescriptorCompat
 import com.t1dm.core.model.CgmLogLevel
 import com.t1dm.core.model.CgmLogTopic
 import java.util.UUID
@@ -103,7 +105,7 @@ class AndroidLibre3GattTransport(
         }
         recorder.write(charUuid, chunk)
         // With response: the ack is the §5.10 pacing beat. Default MTU kept (§5.10).
-        val status = g.writeCharacteristic(c, chunk, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+        val status = g.writeCharacteristicCompat(c, chunk, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
         if (status != BluetoothStatusCodes.SUCCESS) {
             log.w(TAG, "write to $charUuid rejected by the stack ($status)")
             onDone(false)
@@ -225,14 +227,14 @@ class AndroidLibre3GattTransport(
             return
         }
         val cccd = next.getDescriptor(Libre3Gatt.CCCD_UUID)
-        if (cccd == null || g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) !=
+        if (cccd == null || g.writeDescriptorCompat(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) !=
             BluetoothStatusCodes.SUCCESS
         ) {
             fail("CCCD write for ${next.uuid} could not be initiated")
         }
     }
 
-    private val callback = object : BluetoothGattCallback() {
+    private val callback = object : GattCallbackCompat() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
@@ -288,8 +290,8 @@ class AndroidLibre3GattTransport(
             done?.invoke(ok)
         }
 
-        override fun onCharacteristicChanged(
-            g: BluetoothGatt,
+        override fun onNotify(
+            gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {

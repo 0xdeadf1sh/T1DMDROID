@@ -3,11 +3,13 @@ package com.t1dm.app.service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 
 /** HyperOS refuses am start-foreground-service on components; adb broadcast starts the FGS. */
 class AidexProbeReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
         when (intent.action) {
             AidexProbeService.ACTION_PROBE_START,
             AidexProbeService.ACTION_PROBE_BOND,
