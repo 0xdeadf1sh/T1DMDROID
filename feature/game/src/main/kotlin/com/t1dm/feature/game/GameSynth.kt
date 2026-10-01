@@ -7,7 +7,7 @@ import kotlin.math.floor
 import kotlin.math.ln
 import kotlin.math.sin
 
-/** [render] allocates nothing; phase stays `[0,1)`. Control via volatile fields/bitmask, no lock */
+/** render allocates nothing, per-sample interpolation; control via volatiles, no locks on path. */
 class GameSynth(private val sampleRate: Int) {
 
 
@@ -19,7 +19,7 @@ class GameSynth(private val sampleRate: Int) {
     @Volatile
     var load = 0f
 
-    /** Engine voice level in `[0, 1]`. Zero silences it without stopping the generator. */
+    /** Engine voice's own level in [0,1]; zero silences it without stopping the generator. */
     @Volatile
     var engine = 0f
 
@@ -112,7 +112,7 @@ class GameSynth(private val sampleRate: Int) {
                 }
                 life[v]--
                 val age = attack[v]
-                // 2 ms rise, else a landing steps; reclaim test is the decay branch below.
+                // 2 ms rise on every voice; reclaim test belongs to the decay branch, not attack.
                 if (age > 0) {
                     attack[v] = age - 1
                     env[v] = peak[v] * (1f - (age - 1).toFloat() / ATTACK_FRAMES)
@@ -155,7 +155,7 @@ class GameSynth(private val sampleRate: Int) {
         }
     }
 
-    /** Pitched clear of the engine bed: acquisitions above its reach, collisions below it. */
+    /** Pitched clear of the engine bed: acquisitions above it, collisions under it. */
     private fun spawn(sfx: GameSfx, gain: Float) = when (sfx) {
         GameSfx.Coin -> {
             voice(f0 = 988f, f1 = 988f, durS = 0.07f, amp = 0.26f * gain, timbre = 0.35f)
@@ -263,15 +263,15 @@ class GameSynth(private val sampleRate: Int) {
         const val IDLE_RPM = 800f
         const val MAX_RPM = 9_000f
 
-        /** REACHABLE ceiling, not [MAX_RPM]: else it never leaves its first brightness fifth. */
+        /** REACHABLE ceiling not MAX_RPM: else brightness never leaves the first fifth. */
         const val REV_FULL_RPM = TOP_RPM
 
-        /** Crank speed to fundamental. Idle lands at 40 Hz. */
+        /** Crank speed to fundamental: idle=40Hz (phone-audible engine). */
         const val RPM_PER_HZ = 20f
 
         const val ENGINE_TRIM = 0.34f
 
-        /** One-pole per-sample: at 48 kHz, ~25 ms pitch, ~12 ms gain, ~30 ms master. */
+        /** One-pole coeffs at 48 kHz: ~25 ms pitch, ~12 ms gain, ~30 ms master. */
         const val PITCH_GLIDE = 0.0008f
         const val GAIN_GLIDE = 0.0018f
         const val MASTER_GLIDE = 0.0007f

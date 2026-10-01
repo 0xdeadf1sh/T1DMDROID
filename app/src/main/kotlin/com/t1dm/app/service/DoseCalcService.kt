@@ -15,7 +15,7 @@ import kotlinx.coroutines.launch
 import timber.log.Timber
 import kotlin.math.roundToInt
 
-/** Foreground host for the §5 rolled grid search; advisory only, never actuates insulin. */
+/** Foreground host for the rolled grid search (§5); advisory only, never actuates insulin. */
 class DoseCalcService : LifecycleService() {
 
     private lateinit var container: AppContainer
@@ -41,7 +41,7 @@ class DoseCalcService : LifecycleService() {
                 searchJob = lifecycleScope.launch {
                     runCatching { container.runBolusAdvice(grams, gi, manualTargetMgdl = target) }
                         .onFailure { Timber.tag(TAG).w(it, "bolus advice failed") }
-                    // runCatching hides cancellation; stopSelf only if THIS job is still current.
+                    // runCatching swallows a superseded cancel; stop only if THIS job is current.
                     if (coroutineContext[Job] === searchJob) stopSelf(startId)
                 }
             }
@@ -95,7 +95,7 @@ class DoseCalcService : LifecycleService() {
         const val EXTRA_GI = "gi"
         const val EXTRA_TARGET_MGDL = "targetMgdl"
 
-        /** [targetMgdl] mg/dL; null keeps objective. UNBOUNDED — slider's bounds are the limit. */
+        /** [targetMgdl] mg/dL; null leaves objective; UNBOUNDED — only the slider limits it. */
         fun recommend(context: Context, carbG: Int = 0, gi: Int = DEFAULT_GI, targetMgdl: Double? = null) {
             val i = Intent(context, DoseCalcService::class.java).apply {
                 action = ACTION_RECOMMEND

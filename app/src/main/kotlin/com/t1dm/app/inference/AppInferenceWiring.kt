@@ -1,6 +1,6 @@
 package com.t1dm.app.inference
 
-import com.t1dm.cgm.AidexXSourceRegistry
+import com.t1dm.cgm.ConnectedCgmRegistry
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.ReadingFlag
@@ -21,10 +21,10 @@ import java.util.TreeMap
 
 private const val GRID_MS = 300_000L
 
-/** Trailing per-5-min mg/dL series; WARMUP/INVALID excluded (§3.1), gaps carried forward. */
+/** Trailing mg/dL/5min; WARMUP/INVALID excluded (§3.1), gaps carried, null below minSteps. */
 class RoomBgHistoryProvider(
     private val repository: T1dmRepository,
-    private val registry: AidexXSourceRegistry,
+    private val registry: ConnectedCgmRegistry,
 ) : BgHistoryProvider {
 
     override suspend fun dosingBgSeries(maxSteps: Int, minSteps: Int): BgSeries? =
@@ -48,7 +48,7 @@ class RoomBgHistoryProvider(
         }
     }
 
-    /** Fit series: MEASURED only, uncovered slots NaN not carried forward (SPEC §1). */
+    /** MEASURED only; uncovered slot stays NaN, not carried forward (SPEC/invariants.md §1). */
     override suspend fun fitBgSeries(maxSteps: Int, minSteps: Int): BgSeries? {
         val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return null
         return measuredSeries(repository.recentReadings(srcId, maxSteps + BG_SERIES_ROW_MARGIN), srcId, maxSteps, minSteps)
@@ -92,7 +92,7 @@ class RoomBgHistoryProvider(
         return BgSeries(out, anchorTsMs = anchor, gridStartMs = start, sourceId = srcId.value)
     }
 
-    /** Trailing slots holding model output: promoted RECONSTRUCTED rows plus spliced bg_infill. */
+    /** Model-output slots: counts RECONSTRUCTED rows and unpromoted bg_infill values. */
     override suspend fun reconstructedSlots(maxSteps: Int): Set<Long> {
         if (maxSteps <= 0) return emptySet()
         val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return emptySet()
@@ -120,7 +120,7 @@ class RoomBgHistoryProvider(
             fromModel.add(f.ts)
         }
         if (fromModel.isEmpty()) return emptySet()
-        // Carry: series holds the last value across uncovered slots, so reconstruction persists.
+        // Carried like [series]: a reconstruction stands in until something else covers the slot.
         val out = HashSet<Long>(fromModel)
         var ts = oldest
         var carrying = false
@@ -131,7 +131,7 @@ class RoomBgHistoryProvider(
         return out
     }
 
-    /** Warmup-gate numerator: distinct slots covered by a MEASURED, NORMAL reading. */
+    /** WARMUP-gate numerator: distinct slots holding real sensor signal. */
     override suspend fun measuredStepsInWindow(windowSteps: Int): Int {
         if (windowSteps <= 0) return 0
         val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return 0
@@ -152,7 +152,7 @@ class RoomBgHistoryProvider(
     }
 }
 
-/** Telemetry as one JSON blob in the kv store; malformed or absent decodes as empty map. */
+/** JSON blob in kv store, off-schema so :inference needs no Room; corrupt row resets counters. */
 class KvTelemetryStore(private val repository: T1dmRepository) : TelemetryStore {
 
     override suspend fun load(): Map<String, CumulativeTelemetry> {

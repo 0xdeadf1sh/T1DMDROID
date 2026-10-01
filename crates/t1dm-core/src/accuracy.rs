@@ -87,12 +87,12 @@ pub fn accuracy_at_horizons(
     Ok(AccuracyReport { horizons, n_pairs, min_samples })
 }
 
-// No rmse_macro (one patient: macro=micro); DTS grid/Trend Matrix are device metrics, unpublished
+// DTS grid and Trend Matrix have no T1DMAI counterpart — device metrics; never quote as published.
 
 /// The seven forecast quantile levels, ascending — `SPEC/invariants.md` §6.
 pub(crate) const QUANTILE_LEVELS: [f64; 7] = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95];
 
-// Four metric levels (§6.1); the two pairs are numerically equal today, named separately.
+// Four metric levels (§6.1); the two pairs are equal today but named separately, on purpose.
 const METRIC_BAND_TAU_LO: f64 = 0.25;
 const METRIC_BAND_TAU_HI: f64 = 0.75;
 const HYPO_ALARM_QUANTILE_TAU: f64 = 0.25;
@@ -102,7 +102,7 @@ const HYPER_ALARM_QUANTILE_TAU: f64 = 0.75;
 const OUTER_TAU_LO: f64 = 0.05;
 const OUTER_TAU_HI: f64 = 0.95;
 
-/// mg/dL slack on ascending-fan check (risk-space equal levels differ via f_inv rounding).
+/// mg/dL slack on ascending-fan check: risk-equal levels differ by rounding through `f_inv`.
 const FAN_ORDER_TOL_MGDL: f64 = 1e-6;
 
 /// Persistence RMSE below which the skill score is `None` (`suite.py`'s `> 1e-9` guard).
@@ -137,7 +137,7 @@ pub fn alarm_fan_edges() -> Option<AlarmFanEdges> {
     })
 }
 
-/// bands_mgdl: steps×7 row-major ascending τ, mg/dL; last_bg is the made_at persistence anchor.
+/// `bands_mgdl`: steps×7 row-major, ascending τ, mg/dL. `last_bg`: measured BG at `made_at` (§6.3).
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ForecastWindow {
     pub bands_mgdl: Vec<f64>,
@@ -185,7 +185,7 @@ pub struct ScoredPoint {
     pub dts_risk: f64,
 }
 
-/// *_point=horizon step, *_winmean pools 0..=k; DTS shares never sum to A+B; points empty on band.
+/// `*_point`=horizon step, `*_winmean` pools 0..=k. DTS's five shares: never sum into an A+B.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct PointBlock {
     pub rmse_point: f64,
@@ -216,7 +216,7 @@ pub struct ExcursionAccuracy {
     pub n_pred: u32,
 }
 
-/// Truth-major 5×5: cell (t,p) at t*TREND_BINS+p; category_pct empty (not zeroed) if unscored.
+/// Truth-major 5×5: `(t,p)` at `t*TREND_BINS+p`. `category_pct` empty, not zeroed, if unscored.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct TrendMatrix {
     pub counts: Vec<u32>,
@@ -225,7 +225,7 @@ pub struct TrendMatrix {
     pub n: u32,
 }
 
-/// band=headline (§6.2 projection), median_line=same on median; read beside band_cov50/width50.
+/// `band` = headline (§6.2 projection); wider band only lowers error — read beside band_cov50.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct HorizonMetrics {
     pub horizon_min: u32,
@@ -280,7 +280,7 @@ fn band_project(truth: f64, lo: f64, hi: f64) -> f64 {
     truth.max(lo).min(hi)
 }
 
-/// Clarke zones as (A,B,C,D,E) flags (suite.py::_clarke); a partition, exactly one set.
+/// Clarke zone flags `(A,B,C,D,E)` for one pair (`suite.py::_clarke`); a partition, one set.
 fn clarke_zones(pred: f64, truth: f64) -> (bool, bool, bool, bool, bool) {
     let pb = pred.max(1.0);
     let tb = truth.max(1.0);
@@ -314,7 +314,7 @@ fn clarke_zone(pred: f64, truth: f64) -> ClarkeZone {
 /// Allocation ceiling; a lattice this large already resolves the grid past any display.
 const CLARKE_GRID_MAX_CELLS: usize = 4_000_000;
 
-/// Classify (truth,pred) lattice, TRUTH-MAJOR: (i,j) at i*pred_len+j; Err if non-finite/oversized.
+/// TRUTH-MAJOR lattice: cell `(i,j)` at `i*pred_axis.len()+j`. Non-finite or past ceiling: `Err`.
 #[uniffi::export]
 pub fn clarke_zone_grid(
     truth_axis: Vec<f64>,
@@ -344,13 +344,13 @@ const DTS_RISK_COEF_OVER: f64 = 2.75;
 /// …and at or below. Reading high is penalised harder on purpose: it drives an over-dose.
 const DTS_RISK_COEF_UNDER: f64 = 2.25;
 
-/// Both axes floored (mg/dL) before ratio; per-axis flooring reproduces Table A1 borders exactly.
+/// Floors each axis independently (mg/dL) — reproduces paper's Table A1; its own clause doesn't.
 const DTS_CLAMP_MGDL: f64 = 50.0;
 
 /// `|risk|` ceilings of zones A–D; above the last is E. Each bound is CLOSED.
 const DTS_ZONE_CEILINGS: [f64; 4] = [0.5, 1.5, 2.5, 3.5];
 
-/// DTS risk, positive where forecast read HIGH; NOT §4's risk space (log-ratio of two values).
+/// DTS risk (+=forecast HIGH). NOT §4's risk space (log-ratio of two). Zone A: +19.94%/−19.93%.
 #[inline]
 pub(crate) fn dts_risk(pred: f64, truth: f64) -> f64 {
     let m = pred.max(DTS_CLAMP_MGDL);
@@ -395,7 +395,7 @@ fn dts_zone(pred: f64, truth: f64) -> DtsZone {
     dts_zone_of_abs_risk(dts_risk(pred, truth).abs())
 }
 
-/// Classify DTS zones of a (truth,pred) lattice, TRUTH-MAJOR: (i,j) at i*pred_len+j.
+/// TRUTH-MAJOR lattice into DTS zones: cell `(i,j)` at `i*pred_axis.len()+j`. Err past ceiling.
 #[uniffi::export]
 pub fn dts_zone_grid(truth_axis: Vec<f64>, pred_axis: Vec<f64>) -> Result<Vec<DtsZone>, CoreError> {
     let bad = |reason: String| CoreError::Internal { reason };
@@ -419,18 +419,18 @@ pub fn dts_zone_grid(truth_axis: Vec<f64>, pred_axis: Vec<f64>) -> Result<Vec<Dt
 
 pub(crate) const TREND_BINS: usize = 5;
 
-/// Four edges of 5 rate bins, mg/dL/min (Table 2); closed OUTER: ±2→±1 bin, ±1→flat bin.
+/// Four interior edges of 5 rate bins, mg/dL/min (Table 2); closed OUTER: ±2 to ±1, ±1 to flat.
 pub(crate) const TREND_BIN_EDGES: [f64; 4] = [-2.0, -1.0, 1.0, 2.0];
 
-/// Trend-rate lookback, §1 steps: 15min (paper's 15-45min window). NOT §6.3's single-step rate.
+/// 15-min lookback (§1 steps), shortest of paper's 15–45 min window. NOT §6.3's single-step rate.
 pub(crate) const TREND_LOOKBACK_STEPS: usize = 3;
 
 pub(crate) const TREND_CATEGORIES: usize = 5;
 
-/// Reference-BG cuts selecting the category table (mg/dL); NOT §6.3's regions (70/180 split).
+/// Reference-BG cuts selecting category table (mg/dL). NOT §6.3's regions (split at 70/180).
 const TREND_REGION_CUTS: [f64; 2] = [100.0, 180.0];
 
-/// Five risk tables, TRUTH-MAJOR table[true_bin][pred_bin]; static not const, one shared address.
+/// TRUTH-MAJOR `table[true_bin][pred_bin]`, transposed from monitor-major figures; figures win.
 static TREND_CATEGORY_TABLES: [[[u8; TREND_BINS]; TREND_BINS]; 3] = [
     // Truth below 100 mg/dL.
     [
@@ -559,7 +559,7 @@ struct Scored {
     last_bg: f64,
 }
 
-/// keep_points decides RETENTION only, never derivation; both bases classify the same way.
+/// `keep_points`: whether the per-pair series is RETAINED, not derived; both bases count the same.
 fn point_block(
     pred_k: &[f64],
     true_k: &[f64],
@@ -622,7 +622,7 @@ fn point_block(
     }
 }
 
-/// edge: τ-lower for hypo, τ-upper for hyper (§6.1); precision forgives within tol, recall strict
+/// `edge`: τ-lower for hypo, τ-upper for hyper (§6.1). Precision forgives false alarm within `tol`.
 fn excursion(edge: &[f64], truth: &[f64], threshold: f64, tol: f64, is_hypo: bool) -> ExcursionAccuracy {
     let (mut n_true, mut n_pred, mut tp, mut prec_hits) = (0u32, 0u32, 0u32, 0u32);
     for (&p, &t) in edge.iter().zip(truth.iter()) {
@@ -662,7 +662,7 @@ fn cgega_from_counts(counts: &CgEgaCounts) -> CgEga {
     CgEga { hypo: region(0), eu: region(1), hyper: region(2) }
 }
 
-/// Scores windows per horizon (§6.2 band) + CG-EGA (§6.3); include_cgega gates the latter.
+/// Scores matured windows per horizon (§6.2 band) + CG-EGA (§6.3); `include_cgega=false` -> `None`.
 #[uniffi::export]
 pub fn forecast_metrics_suite(
     windows: Vec<ForecastWindow>,
@@ -855,7 +855,7 @@ pub fn forecast_metrics_suite(
         });
     }
 
-        // Truth FIRST (cg_ega.py's y_true,y_pred order); a transpose yields a different table.
+        // Truth FIRST: first trajectory is the axis reference; a transpose looks fine but is wrong.
     let cgega = include_cgega.then(|| {
         let mut counts: CgEgaCounts = [[0; 3]; 3];
         for s in &scored {
@@ -971,7 +971,7 @@ mod tests {
         }
     }
 
-    /// Re-aggregating the series must reproduce the four published shares (pins it to reference).
+    /// Re-aggregating must reproduce the 4 published shares — reference has no per-point zones.
     fn assert_clarke_points(got: &PointBlock, what: &str) {
         let pts = &got.points;
         let n = pts.len();
@@ -1215,7 +1215,7 @@ mod tests {
     }
 
 
-    /// Table A1 border polylines vs closed form; tolerance in RISK units (0.05 low, 3.7 high).
+    /// Table A1 borders vs closed form; tolerance in RISK units: 0.05 mg/dL low, 3.7 high.
     #[test]
     fn dts_risk_reproduces_the_published_border_vertices() {
         // (threshold, [(reference, monitor)]) — the four borders, lower then upper.
@@ -1350,7 +1350,7 @@ mod tests {
             }
         }
 
-        // 3. Main table 4/5 = FDA iCGM cells: fcast>+1 & truth<−2, or fcast<−1 & truth>+2.
+        // 3. Main table's 4/5 = FDA iCGM cells: pred>+1 & truth<−2, or pred<−1 & truth>+2.
         assert_eq!(main[0][3], 5);
         assert_eq!(main[0][4], 5);
         assert_eq!(main[4][0], 4);
@@ -1381,7 +1381,7 @@ mod tests {
             }
         }
 
-        // 6. An overestimated rate never scored more leniently than its mirrored underestimate.
+        // 6. An overestimated rate is never scored more leniently than its mirrored underestimate.
         for t in &TREND_CATEGORY_TABLES {
             for tb in 0..TREND_BINS {
                 for pb in (tb + 1)..TREND_BINS {
@@ -1406,7 +1406,7 @@ mod tests {
 
     #[test]
     fn trend_matrix_is_truth_major_and_anchors_on_persistence() {
-        // Horizon 15min ⇒ k=2, 3-step lookback lands on anchor; truth +3.0 mg/dL/min (top bin).
+        // Horizon 15min => k=2; 3-step lookback lands on anchor. Truth +3.0, median flat.
         let w = window(&[100.0, 100.0, 100.0], &[100.0, 100.0, 145.0], 100.0, 4.0);
         let s = forecast_metrics_suite(vec![w], vec![15], cfg(), false).unwrap();
         let m = &s.horizons[0].trend;

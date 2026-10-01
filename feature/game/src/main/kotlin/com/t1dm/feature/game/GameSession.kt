@@ -26,7 +26,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 
-/** Decimation buckets place a max-before-min cliff at edges, not the data; 1e6 = ~9.5y grid. */
+/** Decimation lifted out: min/max envelope decimation orders extremes by time, not the data. */
 private const val TRACK_MAX_POINTS = 1_000_000
 
 /** Immutable; shared by the loop and the draw. */
@@ -63,7 +63,7 @@ suspend fun loadGameScene(
     GameScene(track, paint, unit, frame.tzOffsetMin, buildProps(track, readings, thresholds, propDensity))
 }
 
-/** Rebuilt at HUD_PERIOD_NS, never frame rate: the one cell whose change recomposes anything. */
+/** Rebuilt at HUD_PERIOD_NS, never at frame rate: the one cell whose change recomposes anything. */
 data class GameHud(
     val distanceM: Float,
     val run: RunState,
@@ -89,13 +89,13 @@ private const val SMOKE_HZ = 26f
 /** Used only modulo the puff count; wraps to keep the phase out of float's coarse range. */
 private const val SMOKE_PHASE_WRAP = 1_048_576f
 
-/** Runs on game dispatcher, never inference/default; withFrameNanos on MAIN returns the stamp. */
+/** Runs on T1dmDispatchers.game, never inference/default; snapshot touched by commit/HUD only. */
 internal suspend fun runGameLoop(
     /** World x of the tap, not the track's origin. */
     dropAtX: Float,
     /** Once, on the game thread, after the first publish; caller keeps the chart up until then. */
     onFirstFrame: suspend () -> Unit,
-    /** World x camera opens on; the track's lead must sit outside the view, not shift it. */
+    /** World x the camera opens on; the track's lead must sit outside the view, not shift it. */
     seatAtX: Float,
     world: GameWorld,
     bus: GameFrameBus,
@@ -134,7 +134,7 @@ internal suspend fun runGameLoop(
         hudAtNs = atNs
         hud.value = GameHud(distanceM = s.distanceM, run = s.run, hold = gate.holds.primary)
     }
-    // Terminal run is a hold: simulating a frozen scene wastes 60 FFI round trips/s; loop-local.
+    // A terminal run is a hold: simulating it is sixty FFI round trips a second of a frozen frame.
     var terminal = false
     var simS = 0f
 
@@ -151,11 +151,11 @@ internal suspend fun runGameLoop(
         // Placement is itself a hold: the frame it consumes is dropped rather than simulated.
         val placing = !placed || commands.reset
         if (placing) {
-            // Opens on the chart's span, so the panel is identical before and after Drive.
+            // Opens on the chart's span, so the panel matches before and after Drive is tapped.
             zoom.seatAt(viewport.visibleWidthM)
             lastSpeed = 0f
         }
-        // Read BEFORE opening: off last frame's state, the loop owes the caller a frame.
+        // Read BEFORE opening: off last frame's state the loop would owe the caller a frame of sim.
         val animating = !gate.paused && presentDt > 0f
         // Last frame's speed: the view is sized before the solver runs.
         val viewW = if (animating) zoom.step(viewport.zoomedWidthM, lastSpeed, presentDt / 1000f) else zoom.spanM
@@ -179,11 +179,11 @@ internal suspend fun runGameLoop(
                 onFirstFrame()
             }
             placed = true
-            // At once, not the cadence: dismisses the terminal card the instant Restart is pressed.
+            // At once, not at cadence: this dismisses the terminal card the instant Restart hits.
             pushHud(s, nowNs)
         } else if (dtMs > 0f) {
             simS += dtMs / 1000f
-            // Ramp before stepping: a boolean step from rest lifts the nose at this thrust/weight.
+            // Ramp before stepping: a boolean step from rest lifts the nose at this thrust ratio.
             controls.ramp(dtMs / 1000f)
             val s = world.step(dtMs, controls.throttle, controls.brake)
             camera.follow(s.x, s.y, s.vx, s.vy, viewW, viewH, trackLength, dtMs / 1000f)
@@ -201,7 +201,7 @@ internal suspend fun runGameLoop(
                 pushHud(s, nowNs)
             }
         } else if (opening && animating) {
-            // Republish every frame, invalidates on commit only; state(), not step(), eases camera.
+            // Republish every frame; state() not step(): shown not driven; camera eases the span.
             val s = world.state()
             camera.follow(s.x, s.y, 0f, 0f, viewW, viewH, trackLength, presentDt / 1000f)
             publish(bus, s, controls, camera, viewW, viewH, zoom.carShown, zoom.liftM, exhaustPhase, progressOf(s.x), simS)
@@ -209,7 +209,7 @@ internal suspend fun runGameLoop(
             // The reason can change while the answer does not, and the banner names the reason.
             hud.value = hud.value.copy(hold = gate.holds.primary)
         }
-        // Haptic layer is finite, re-armed: ceasing to ask IS the stop; the synth must be told.
+        // The haptic layer is finite and re-armed, so ceasing to ask IS the stop; synth must know.
         if (paused) feel.hold()
         lastPaused = paused
     }

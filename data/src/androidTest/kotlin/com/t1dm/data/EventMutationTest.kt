@@ -25,7 +25,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** Instrumented against production BundledSQLiteDriver: inWriteTx only reachable configured. */
+/** Instrumented on production BundledSQLiteDriver: inWriteTx reachable via a real driver only. */
 @RunWith(AndroidJUnit4::class)
 class EventMutationTest {
 
@@ -65,7 +65,7 @@ class EventMutationTest {
             tzOffsetMin = 0, note = "NovoRapid", updatedAt = nowMs, loggedAtMs = nowMs,
         )
 
-    /** Tombstone outranks the row even with no clock advance, else a restore revives it. */
+    /** Tombstone outranks the retired row at the same clock time, else a restore revives it. */
     @Test
     fun deleting_a_dose_leaves_a_tombstone_with_a_strictly_newer_stamp() = runTest {
         val row = repo.logLoggedDose(dose())
@@ -127,7 +127,8 @@ class EventMutationTest {
         assertNotNull("and it is still queued", db.outboxDao().byId(id))
     }
 
-    /** Rail window is the LATER of pre/post-edit action ends; post-edit alone leaves stale IOB. */
+
+    /** Rail's window is the LATER of pre/post-edit ends; else invalidated IOB stays wrong. */
     @Test
     fun an_edit_that_shortens_a_dose_keeps_the_original_action_end() = runTest {
         val row = repo.logLoggedDose(dose(durationMin = 360.0))
@@ -156,7 +157,7 @@ class EventMutationTest {
         assertEquals(nowMs + 1_000, repo.latestDoseMutationMs())
     }
 
-    /** Log-gap mark is pinned by when the phone was TOLD, so retiming forward can't quiet it. */
+    /** The log-gap mark is pinned by when the phone was TOLD; retiming forward can't quiet it. */
     @Test
     fun retiming_a_dose_forward_cannot_move_the_log_gap_mark_later() = runTest {
         val row = repo.logLoggedDose(dose(ts = nowMs - 5 * 3_600_000L))

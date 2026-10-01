@@ -10,7 +10,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** FakeForecastPort is linear; by roll end it applies the whole mgdlPerU/mgdlPerG per unit. */
+/** FakeForecastPort is linear: exact figures, whole mgdlPerU/mgdlPerG applied by roll end. */
 class SensitivityProbeTest {
 
     private val now = 1_900_000_000_000L
@@ -110,7 +110,7 @@ class SensitivityProbeTest {
         assertNull(probeOf(FakeForecastPort()).probe(now, flat))
     }
 
-    /** RollingForecaster re-anchors only candidate; announced meal lands at a different instant. */
+    /** RollingForecaster re-anchors only candidate to zone's first bucket; announced differs. */
     @Test
     fun both_counterfactuals_ride_candidate_so_the_forecaster_re_anchors_them_alike() = runTest {
         val seen = mutableListOf<ForecastRequest>()

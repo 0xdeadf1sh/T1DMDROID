@@ -5,7 +5,14 @@ plugins {
     id("t1dm.android.rust")
 }
 
-val crateDir = rootProject.layout.projectDirectory.dir("crates/t1dm-core")
+// One entry per cdylib the app links: package, the debug .so library-mode bindgen reads, bindgen bin.
+data class Crate(val pkg: String, val lib: String, val bindgen: String)
+
+val crates = listOf(
+    Crate("t1dm-core", "libt1dm_core.so", "uniffi-bindgen"),
+    Crate("libre3-core", "liblibre3_core.so", "libre3-uniffi-bindgen"),
+)
+val crateDirs = crates.map { rootProject.layout.projectDirectory.dir("crates/${it.pkg}") }
 val generatedUniffiDir = layout.buildDirectory.dir("generated/uniffi")
 val generatedJniLibsDir = layout.buildDirectory.dir("generated/jniLibs")
 
@@ -42,17 +49,17 @@ fun onPath(exe: String): Boolean =
 // Debug, not release: release strips the metadata symbols library-mode bindgen reads.
 val generateUniffiBindings = tasks.register<Exec>("generateUniffiBindings") {
     group = "rust"
-    description = "Build the host cdylib and generate uniffi Kotlin bindings (library mode)."
+    description = "Build the host cdylibs and generate uniffi Kotlin bindings (library mode)."
     workingDir = rootProject.projectDir
-    inputs.dir(crateDir)
+    crateDirs.forEach { inputs.dir(it) }
     outputs.dir(generatedUniffiDir)
     val out = generatedUniffiDir.get().asFile.absolutePath
-    commandLine(
-        "bash", "-c",
-        "cargo build -p t1dm-core && " +
-            "cargo run -p t1dm-core --bin uniffi-bindgen -- generate " +
-            "--library target/debug/libt1dm_core.so --language kotlin --out-dir '$out'"
-    )
+    val packages = crates.joinToString(" ") { "-p ${it.pkg}" }
+    val bindgen = crates.joinToString(" && ") { (pkg, lib, bindgenBin) ->
+        "cargo run -p $pkg --bin $bindgenBin -- generate " +
+            "--library target/debug/$lib --language kotlin --out-dir '$out'"
+    }
+    commandLine("bash", "-c", "cargo build $packages && $bindgen")
 }
 
 val cargoNdkBuild = tasks.register<Exec>("cargoNdkBuild") {
@@ -60,7 +67,7 @@ val cargoNdkBuild = tasks.register<Exec>("cargoNdkBuild") {
     description = "Cross-build libt1dm_core.so for arm64-v8a into jniLibs via cargo-ndk."
     workingDir = rootProject.projectDir
     // Without these inputs Gradle calls the task up-to-date and repackages a stale .so.
-    inputs.dir(crateDir)
+    crateDirs.forEach { inputs.dir(it) }
     inputs.file(rootProject.layout.projectDirectory.file("Cargo.lock"))
     outputs.dir(generatedJniLibsDir)
     val ndk = findNdkHome()
@@ -81,10 +88,13 @@ val cargoNdkBuild = tasks.register<Exec>("cargoNdkBuild") {
     }
     if (ndk != null) environment("ANDROID_NDK_HOME", ndk)
     val out = generatedJniLibsDir.get().asFile.absolutePath
-    // Writes <out>/arm64-v8a/libt1dm_core.so; the 16 KB link args live in .cargo/config.toml.
+    // Writes <out>/arm64-v8a/<lib>; the 16 KB link args live in .cargo/config.toml. The test
+    // guard fails the task if cargo-ndk quietly copies only one of the two cdylibs.
+    val packages = crates.joinToString(" ") { "-p ${it.pkg}" }
+    val shipped = crates.joinToString(" && ") { "test -f '$out/arm64-v8a/${it.lib}'" }
     commandLine(
         "bash", "-c",
-        "cargo ndk -t arm64-v8a -o '$out' build --release"
+        "cargo ndk -t arm64-v8a -o '$out' build --release $packages && $shipped"
     )
 }
 

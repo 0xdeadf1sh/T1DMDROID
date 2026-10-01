@@ -18,17 +18,21 @@ import org.junit.Test
 class CgmScanServiceTest {
 
     @Test
-    fun `no Bluetooth scan grant refuses the start`() {
-        assertEquals(listOf(Manifest.permission.BLUETOOTH_SCAN), missingCgmGrants { false })
+    fun `either Bluetooth grant missing refuses the start`() {
+        assertEquals(
+            listOf(Manifest.permission.BLUETOOTH_CONNECT),
+            missingCgmGrants { it == Manifest.permission.BLUETOOTH_SCAN },
+        )
         assertEquals(
             listOf(Manifest.permission.BLUETOOTH_SCAN),
             missingCgmGrants { it == Manifest.permission.BLUETOOTH_CONNECT },
         )
+        assertEquals(2, missingCgmGrants { false }.size)
     }
 
     @Test
-    fun `the Bluetooth scan grant starts it`() {
-        assertTrue(missingCgmGrants { it == Manifest.permission.BLUETOOTH_SCAN }.isEmpty())
+    fun `both Bluetooth grants start it`() {
+        assertTrue(missingCgmGrants { true }.isEmpty())
     }
 
     @Test

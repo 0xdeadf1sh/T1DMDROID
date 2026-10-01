@@ -22,7 +22,7 @@ import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.sin
 
-/** Resolved ONCE from the palette; reaching for MaterialTheme would read locals in draw phase. */
+/** Resolved once from the palette; MaterialTheme reads composition locals in the draw phase. */
 class GameSkin(p: T1dmPalette) {
     val sky: Color = p.background
     val skyBand: Color = p.surface
@@ -105,13 +105,13 @@ class GameSkin(p: T1dmPalette) {
     val signText: Color = if (p.dark) p.surface else p.ink
 }
 
-/** Built once per tuning, CAR-LOCAL METRES, y flipped; a frame is translate/rotate/scale. */
+/** Built once per tuning, car-local metres, y already flipped; no geometry recomputed per frame. */
 class CarArt(tuning: CarTuning) {
     internal val halfLen = tuning.chassisHalfLen
     internal val halfHeight = tuning.chassisHalfHeight
     internal val wheelRadius = tuning.wheelRadius
 
-    /** Vertical layout anchored to the AXLE LINE, not chassis_half_height (COLLIDER's, 1.6m). */
+    /** Vertical layout anchors to the axle line, not chassis_half_height (the collider's). */
     private val axleY = halfHeight + tuning.suspensionRest * 0.40f
     private val undY = axleY - wheelRadius * 0.46f
     private val deckY = axleY - wheelRadius * 1.92f
@@ -119,7 +119,7 @@ class CarArt(tuning: CarTuning) {
     private val cageY = axleY - wheelRadius * 2.85f
     private val wingY = axleY - wheelRadius * 2.52f
 
-    /** Three fills not one shell: wheels fixed at ±0.90 half-length, ~28m long, one is a slab. */
+    /** Three fills, not one shell: wheels fixed at ±0.90 half-length, car ~28m long. */
     internal val tub = Path()
     internal val nose = Path()
     internal val bay = Path()
@@ -140,11 +140,11 @@ class CarArt(tuning: CarTuning) {
     internal val windscreen = Path()
     internal val exhaust = Path()
 
-    /** A wide soft wedge and a narrow bright core; car-local, beam sweeps with the chassis. */
+    /** Wide soft wedge, narrow bright core; car-local so the beam sweeps with the chassis. */
     internal val beamWide = Path()
     internal val beamCore = Path()
 
-    /** Car-local (y-DOWN); mouth/direction from the same two points the pipe is drawn from. */
+    /** Car-local (y-down); mouth/direction share the pipe's own two draw points, never disagree. */
     private val pipeRootX = -halfLen * 0.90f
     private val pipeRootY = axleY - wheelRadius * 0.46f - wheelRadius * 0.40f
     internal val exhaustX = -halfLen * 1.16f
@@ -169,7 +169,7 @@ class CarArt(tuning: CarTuning) {
         val plen = kotlin.math.hypot(pdx, pdy).coerceAtLeast(1e-4f)
         exhaustDirX = pdx / plen
         exhaustDirY = pdy / plen
-        // The layout above is already in canvas (y-down) sense the per-frame transform expects.
+        // Layout above is already canvas (y-down) sense, which the per-frame transform expects.
         val tubR = -l * 0.46f
         val tubF = l * 0.34f
 
@@ -231,7 +231,7 @@ class CarArt(tuning: CarTuning) {
         wing.lineTo(-l * 0.76f, wingY + r * 0.14f)
         wing.lineTo(-l * 1.20f, wingY + r * 0.30f)
         wing.close()
-        // Run PAST the deck line, buried by the bay; stopping at the outline leaves a hairline.
+        // Runs past the deck line, buried by the bay; stopping at the outline leaves a hairline.
         wingStruts.moveTo(-l * 1.12f, wingY + r * 0.20f)
         wingStruts.lineTo(-l * 1.01f, deckY + r * 0.44f)
         wingStruts.moveTo(-l * 0.82f, wingY + r * 0.06f)
@@ -247,7 +247,7 @@ class CarArt(tuning: CarTuning) {
         cage.moveTo(-l * 0.60f, cageY)
         cage.lineTo(-l * 0.94f, deckY + r * 0.34f)
 
-        // A narrow band along the A-pillar, edge-on; drawn wide reads as a second wing.
+        // A narrow band on the A-pillar, a screen edge-on; drawn wide it reads as a second wing.
         windscreen.moveTo(l * 0.05f, cageY + r * 0.14f)
         windscreen.lineTo(l * 0.38f, deckY + r * 0.34f)
         windscreen.lineTo(l * 0.27f, deckY + r * 0.32f)
@@ -257,7 +257,7 @@ class CarArt(tuning: CarTuning) {
         exhaust.moveTo(pipeRootX, pipeRootY)
         exhaust.lineTo(exhaustX, exhaustY)
 
-        // Throw in car half-lengths; long, since settled zoom shows about three car lengths.
+        // Throw in car half-lengths; long, so at settled zoom the panel shows ~3 car lengths.
         beamWide.moveTo(lampX, lampY - r * 0.16f)
         beamWide.lineTo(lampX + l * 2.60f, lampY - r * 1.85f)
         beamWide.lineTo(lampX + l * 2.60f, lampY + r * 2.05f)
@@ -294,7 +294,7 @@ private const val BEAM_CORE_A = 0.20f
 private const val PUFFS = 14
 private const val PUFF_LIFE_S = 0.6f
 
-/** Puff radius new/spent, eject/rise speed, trail fraction; PUFF_TRAIL well under physical 1. */
+/** Puff radius new/spent, eject/rise speed; PUFF_TRAIL under 1 or full trail hides other terms. */
 private const val PUFF_R0_M = 0.7f
 private const val PUFF_R1_M = 3.4f
 private const val PUFF_EJECT_MS = 24f
@@ -302,14 +302,14 @@ private const val PUFF_RISE_MS = 1.0f
 private const val PUFF_TRAIL = 0.35f
 private const val PUFF_MAX_A = 0.30f
 
-/** Coils and swing either side of the leg's axis; a FIXED count packs tighter as it compresses. */
+/** Coil count fixed: the zigzag spans mount to hub, packing tighter as the leg compresses. */
 private const val SPRING_COILS = 7
 private const val SPRING_AMP_M = 0.55f
 
 /** Matches GlucoseGraph's, so the curve is identical in either mode. */
 private const val TRACE_W = 2.2f
 
-/** Drawn BEFORE the car. STATELESS: puff i's age falls out of exhaustPhase and index, no state. */
+/** Drawn before the car. Stateless: puff i's age is i intervals ago, nothing stored. */
 internal fun DrawScope.drawSmoke(
     art: CarArt,
     f: CarFrame,
@@ -321,7 +321,7 @@ internal fun DrawScope.drawSmoke(
 ) {
     val load = f.throttleApplied.coerceIn(0f, 1f)
     if (f.run != 0 || load <= 0.02f) return
-    // Car-local (y-DOWN) to world (y-up): negate y then rotate; mouth and pipe direction.
+    // Car-local (y-down) into world (y-up): negate y, then rotate; applies to mouth and pipe dir.
     val ca = cos(f.angle)
     val sa = sin(f.angle)
     val ex = art.exhaustX
@@ -337,7 +337,7 @@ internal fun DrawScope.drawSmoke(
         // Puffs march outward as the phase advances, and recycle at the end.
         val u = ((f.exhaustPhase - floor(f.exhaustPhase)) + i) / PUFFS
         val age = u * PUFF_LIFE_S
-        // Three terms: car's motion since the puff left, the throw ALONG THE PIPE, and buoyancy.
+        // Three terms: car motion since the puff left, throw along the pipe, and buoyancy.
         val px = mouthX - f.speedMs * PUFF_TRAIL * age + ejectX * eject * age
         val py = mouthY + ejectY * eject * age + PUFF_RISE_MS * age
         val rM = PUFF_R0_M + (PUFF_R1_M - PUFF_R0_M) * u
@@ -357,7 +357,7 @@ internal fun DrawScope.drawSmoke(
     }
 }
 
-/** TRUE SCALE: legible because GameZoom drives horizontal scale to the car's own. */
+/** True scale: ground's own scale, legible because GameZoom drives it to the car's own scale. */
 fun DrawScope.drawCar(
     art: CarArt,
     f: CarFrame,
@@ -365,10 +365,10 @@ fun DrawScope.drawCar(
     camLeft: Float,
     floorPx: Float,
     world: Float,
-    /** Vertical px per world metre, distinct from world; value maps height independent of time. */
+    /** Vertical pixels/world metre, distinct from world: value maps height independent of time. */
     worldY: Float = world,
 ) {
-    // Every part from its own solved pose; paths authored y-DOWN, transform is diag*R(-angle).
+    // Every part from its own solved pose; paths authored y-down, transform scales after rotation.
     val bodySx = (f.x - camLeft) * world
     val bodySy = floorPx - f.y * worldY
     val rearSx = (f.rearX - camLeft) * world
@@ -376,7 +376,7 @@ fun DrawScope.drawCar(
     val frontSx = (f.frontX - camLeft) * world
     val frontSy = floorPx - f.frontY * worldY
 
-    // Order: legs, tub, then WHEELS ON TOP; wheels over the tub read as wheels in arches.
+    // Order: legs, tub, wheels on top; wheels over tub read as arches, ride height stays low.
     drawSuspension(art, bodySx, bodySy, f.angle, -art.mountX, rearSx, rearSy, skin, world, worldY)
     drawSuspension(art, bodySx, bodySy, f.angle, art.mountX, frontSx, frontSy, skin, world, worldY)
 
@@ -386,7 +386,7 @@ fun DrawScope.drawCar(
     canvas.scale(world, worldY)
     // World angles are counter-clockwise-positive; screen rotation is clockwise-positive.
     canvas.rotate(-f.angle * DEG_PER_RAD)
-    // Back to front, no depth test; beam goes down FIRST so the nose is drawn over its root.
+    // Back to front so each layer buries the last; beam first so nose draws over its root.
     drawPath(art.beamWide, skin.lamp.copy(alpha = BEAM_WIDE_A), style = Fill)
     drawPath(art.beamCore, skin.lamp.copy(alpha = BEAM_CORE_A), style = Fill)
     drawPath(art.frame, skin.hub, style = Stroke(width = RAIL_M, cap = StrokeCap.Round))
@@ -406,7 +406,7 @@ fun DrawScope.drawCar(
     drawCircle(skin.lamp, art.lampR, Offset(art.lampX, art.lampY))
     canvas.restore()
 
-    // After the restore: wheels are already in screen space, must not inherit the tub's transform.
+    // After restore: wheels are already in screen space, must not inherit the tub's transform.
     drawWheel(art, rearSx, rearSy, f.rearAngle, f.rearContact, skin, world, worldY)
     drawWheel(art, frontSx, frontSy, f.frontAngle, f.frontContact, skin, world, worldY)
 }
@@ -423,7 +423,7 @@ private fun DrawScope.drawSuspension(
     world: Float,
     worldY: Float,
 ) {
-    // Written out, not via canvas transform: the leg's far end is a WHEEL in a different frame.
+    // Written out, not via canvas transform: leg's far end is a wheel position, different frame.
     val ca = cos(angle)
     val sa = sin(angle)
     val wx = ca * localX - sa * art.mountY
@@ -469,7 +469,7 @@ private fun DrawScope.drawWheel(
     world: Float,
     worldY: Float,
 ) {
-    // An ELLIPSE not a circle: tyre bottom checks the curve, vertical radius rides ground scale.
+    // Ellipse, not circle: tyre's bottom is checked against the curve, needs the vertical scale.
     val rx = art.wheelRadius * world
     val ry = art.wheelRadius * worldY
     fun oval(color: androidx.compose.ui.graphics.Color, k: Float) = drawOval(
@@ -489,7 +489,7 @@ private fun DrawScope.drawWheel(
     }
     oval(skin.hub, 0.17f)
 
-    // NOT negated unlike chassis: solver's forward-positive spin is already travel direction here.
+    // Not negated unlike chassis: spin is forward-positive (slip = spin*r - v_t, game.rs).
     val a = angle
     for (k in 0 until SPOKES) {
         val t = a + k * (TAU / SPOKES)
@@ -503,7 +503,7 @@ private fun DrawScope.drawWheel(
             cap = StrokeCap.Round,
         )
     }
-    // The contact colour is information: only place the solver's per-wheel flag is visible.
+    // Contact colour is information: the only visible sign of the solver's per-wheel contact flag.
     val tread = if (contact) skin.trace else skin.rim
     for (k in 0 until TREADS) {
         val t = a + k * (TAU / TREADS)
@@ -520,7 +520,7 @@ private fun DrawScope.drawWheel(
     }
 }
 
-/** Order is load-bearing (:ui:game contract): paint goes down BEFORE the ground. */
+/** Order is load-bearing, :ui:game's contract: paint under ground buried, above reads as sky. */
 fun DrawScope.drawGameWorld(
     track: GameTrack,
     paint: WorldPaint,
@@ -532,9 +532,9 @@ fun DrawScope.drawGameWorld(
     groundPath: Path,
     paintPath: Path,
     chalk: ChalkPens,
-    /** Vertical px per world metre — see appendGroundLine; time/value scale independently. */
+    /** Vertical pixels per world metre; time and value scale independently of one another. */
     pxPerWorldY: Float = pxPerWorld,
-    /** Panel's background is the per-theme backdrop behind the whole app; filling hides it. */
+    /** The panel's per-theme backdrop paints behind the whole app; filling here would hide it. */
     fillSky: Boolean = true,
     /** Scenery, both games; null draws the bare trace. [simS]: simulated seconds, held on hold. */
     props: PropSet? = null,
@@ -558,7 +558,7 @@ fun DrawScope.drawGameWorld(
         drawGroundProps(props, propArt, skin, camLeft, camWidth, pxPerWorld, pxPerWorldY, floorPx, simS)
     }
 
-    // STROKED not filled: the curve must read exactly as with the game off; nothing below it.
+    // Stroked, not filled: must read exactly as with the game off; nothing drawn below it.
     track.appendGroundLine(groundPath, camLeft, camWidth, pxPerWorld, floorPx, pxPerWorldY)
     drawPath(groundPath, skin.trace, style = Stroke(width = TRACE_W, cap = StrokeCap.Round))
 

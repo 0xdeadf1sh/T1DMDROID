@@ -3,7 +3,7 @@ package com.t1dm.calc
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.ForecastStatus
 
-/** Only ELIGIBLE may score a candidate or clear a rail; anything else fails closed (§3.6-B/C/D). */
+/** Only ELIGIBLE may score a candidate or clear a rail; else the dependent rail fails closed. */
 enum class ForecastEligibility {
     /** Finite, monotone, non-collapsed. Anchor age unchecked. */
     ELIGIBLE,
@@ -18,7 +18,7 @@ enum class ForecastEligibility {
     MISSING,
 }
 
-/** One step in mg/dL; lowerBg/upperBg are τ=.05/.95, the outermost pair :calc reads. */
+/** One step in mg/dL; lowerBg/upperBg are τ=.05/.95, outer pair of bandsMgdl, calc's only read. */
 data class FanStep(
     val medianBg: Double,
     val lowerBg: Double,
@@ -29,7 +29,7 @@ data class FanStep(
     val bandWidth: Double get() = upperBg - lowerBg
 }
 
-/** Rolled by re-feeding the median (INFERENCE.md §9); check eligible before reading any band. */
+/** Rolled by re-feeding the median (§9); step-major; validatedSteps caps dose selection. */
 data class PredFan(
     val candidateU: Double,
     val steps: List<FanStep>,
@@ -40,18 +40,18 @@ data class PredFan(
 ) {
     val eligible: Boolean get() = eligibility == ForecastEligibility.ELIGIBLE
 
-    /** Dose decisions read this, never the whole roll; malformed validatedSteps yields empty. */
+    /** Dose decisions read this, not the whole roll; bad validatedSteps yields empty, no throw. */
     fun validatedWindow(): List<FanStep> = steps.subList(0, validatedSteps.coerceIn(0, steps.size))
 
     /** Null when the validated window is empty. */
     fun minMedianBg(): Double? = validatedWindow().minOfOrNull { it.medianBg }
 
-    /** 0-based step index in the validated window; median not lower band pins advisor at 0U. */
+    /** 0-based index in the validated window, or null; median, not lower band, avoids a pin. */
     fun firstMedianBelow(mgdl: Double): Int? =
         validatedWindow().indexOfFirst { it.medianBg < mgdl }.takeIf { it >= 0 }
 }
 
-/** announced is committed future; candidate is scored (null=do-nothing); candidateU is insulin. */
+/** announced is the committed future; candidate the dose scored, null = do-nothing baseline. */
 data class ForecastRequest(
     val rollStartMs: Long,
     val fullRollSteps: Int,
@@ -60,12 +60,12 @@ data class ForecastRequest(
     val announced: List<CurveEvent>,
     val candidate: List<CurveEvent>?,
     val candidateU: Double,
-    /** INFERENCE.md §7.1; pinned by DoseAdvisor per recommendation, else resolved live. */
+    /** §7.1. Pinned by DoseAdvisor per recommendation; null resolves from the live setting. */
     val smoothingWindow: Int? = null,
 )
 
 /** SPEC §3.2 `ForecastEngine`. */
 interface ForecastPort {
-    /** Fail-closed: non-eligible PredFan on missing model or degenerate roll; never fabricates. */
+    /** Fail-closed: a non-eligible PredFan on a missing model or degenerate roll, never throw. */
     suspend fun roll(request: ForecastRequest): PredFan
 }

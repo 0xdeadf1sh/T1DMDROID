@@ -5,13 +5,14 @@ plugins {
     id("t1dm.android.compose")
 }
 
-// keystore.properties is gitignored, so it is absent on a fresh checkout.
+// keystore.properties is gitignored; without it release signs with the debug key.
 val keystorePropsFile = rootProject.file("keystore.properties")
 val hasKeystore = keystorePropsFile.exists()
 val keystoreProps = Properties().apply {
     if (hasKeystore) keystorePropsFile.inputStream().use { load(it) }
 }
 
+// Short git SHA for the About panel.
 val gitSha: String = runCatching {
     val p = ProcessBuilder("git", "rev-parse", "--short", "HEAD")
         .directory(rootProject.projectDir).redirectErrorStream(true).start()
@@ -22,9 +23,9 @@ android {
     namespace = "com.t1dm.app"
 
     defaultConfig {
-        applicationId = "com.t1dm.app"
-        versionCode = 216
-        versionName = "0.84.2"
+        applicationId = "com.t1dm.app.main"
+        versionCode = 249
+        versionName = "0.92.0"
 
         // Single target device.
         ndk {
@@ -41,10 +42,11 @@ android {
 
     flavorDimensions += "distribution"
     productFlavors {
-        // Disclaimer compiled out via a no-op stub source set; the public flavor ships it.
+        // Personal: the daily build.
         create("personal") {
             dimension = "distribution"
         }
+        // Public: installs under a .pub id; death-mode fail-open compiled out (DeathFlavor).
         create("public") {
             dimension = "distribution"
             applicationIdSuffix = ".pub"
@@ -86,7 +88,7 @@ dependencies {
     implementation(project(":core:design"))
 
     implementation(project(":data"))
-    // :data exposes Room via `implementation`; the root names AppDatabase itself.
+    // :data exposes Room via `implementation`; the composition root names AppDatabase itself.
     implementation(libs.androidx.room.runtime)
     implementation(project(":cgm"))
     implementation(project(":sensors"))
@@ -103,12 +105,12 @@ dependencies {
     implementation(project(":feature:insulin"))
     implementation(project(":feature:exercise"))
     implementation(project(":feature:security"))
+    implementation(project(":feature:cgm"))
     implementation(project(":feature:settings"))
     implementation(project(":feature:logs"))
     implementation(project(":feature:game"))
     implementation(project(":feature:backup"))
-    // Not for drawing: :feature:dashboard exposes :ui:graph via `implementation`, so the root
-    // cannot name PredictedClock without this.
+    // Not for drawing: :feature:dashboard exposes PredictedClock only via `implementation`.
     implementation(project(":ui:graph"))
 
     implementation(libs.androidx.core.ktx)
@@ -118,8 +120,8 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.kotlinx.coroutines.android)
-    // JsonElement only, no codegen: the same JSON implementation on device and on the host JVM,
-    // which `org.json`'s unit-test stand-in is not.
+    // JsonElement only, no codegen: the backup envelope parses with the same implementation on
+    // device and on the host JVM, which `org.json` and its test stand-in do not.
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.timber)
 

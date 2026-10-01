@@ -38,7 +38,7 @@ import com.t1dm.ui.graph.CurveEditor
 import com.t1dm.ui.graph.CurvePreview
 import java.util.Locale
 
-/** customCurve has no inverse to Bezier; kept verbatim or redrawn from scratch, never nudged. */
+/** Edits the dictionary row only; a stored curve is kept verbatim or redrawn, never nudged. */
 @Composable
 fun FoodEditorScreen(
     food: Food,

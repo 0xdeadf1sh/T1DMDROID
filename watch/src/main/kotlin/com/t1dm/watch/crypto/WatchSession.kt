@@ -1,6 +1,6 @@
 package com.t1dm.watch.crypto
 
-/** X25519→HKDF→AES-128-GCM keys, SAS-confirmed. Nonce monotonic: no (key,nonce) pair repeats. */
+/** X25519->HKDF-SHA256->AES-128-GCM per direction; nonce is a windowed counter, never repeats. */
 interface WatchSession {
 
     val state: WatchSessionState
@@ -22,7 +22,7 @@ interface WatchSession {
     /** Throws unless LIVE. */
     fun seal(plaintext: ByteArray): SealedFrame
 
-    /** [frame] is the whole record. Throws on a bad tag, non-advancing seq, or epoch mismatch. */
+    /** frame is the whole record; throws on a bad tag, a non-advancing seq, or epoch mismatch. */
     fun open(frame: ByteArray): ByteArray
 
     /** Full fresh-key re-handshake at epoch 0; old keys retire at once. Returns new HELLO key. */
@@ -30,7 +30,7 @@ interface WatchSession {
 
     fun reset()
 
-    /** Reserves and persists a fresh send-nonce window. Null with no durable key material. */
+    /** Reserves and persists a fresh send-nonce window; null with no durable key material. */
     fun exportState(): WatchKeyMaterial?
 
     /** Fingerprints and counters, never raw keys. */
@@ -39,7 +39,7 @@ interface WatchSession {
 
 enum class WatchSessionState { UNPAIRED, AWAIT_PEER, AWAIT_SAS, LIVE }
 
-/** [frame]: version(1)||epoch:u32le||seq:u64le||ct||16B GCM tag (§5.1); 13B header is AEAD AAD. */
+/** frame is the whole wire record (SPEC/watch.md §5.1); seq is the nonce counter, also in frame. */
 data class SealedFrame(val seq: Long, val frame: ByteArray) {
     override fun equals(other: Any?): Boolean =
         other is SealedFrame && seq == other.seq && frame.contentEquals(other.frame)

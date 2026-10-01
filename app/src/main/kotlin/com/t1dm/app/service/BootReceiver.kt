@@ -14,7 +14,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
-/** connectedDevice type starts on BOOT_COMPLETED; widget pushed here too (no periodic update). */
+/** No RemoteViews persist across reboot; updatePeriodMillis=0 means widget needs a manual push. */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when {
@@ -55,7 +55,7 @@ private fun BroadcastReceiver.resumeMonitoring(context: Context) {
     }
 }
 
-/** ACTION_USER_UNLOCKED needs a runtime-registered receiver; unreached (not directBootAware). */
+// Unreached: LOCKED_BOOT_COMPLETED never fires here, this receiver is not directBootAware.
 private fun armUnlockResume(context: Context) {
     val app = context.applicationContext
     val onUnlock = object : BroadcastReceiver() {

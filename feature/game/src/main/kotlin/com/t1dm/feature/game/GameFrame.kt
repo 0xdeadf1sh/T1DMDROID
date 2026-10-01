@@ -9,7 +9,7 @@ open class WorldFrame {
     var camBottom = 0f
     var camWidth = VISIBLE_WIDTH_M
 
-    /** World metres visible DOWN the panel; draw derives scale/labels from this, not `WorldMap`. */
+    /** World metres visible DOWN the panel; draw derives vertical scale from this, not WorldMap. */
     var camHeight = WORLD_HEIGHT_M
 
     /** 0 at the drop, 1 at the finish. Measured from the SEAT, not the track's origin. */
@@ -19,7 +19,7 @@ open class WorldFrame {
     var simS = 0f
 }
 
-/** Flat scalars in PLAIN memory, outside Compose snapshot: reading in composition breaks that. */
+/** Flat scalars, PLAIN memory, outside Compose snapshot: the sim writes, nothing observes it. */
 class CarFrame : WorldFrame() {
     var x = 0f
     var y = 0f
@@ -44,14 +44,14 @@ class CarFrame : WorldFrame() {
     /** [com.t1dm.core.model.RunState.ordinal]; an int, so no object reference crosses threads. */
     var run = 0
 
-    /** [carLiftM]: WORLD metres above settled pose. Loop holds the solver until the drop lands. */
+    /** carLiftM: above-settled height, WORLD metres; loop holds solver until the drop lands. */
     var carShown = false
     var carLiftM = 0f
 
     /** The solver's own `throttleApplied`, not the pedal. */
     var throttleApplied = 0f
 
-    /** Emission phase in puff-intervals; wrapped, never into float's coarse range. */
+    /** Emission phase in puff-intervals, loop-advanced; wrapped, never grows into float's range. */
     var exhaustPhase = 0f
 
     fun set(
@@ -96,7 +96,7 @@ class CarFrame : WorldFrame() {
     }
 }
 
-/** THREE buffers, not two: with two, the writer's 2nd swap hands back the reader's own buffer. */
+/** Single writer (game), single reader (draw). THREE buffers: two lets writer catch the reader. */
 open class FrameBus<T : WorldFrame>(factory: () -> T) {
     private val buffers = listOf(factory(), factory(), factory())
     private var writeIndex = 0
@@ -122,7 +122,7 @@ open class FrameBus<T : WorldFrame>(factory: () -> T) {
 
 class GameFrameBus : FrameBus<CarFrame>({ CarFrame() })
 
-/** Plain volatile memory, not `mutableStateOf`: a resting finger else recomposes the screen. */
+/** Plain volatile memory, not mutableStateOf: a resting finger would recompose on every event. */
 class GameControls {
     /** 1 while held, 0 while not. Written by the composition. */
     @Volatile
@@ -138,7 +138,7 @@ class GameControls {
     var brake = 0f
         private set
 
-    /** Raw boolean fed to a ~1.4 thrust/weight motor lifts the nose first. Press over [PRESS_S]. */
+    /** A pedal is boolean, fed raw to a ~1.4 thrust ratio motor: lifts the nose before it moves. */
     fun ramp(dtS: Float) {
         throttle = approach(throttle, throttleTarget, dtS)
         brake = approach(brake, brakeTarget, dtS)
@@ -165,7 +165,7 @@ class GameControls {
     }
 }
 
-/** Published from layout, for the game thread. Plain like [GameControls]: no frame recompose. */
+/** Published out of layout for the game thread; plain memory, a rotation must not recompose it. */
 class GameViewport {
     @Volatile
     var widthPx = 0f
@@ -173,7 +173,7 @@ class GameViewport {
     @Volatile
     var heightPx = 0f
 
-    /** World metres visible ACROSS the panel — the graph window, METRES_PER_MINUTE a minute. */
+    /** World metres visible ACROSS the panel: the graph window, METRES_PER_MINUTE a minute. */
     @Volatile
     var visibleWidthM = VISIBLE_WIDTH_M
 
@@ -190,7 +190,7 @@ class GameViewport {
 
     val ready: Boolean get() = widthPx > 0f && heightPx > 0f
 
-    /** [GameZoom]'s eased target: scale = [carScalePx], so a true-scale car matches the art. */
+    /** The span GameZoom eases toward: world scale = carScalePx, car drawn at its authored size. */
     val zoomedWidthM: Float
         get() {
             if (settledWidthM > 0f) return settledWidthM

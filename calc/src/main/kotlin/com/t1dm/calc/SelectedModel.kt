@@ -11,7 +11,7 @@ interface SelectedModelHandle {
     val backendInfo: BackendInfo
     suspend fun run(input: GraphTensors): GraphOutput
 
-    /** head_raw with adapter applied; null=frozen, never papers over a failed adapter (throws). */
+    /** head_raw with adapter applied; null=frozen, never to paper over an apply failure. */
     suspend fun adapt(out: GraphOutput, gi: GraphInput): List<Double>? = null
 }
 

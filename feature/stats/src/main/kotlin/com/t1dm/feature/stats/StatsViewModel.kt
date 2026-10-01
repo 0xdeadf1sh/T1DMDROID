@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-/** Fetch/recompute run on [source]'s dispatchers. Long-lived [scope] survives Activity churn. */
+/** Runs on source's own dispatchers; long-lived scope means state survives Activity churn. */
 class StatsViewModel(
     private val source: StatsSource,
     private val scope: CoroutineScope,
@@ -39,7 +39,7 @@ class StatsViewModel(
                 _state.update { it.copy(unitSpace = u, composite = it.composite?.copy(unitSpace = u)) }
             }
         }
-        // First emission triggers initial load; TIR/TBR/TAR depend on range, so later ones reload.
+        // First emission triggers initial load; TIR/TBR/TAR need range, later change reloads.
         scope.launch {
             source.targetRange.collect { t ->
                 _state.update { it.copy(targetRange = t) }
@@ -74,7 +74,7 @@ class StatsViewModel(
     }
 
     fun setTargetRange(lowMgdl: Int, highMgdl: Int) {
-        scope.launch { source.setTargetRange(lowMgdl, highMgdl) } // re-emits targetRange → reload
+        scope.launch { source.setTargetRange(lowMgdl, highMgdl) } // re-emits targetRange, reloads
     }
 
     private fun load(window: StatsWindow, refresh: Boolean): Job {

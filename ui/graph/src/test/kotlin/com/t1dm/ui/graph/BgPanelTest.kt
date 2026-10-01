@@ -28,7 +28,7 @@ class BgPanelTest {
     private val STEP = 300_000L
 
     @Test fun curveOverlayIndexAtRejectsThePreGridWindow() {
-        // Integer division truncates toward zero; the 5min pre-grid used to resolve to bucket 0.
+        // Integer division truncates toward zero: 5min before grid start resolved to bucket 0.
         val g = 1_700_000_000_000L / STEP * STEP
         val f = buildCurveOverlay(doubleArrayOf(9.0, 1.0, 2.0), doubleArrayOf(0.5, 0.1, 0.2), g, STEP)
         assertEquals(-1, f.indexAt(g - 1))
@@ -213,7 +213,7 @@ class BgPanelTest {
 
     @Test fun noFutureInsulin_forecastEndExtendsTheHorizon() {
         val now = 1_700_000_000_000L
-        // Bucket 40 is past the 3h default; a forecast reaching bucket 44 extends the horizon.
+        // Bucket 40 is past the 3h default; bucket 44 forecast extends the horizon over it.
         val insulin = DoubleArray(48) { if (it == 40) 0.5 else 0.0 }
         val fc = pred(medians = List(44) { 110.0 }, anchor = now) // horizon end = now + 44·STEP
         assertFalse(noFutureInsulinOverForecast(overlay(insulin, now), listOf(fc), now))
@@ -237,7 +237,7 @@ class BgPanelTest {
         val trace = buildSmoothedTrace(readings, UnitSpace.MgDl, smoothMgdl = { it.map { v -> v + 5.0 }.toDoubleArray() })
         assertEquals(3, trace.size)
         assertEquals(t0 + STEP, trace.tsMs[1])
-        assertEquals(125f, trace.ys[1], 1e-4f)                    // 120 smoothed(+5), stays mg/dL
+        assertEquals(125f, trace.ys[1], 1e-4f) // 120 smoothed(+5), stays mg/dL
         val mmol = buildSmoothedTrace(readings, UnitSpace.MmolL, smoothMgdl = { it.copyOf() })
         assertEquals((140f / 18.0182f), mmol.ys[2], 1e-4f)
     }
@@ -252,7 +252,7 @@ class BgPanelTest {
     }
 
     @Test fun smoothedTrace_offWindowDrawsTheRawSignal() {
-        // "Off" (window 1) makes the smoother identity: overlay must LIE ON raw, not fail to EMPTY.
+        // "Off" makes smoother identity: overlay must LIE ON raw trace, not fail closed to EMPTY.
         val t0 = 1_700_000_000_000L
         val readings = listOf(reading(t0, 96), reading(t0 + STEP, 131), reading(t0 + 2 * STEP, 118))
         val trace = buildSmoothedTrace(readings, UnitSpace.MgDl, smoothMgdl = { it.copyOf() })
@@ -306,7 +306,7 @@ class BgPanelTest {
         assertEquals(24, s.extrapolatedSteps)
     }
 
-    /** Decides ink and whether other fans keep §8.4 correction; every reaching case is pinned. */
+    /** Decides ink and whether other fans keep their §8.4 correction; every case is pinned here. */
     @Test fun rolledSeries_paintsBandOnlyWhenTheTailIsLongEnoughAndSound() {
         val twoHours = buildRolledSeries(rolled(DoubleArray(24) { 120.0 }, requestedHours = 2.0), UnitSpace.MgDl, null)!!
         assertFalse("a roll at the validated horizon paints no band", twoHours.paintsBand())
@@ -332,7 +332,7 @@ class BgPanelTest {
         assertNull(buildRolledSeries(null, UnitSpace.MgDl, null))
     }
 
-    /** Safety pin: excursionsOf takes only List<ModelPrediction>; RolledForecast can't alert. */
+    /** Safety pin: `excursionsOf` takes only predictions; `RolledForecast` can't convert to one. */
     @Test fun rolledForecast_cannotReachTheAlertingPath() {
         val anchor = 1_700_000_000_000L
         // A roll whose tail collapses to 20 mg/dL far past the validated 2 h.

@@ -14,7 +14,7 @@ import com.t1dm.data.db.LoggedMealDao
 import com.t1dm.data.db.LoggedMealEntity
 import com.t1dm.data.db.toDoubleList
 
-/** Each row carries own curve params (stable across preset changes); window reads key on tsMs. */
+/** Curve params per row (stable across presets). Window keys tsMs; caller pads for acting tail. */
 class RoomDoseStore(
     private val engine: CurveEngine,
     private val loggedDoses: LoggedDoseDao,
@@ -31,7 +31,7 @@ class RoomDoseStore(
     override suspend fun basalInjectionEvents(fromMs: Long, toMs: Long): List<CurveEvent> =
         loggedDoses.inRange(fromMs, toMs).filter { it.kind == DoseKind.BASAL }.map { it.toCurveEvent() }
 
-    /** One window read for both halves; filter keeps order, so each half matches its call. */
+    /** One window read for both halves; filter keeps order, matching each half to its call. */
     override suspend fun insulinAndBasalInjectionEvents(
         fromMs: Long,
         toMs: Long,

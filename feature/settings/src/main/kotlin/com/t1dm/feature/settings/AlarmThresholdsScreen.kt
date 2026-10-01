@@ -2,7 +2,7 @@ package com.t1dm.feature.settings
 
 import androidx.compose.runtime.Composable
 
-/** mg/dL, unbounded; out-of-order warns not blocks. Raised threshold can't silence low (§3.6-A). */
+/** mg/dL, unbounded, out-of-order warns not blocks; a raise never silences a standing low. */
 @Composable
 fun AlarmThresholdsScreen(
     urgentLow: Int,

@@ -37,7 +37,7 @@ class SessionScrubTest {
     }
 
     @Test fun theCursorSpansTheWindowAndClampsOutsideIt() {
-        // The window's ends are off-grid wall clock; a travel limit lands on the nearest grid line.
+        // Window ends are off-grid wall clock; a travel limit lands on the nearest grid line.
         val start = T0
         val span = 2 * 3_600_000L
         val lo = scrubCursorOf(start, span, 0f, STEP)
@@ -55,7 +55,7 @@ class SessionScrubTest {
     }
 
     @Test fun theMarkerIsDrawnEverywhereTheSliderCanReach() {
-        // Inside the window the marker is the trace's own transform; the box only limits drawing.
+        // Inside the window the marker is the trace's own transform; the box only limits draw.
         val span = 2 * 3_600_000L + 1_800_000L
         val ppm = (PLOT_RIGHT - PLOT_LEFT) / span.toDouble()
         for (residual in 0 until 20) {

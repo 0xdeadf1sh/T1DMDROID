@@ -35,7 +35,7 @@ import kotlinx.serialization.json.longOrNull
 import java.io.Writer
 import java.util.Base64
 
-/** t1dm.archive: gzipped JSON Lines, terminated by end; bad lines skipped/counted, not fatal. */
+/** Gzipped JSON Lines/record, terminated by end; missing end = truncated. Null fields omitted. */
 object Archive {
 
     const val FORMAT = "t1dm.archive"
@@ -44,7 +44,7 @@ object Archive {
     /** The bytes are gzip, so not `.json`. */
     const val EXTENSION = "t1dmbak"
 
-    /** As InputStream.read() (0-255); reader sniffs bytes not extension, so renamed restore. */
+    /** As InputStream.read() returns them (0-255); sniffed instead of trusting the .extension. */
     const val GZIP_MAGIC_0 = 0x1f
     const val GZIP_MAGIC_1 = 0x8b
 
@@ -74,7 +74,7 @@ object Archive {
     /** Without it a restore resurrects everything the patient deleted. */
     const val T_TOMBSTONE = "tombstone"
 
-    /** Only copy of a promoted reconstruction's 90% band. */
+    /** The only copy of a promoted reconstruction's 90% band. */
     const val T_INFILL = "infill"
     const val T_END = "end"
 
@@ -84,7 +84,7 @@ object Archive {
     internal val json = Json { ignoreUnknownKeys = true }
 
 
-    /** Appends into buffered [out], no per-record String; holds no state across records. */
+    /** Appends straight into buffered [out], no String staging; holds no state across records. */
     class RecordWriter(private val out: Writer) {
 
         fun open(tag: String) {
@@ -109,7 +109,7 @@ object Archive {
 
         fun put(k: String, v: Double) { key(k); writeDouble(v) }
 
-        /** From FLOAT not double (widening yields 4.199999809265137); toString reloads exactly. */
+        /** From the FLOAT, not widened to double: 4.2f.toDouble() != 4.2. Reloads exactly. */
         fun put(k: String, v: Float) {
             key(k)
             if (v.isFinite()) out.write(v.toString()) else writeString(v.toString())
@@ -134,12 +134,12 @@ object Archive {
         /** Written verbatim; the caller has already serialised it. */
         fun putRaw(k: String, jsonText: String) { key(k); out.write(jsonText) }
 
-        /** No JSON NaN/Infinity; non-finite doubles ride as STRING, else no parser accepts line. */
+        /** No JSON NaN/Infinity literal: a non-finite double rides as a STRING, decodes back. */
         private fun writeDouble(v: Double) {
             if (v.isFinite()) out.write(v.toString()) else writeString(v.toString())
         }
 
-        /** Bulk-copies unescaped runs; a raw newline unescaped would corrupt every record after. */
+        /** Bulk-copies unescaped runs; an unescaped newline would split and corrupt records. */
         private fun writeString(s: String) {
             out.write("\"")
             val n = s.length
@@ -173,7 +173,7 @@ object Archive {
 
     private val CTRL: Array<String> = Array(0x20) { "\\u%04x".format(it) }
 
-    // Decoders throw on missing REQUIRED field (record dropped whole); ids never ride, rows NEW.
+    // Decoders throw on missing REQUIRED fields, dropping just that row; archived rows get NEW ids.
 
     fun write(w: RecordWriter, r: CgmReadingEntity) {
         w.open(T_READING)
@@ -219,7 +219,7 @@ object Archive {
         w.putOrSkip("md", r.mood)
         w.putOrSkip("hr", r.hr)
         w.putOrSkip("sl", r.sleep)
-        // exg not ex (pre-schema-17); ex held whole SECONDS/bucket, reading as grams is 100x off.
+        // exg, not old ex: that held SECONDS/bucket; reading it as grams is 100x too large.
         w.putOrSkip("exg", r.exercise)
         w.putOrSkip("bs", r.bgSource)
         w.putOrSkip("bmat", r.bgMeasuredAtMs)
@@ -231,7 +231,7 @@ object Archive {
         ts = o.long("ts") ?: err("sample", "ts"),
         tzOffsetMin = o.int("tz") ?: err("sample", "tz"),
         bgMgdl = o.int("bg"),
-        // Absent pre-column is the honest answer: that archive has no record of the sensor.
+        // Absent pre-column: honest, since that archive has no record of which sensor produced it.
         bgSource = o.str("bs"),
         bgProvenance = o.str("pv")?.let(ReadingProvenance::valueOf),
         bgFlag = o.str("fl")?.let(ReadingFlag::valueOf),
@@ -279,7 +279,7 @@ object Archive {
         tzOffsetMin = o.int("tz") ?: err("dose", "tz"),
         note = o.str("n"),
         updatedAt = o.long("ua") ?: err("dose", "ua"),
-        // Pre-column files have no lat; ua is the migration's own backfill rule.
+        // A file written before these columns has no lat; ua is the migration's own backfill rule.
         loggedAtMs = o.long("lat") ?: o.long("ua") ?: 0L,
         mutatedAtMs = o.long("mut"),
         mutatedActingUntilMs = o.long("mau"),
@@ -435,7 +435,7 @@ object Archive {
         gi = o.dbl("gi"),
         category = o.str("cat") ?: err("food", "cat"),
         source = o.str("src") ?: err("food", "src"),
-        // Only user foods archived; trusting flag lets a hand-edited file bypass deleteAllCustom.
+        // Only user-added foods archived; a stored flag would smuggle a row past deleteAllCustom.
         custom = true,
         customCurve = o.blob("cc"),
         updatedAt = o.long("ua") ?: err("food", "ua"),
@@ -489,7 +489,7 @@ object Archive {
         updatedAt = o.long("ua") ?: err("insulinType", "ua"),
     )
 
-    /** minTsMs/maxTsMs derived from polyline, deliberately NOT written; readStroke recomputes. */
+    /** minTsMs/maxTsMs derive from polyline, deliberately unwritten; [readStroke] recomputes. */
     fun write(w: RecordWriter, r: PaintStrokeEntity) {
         w.open(T_STROKE)
         w.put("ca", r.createdAtMs)
@@ -500,7 +500,7 @@ object Archive {
         w.close()
     }
 
-    /** Decode IS validation (corrupt blob skips draw); bounds recomputed not read, key viewport. */
+    /** Decoding IS the validation: a corrupt blob skips one drawing; bounds recompute to match. */
     fun readStroke(o: JsonObject): PaintStrokeEntity {
         val blob = o.blob("pts") ?: err("stroke", "pts")
         val points = PaintStrokeBlob.decode(blob)
@@ -522,7 +522,7 @@ object Archive {
         )
     }
 
-    /** ac records WHICH source was live, read back as preference only; else restore picks oldest */
+    /** ac=which source was live, read back as preference only; else picks the oldest row. */
     fun write(w: RecordWriter, r: CgmSourceEntity) {
         w.open(T_SOURCE)
         w.put("sid", r.sourceId)
@@ -534,7 +534,7 @@ object Archive {
         w.put("wm", r.warmupWindowMin)
         w.put("aa", r.addedAtMs)
         w.putOrSkip("ls", r.lastSeenMs)
-        // ac keeps its original meaning (the believed sensor); av is weaker: app was reading it.
+        // ac keeps its meaning: the one sensor believed. av is weaker: the app was just reading it.
         w.put("ac", r.authoritative)
         w.put("av", r.active)
         w.put("hd", r.hidden)
@@ -543,28 +543,28 @@ object Archive {
         w.close()
     }
 
-    /** [authoritative] decided by CALLER, never file (§3.1 exactly-one); no second claimant. */
+    /** [authoritative] set by CALLER, not file: cgm_source is exactly-one-authoritative (§3.1). */
     fun readSource(o: JsonObject, authoritative: Boolean): CgmSourceEntity {
-        // Bound first: the fallback below needs it; a named arg isn't in scope for args after it.
+        // Bound first: the fallback below needs it, a named arg isn't in scope for later arguments.
         val sourceId = o.str("sid") ?: err("source", "sid")
         return CgmSourceEntity(
             sourceId = sourceId,
             vendorId = o.str("vid") ?: err("source", "vid"),
-        // Pre-column files have no mid; fallback must match MIGRATION_10_11, else history splits.
+        // No mid pre-column; fallback must match MIGRATION_10_11 or history splits upgrade/restore.
             sensorModelId = o.str("mid") ?: legacySensorModelIdFor(sourceId),
-        // Null, not invented: pre-column sources genuinely have no record of what they advertised.
+        // Null, not invented: a pre-column source has no record of what it advertised.
             advertName = o.str("an"),
             displayName = o.str("dn") ?: err("source", "dn"),
             serialSuffix = o.str("ss"),
             authoritative = authoritative,
-        // Read from file, unlike authoritative (user's own call); pre-v14 falls back to ac.
+        // Read from file, unlike [authoritative]: pre-v14 falls to ac, MIGRATION_13_14 seeds it.
             active = o.bool("av") ?: o.bool("ac") ?: false,
             warmupWindowMin = o.int("wm") ?: err("source", "wm"),
             addedAtMs = o.long("aa") ?: err("source", "aa"),
             lastSeenMs = o.long("ls"),
-        // Absent pre-column = false (accurate); read from file, else re-lists removed sensors.
+        // Absent pre-column=false, its export state; read from file or removed sensors re-list.
             hidden = o.bool("hd") ?: false,
-        // Read but NOT trusted (may collide); ArchiveReader.renumbered resolves it. -1=pre-column.
+        // Not trusted: may collide on restore; ArchiveReader.renumbered resolves it, -1=pre-column.
             ordinal = o.int("or") ?: -1,
         )
     }
@@ -584,7 +584,7 @@ object Archive {
         w.putOrSkip("w9c", r.meanWidth90Cal)
         w.put("wd", r.windowDays)
         w.put("fa", r.fittedAtMs)
-        // Scoped sensor rides with fit; dropped ⇒ restores UNKNOWN, apply refuses (raw fallback).
+        // Sensor the fit was scoped to; drop it, restored corrections all read UNKNOWN, refused.
         w.putOrSkip("src", r.sourceId)
         w.close()
     }
@@ -593,7 +593,7 @@ object Archive {
         val steps = o.int("st") ?: err("conformal", "st")
         val nq = o.int("nq") ?: err("conformal", "nq")
         val blob = o.blob("d") ?: err("conformal", "d")
-        // Shape-length mismatch can't apply; refused at door, not stored to fail on later reads.
+        // A shape-mismatched delta can't apply to a fan; refused at the door, not stored to fail.
         if (steps <= 0 || nq <= 0 || blob.size != steps * nq * Double.SIZE_BYTES) {
             throw IllegalArgumentException("conformal delta shape disagrees with its blob")
         }
@@ -616,7 +616,7 @@ object Archive {
         )
     }
 
-    /** Weight blob rides verbatim; attached is phone-local, not archived; guard verdict rides. */
+    /** Blob rides verbatim. attached doesn't ride (phone's); guard verdict does (provenance). */
     fun write(w: RecordWriter, r: LoraEntity) {
         w.open(T_LORA)
         w.put("mid", r.modelId)
@@ -675,7 +675,7 @@ object Archive {
             attached = false,
             createdAtMs = o.long("ca") ?: err("lora", "ca"),
             updatedAtMs = o.long("ua") ?: err("lora", "ua"),
-            // Absent pre-guard reads ABSENT — honest for unmeasured, and refuses attach.
+            // Absent pre-guard reads ABSENT: honest for unmeasured; this value refuses attach.
             guardVerdict = o.str("gv") ?: "ABSENT",
             guardWindows = o.int("gw") ?: 0,
             guardFrozenMgdl = o.dbl("gf") ?: 0.0,
@@ -685,7 +685,7 @@ object Archive {
             guardWhy = o.str("gy").orEmpty(),
             nPaired = o.int("npr") ?: 0,
             distillScale = o.dbl("ds") ?: 0.0,
-            // Zero = "not fitted on THIS phone", not an instant every edit would invalidate.
+            // Zero=not fitted on THIS phone, not an ancient instant edits invalidate forever.
             fittedAtMs = o.long("fa") ?: 0L,
             // Absent in a pre-v31 archive: not recorded, not guessed.
             objective = o.str("obj"),
@@ -696,7 +696,7 @@ object Archive {
         )
     }
 
-    /** kd rides as raw stored TEXT, not via ExerciseKind; unconverted so newer builds stay ok. */
+    /** kd rides as raw TEXT, not [ExerciseKind]: unconverted, so a later build's bout survives. */
     fun write(w: RecordWriter, r: ExerciseSessionEntity) {
         w.open(T_EXERCISE)
         w.put("cid", r.clientId)
@@ -716,7 +716,7 @@ object Archive {
     fun readExercise(o: JsonObject) = ExerciseSessionEntity(
         clientId = o.str("cid") ?: err("exercise", "cid"),
         startMs = o.long("st") ?: err("exercise", "st"),
-        // Absent = bout was open when archived, restores open; inventing an end claims false stop.
+        // Absent means the bout was open when archived; an invented end claims a stop never made.
         endMs = o.long("en"),
         tzOffsetMin = o.int("tz") ?: err("exercise", "tz"),
         kind = o.str("kd") ?: err("exercise", "kd"),
@@ -763,7 +763,7 @@ object Archive {
         mutatedAtMs = o.long("ma"),
     )
 
-    /** Fix carries bout's clientId, not stored sessionId (rowid is per-device, names differ). */
+    /** Fix carries the bout's clientId, not sessionId: that rowid is per-device, useless later. */
     fun write(w: RecordWriter, r: ExerciseFixEntity, sessionClientId: String) {
         w.open(T_EXERCISE_FIX)
         w.put("cid", sessionClientId)
@@ -775,7 +775,7 @@ object Archive {
         w.close()
     }
 
-    /** sessionId is a placeholder; reader resolves it once it knows the local bout it became. */
+    /** sessionId is a placeholder; resolved once the reader knows which local bout this became. */
     fun readExerciseFix(o: JsonObject): Pair<String, ExerciseFixEntity> {
         val cid = o.str("cid") ?: err("exerciseFix", "cid")
         return cid to ExerciseFixEntity(
@@ -794,7 +794,7 @@ object Archive {
     internal fun decodeB64(s: String): ByteArray = B64_DEC.decode(s)
 }
 
-// File-level, not in [Archive], so callers write o.str("nm") directly; absent key decodes null.
+// File-level so callers use o.str("nm") directly; absent key = null, making omit-nulls lossless.
 
 private fun JsonObject.prim(k: String): JsonPrimitive? = this[k] as? JsonPrimitive
 
@@ -806,7 +806,7 @@ internal fun JsonObject.bool(k: String): Boolean? = prim(k)?.booleanOrNull
 
 internal fun JsonObject.str(k: String): String? = prim(k)?.contentOrNull
 
-/** Finite double arrives as number, non-finite as string NaN/Infinity/-Infinity; both decode. */
+/** Finite doubles arrive as numbers; non-finite as NaN/Infinity/-Infinity strings; decode back. */
 internal fun JsonObject.dbl(k: String): Double? {
     val p = prim(k) ?: return null
     return p.doubleOrNull ?: p.contentOrNull?.toDoubleOrNull()

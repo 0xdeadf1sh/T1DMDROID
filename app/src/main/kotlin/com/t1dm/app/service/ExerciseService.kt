@@ -32,7 +32,7 @@ import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
-/** location-typed service on purpose; joins no auto-restart; final flush runs on appScope. */
+/** A location-typed service of its own: OR-ing into CgmScanService blocks 34+ w/o location. */
 class ExerciseService : LifecycleService() {
 
     private lateinit var container: AppContainer
@@ -89,7 +89,7 @@ class ExerciseService : LifecycleService() {
             stopSelf()
             return
         }
-        // LAZY: lifecycleScope is Main.immediate, would run inline before recordJob assignment.
+        // LAZY: lifecycleScope is Main.immediate and would run the body inline, before assignment.
         recordJob = lifecycleScope.launch(start = CoroutineStart.LAZY) {
             try {
                 val session = container.exerciseController.start(kind)
@@ -130,7 +130,7 @@ class ExerciseService : LifecycleService() {
         recordJob?.start()
     }
 
-    /** No row to close; recordJob must clear or startBout's guard refuses every ACTION_START. */
+    /** No row to close; open is what failed. recordJob cleared, else startBout refuses starts. */
     private fun failStart(generation: Int, cause: Throwable) {
         if (!gate.isCurrent(generation) || gate.stopping) return
         recordJob = null
@@ -141,7 +141,7 @@ class ExerciseService : LifecycleService() {
         stopSelf()
     }
 
-    /** Job joined not cancelled: ExerciseBucketer is single-collector; stopSelf runs last. */
+    /** Job joined, not just cancelled: ExerciseBucketer is single-collector, finish drives it. */
     private fun stopBout(interrupted: Boolean = false) {
         if (!gate.beginStop()) return
         val endMs = System.currentTimeMillis()
@@ -169,7 +169,7 @@ class ExerciseService : LifecycleService() {
                     )
                 }.onFailure { Timber.tag(TAG).w(it, "closing the exercise bout failed") }
             }
-            // A Start during the flush owns the service; stopping now would end that bout.
+            // A Start during the flush owns the service; clearing/stopping now ends that bout.
             if (gate.isCurrent(generation)) {
                 container.activeExercise.value = null
                 stopSelf()
@@ -177,7 +177,7 @@ class ExerciseService : LifecycleService() {
         }
     }
 
-    /** Backstop on a forgotten bout: GNSS at 4s cadence drains; row it closes is interrupted. */
+    /** Backstop on a forgotten bout: nothing else ends a recording; GNSS drains at 4s cadence. */
     private fun observeBoutLimit() {
         lifecycleScope.launch {
             container.activeExercise.collect { active ->
@@ -211,7 +211,7 @@ class ExerciseService : LifecycleService() {
             .addAction(Notification.Action.Builder(null as Icon?, "Stop", stopIntent()).build())
             .build()
 
-    /** Its own request code: filterEquals to the monitor's, a shared code would update both. */
+    /** Its own request code: shared with the monitor's filterEquals would update each other. */
     private fun openIntent(): PendingIntent {
         val i = Intent(this, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -257,13 +257,13 @@ class ExerciseService : LifecycleService() {
         private const val RQ_OPEN = 4301
         private const val RQ_STOP = 4302
 
-        /** Either grant gives the location type; a track needs FINE (hasPreciseLocation). */
+        /** Either grant gives the location type; FINE needed, see hasPreciseLocation. */
         val LOCATION_PERMISSIONS = arrayOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION,
         )
 
-        /** Coarse-only fixes fuzz to ~2 km; ExerciseBucketer refuses below its 50 m ceiling. */
+        /** Coarse-only still gets fixes, fuzzed to ~2 km; ExerciseBucketer refuses at 50 m. */
         fun hasPreciseLocation(context: Context): Boolean =
             context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED
@@ -301,7 +301,7 @@ class ExerciseService : LifecycleService() {
 internal fun hasLocationGrant(granted: (String) -> Boolean): Boolean =
     ExerciseService.LOCATION_PERMISSIONS.any(granted)
 
-/** Which bout is on, whether close-out began; generation written main, read from appScope. */
+/** Which bout ExerciseService is on; generation on main, read from appScope; stopping main-only. */
 internal class BoutGate {
 
     @Volatile

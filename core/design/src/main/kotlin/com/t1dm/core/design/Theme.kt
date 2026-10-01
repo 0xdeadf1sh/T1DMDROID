@@ -17,7 +17,7 @@ val LocalAnimationsEnabled = staticCompositionLocalOf { true }
 /** DEATH mode: warning surfaces render nothing while it is on. */
 val LocalDeathMode = staticCompositionLocalOf { false }
 
-/** Plain holders Glance widgets read; written only via applyWidgetPalette from the FGS path. */
+/** Written only by [applyWidgetPalette], from widget-render; Activity writing races the FGS. */
 @Volatile
 var T1dmColorScheme: ColorScheme = TronPalette.toColorScheme()
     private set
@@ -32,7 +32,7 @@ fun applyWidgetPalette(palette: T1dmPalette) {
     T1dmColorScheme = palette.toColorScheme()
 }
 
-/** Does NOT touch T1dmActivePalette (the FGS's alone), so recompose can't race the widget. */
+/** Does NOT touch widget holders — FGS-only, so a foreground recompose can't race widget render. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun T1dmTheme(
@@ -44,9 +44,9 @@ fun T1dmTheme(
     content: @Composable () -> Unit,
 ) {
     val scheme = palette.toColorScheme()
-    // The haptics engine is built here; a preview context has no vibrator, stays mute.
+    // Built once here; a preview context has no vibrator, so previews stay mute.
     val haptics = rememberHapticsEngine(hapticStrength)
-    // Pinned to neutral INK not an accent; a red-accent theme paints an alarm-red ripple.
+    // Pinned to ink, not accent: on an error/red-accent surface, ripple would tint alarm-red.
     val ripple = RippleConfiguration(color = palette.ink)
     CompositionLocalProvider(
         LocalT1dmSemantics provides palette,

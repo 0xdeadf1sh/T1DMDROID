@@ -7,7 +7,7 @@ import androidx.sqlite.execSQL
 import com.t1dm.data.meals.FoodSeed
 import java.util.UUID
 
-/** DDL from schemas/<db>/n.json verbatim; 6_7, 8_9, 16_17, 24_25, 27_28, 28_29 drop data. */
+/** Not append-only: 6_7, 8_9, 16_17, 24_25, 27_28, 28_29 drop data; 6_7/16_17 rebuild sample. */
 object MigrationRunner {
 
     val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -72,7 +72,7 @@ object MigrationRunner {
         }
     }
 
-    /** note table dropped by MIGRATION_8_9; kept so the chain from v3 still reaches v9 via v4. */
+    /** note table drops again in MIGRATION_8_9; kept so v3->v9 chain passes v4. */
     val MIGRATION_3_4 = object : Migration(3, 4) {
         override fun migrate(connection: SQLiteConnection) {
             connection.execSQL(
@@ -84,7 +84,7 @@ object MigrationRunner {
         }
     }
 
-    /** FTS5 table and triggers from shared FoodFts.DDL, same as a fresh install's onCreate. */
+    /** FTS5 table/triggers from shared FoodFts.DDL; same DDL runs onCreate on a fresh install. */
     val MIGRATION_4_5 = object : Migration(4, 5) {
         override fun migrate(connection: SQLiteConnection) {
             connection.execSQL(
@@ -123,11 +123,11 @@ object MigrationRunner {
         }
     }
 
-    /** Data-only: folds grown FoodSeed catalogue in, matched on name+brand over custom=0 rows. */
+    /** Data-only: folds FoodSeed into old installs via name+brand, custom=0; idempotent. */
     val MIGRATION_5_6 = object : Migration(5, 6) {
         override fun migrate(connection: SQLiteConnection) {
             val ts = System.currentTimeMillis()
-            // Numbered params reuse name/brand in the subquery; brand IS ?2 is null-safe equality.
+            // Numbered params reuse name/brand in the subquery; brand IS ?2 is null-safe.
             val stmt = connection.prepare(
                 "INSERT INTO `food` (name, brand, carbsPer100g, gi, category, source, custom, customCurve, updatedAt) " +
                     "SELECT ?1, ?2, ?3, ?4, ?5, ?6, 0, NULL, ?7 " +
@@ -152,7 +152,7 @@ object MigrationRunner {
         }
     }
 
-    /** Legacy rows get a fresh UUID BEFORE the UNIQUE index builds, or two collide on ''. */
+    /** Legacy rows get a fresh UUID before the UNIQUE index builds, or two collide on ''. */
     val MIGRATION_6_7 = object : Migration(6, 7) {
         override fun migrate(connection: SQLiteConnection) {
             addClientId(connection, "logged_meal")
@@ -218,7 +218,7 @@ object MigrationRunner {
         }
     }
 
-    /** DELETE stops NOTE rows throwing on valueOf every drain. */
+    /** A queued NOTE row would throw valueOf, and can't deliver. */
     val MIGRATION_8_9 = object : Migration(8, 9) {
         override fun migrate(connection: SQLiteConnection) {
             connection.execSQL("DROP INDEX IF EXISTS `index_note_tsMs`")
@@ -242,7 +242,7 @@ object MigrationRunner {
         }
     }
 
-    /** Frozen literals: a migration must never read a constant a later rename could move. */
+    /** Frozen literals: never read a constant a rename could move. See MigrationConstantsTest. */
     internal const val SQL_10_11_BACKFILL_DEBUG =
         "UPDATE `cgm_source` SET `sensorModelId` = 'aidexx:debug' " +
             "WHERE `sensorModelId` = '' AND `sourceId` = 'aidexx:DEBUG'"
@@ -264,21 +264,21 @@ object MigrationRunner {
         }
     }
 
-    /** advertName stays null on existing rows: the name was discarded, backfill would invent it. */
+    /** advertName stays null: discarded after matching; null = never recorded. */
     val MIGRATION_11_12 = object : Migration(11, 12) {
         override fun migrate(connection: SQLiteConnection) {
             connection.execSQL("ALTER TABLE `cgm_source` ADD COLUMN `advertName` TEXT")
         }
     }
 
-    /** Display flag, not a delete: dropping erases that sensor's trace, orphans cgm_reading. */
+    /** Display flag, not delete: dropping the row would orphan its cgm_reading rows. */
     val MIGRATION_12_13 = object : Migration(12, 13) {
         override fun migrate(connection: SQLiteConnection) {
             connection.execSQL("ALTER TABLE `cgm_source` ADD COLUMN `hidden` INTEGER NOT NULL DEFAULT 0")
         }
     }
 
-    /** Old active meant 'the one believed'; RENAMED to authoritative, new active seeded. */
+    /** Old active meant 'believed'; renamed authoritative, new active seeded. SQLite 3.25+. */
     val MIGRATION_13_14 = object : Migration(13, 14) {
         override fun migrate(connection: SQLiteConnection) {
             connection.execSQL("ALTER TABLE `cgm_source` RENAME COLUMN `active` TO `authoritative`")
@@ -288,7 +288,7 @@ object MigrationRunner {
         }
     }
 
-    /** Null-defaulted, not backfilled: a pre-v15 row has no sensor record to distinguish it by. */
+    /** Null, not backfilled: pre-v15 row has no sensor record, looks like a known one. */
     val MIGRATION_14_15 = object : Migration(14, 15) {
         override fun migrate(connection: SQLiteConnection) {
             connection.execSQL("ALTER TABLE `sample` ADD COLUMN `bgSource` TEXT")
@@ -326,7 +326,7 @@ object MigrationRunner {
         }
     }
 
-    /** sample.exercise becomes REAL, values dropped: held active SECONDS, §3 now fixes grams. */
+    /** exercise becomes REAL, dropped: held SECONDS where SPEC/invariants.md §3 wants grams. */
     val MIGRATION_16_17 = object : Migration(16, 17) {
         override fun migrate(connection: SQLiteConnection) {
             connection.execSQL(
@@ -349,7 +349,7 @@ object MigrationRunner {
         }
     }
 
-    /** Constants for MigrationConstantsTest vs CgmRawSampleEntity; Room doesn't check DDL. */
+    /** Constants checked vs CgmRawSampleEntity via MigrationConstantsTest; forgotten col=crash. */
     internal const val SQL_17_18_CREATE_TABLE =
         "CREATE TABLE IF NOT EXISTS `cgm_sample_raw` (" +
             "`sourceId` TEXT NOT NULL, `rxWallMs` INTEGER NOT NULL, `bgMgdl` INTEGER, " +
@@ -360,7 +360,7 @@ object MigrationRunner {
     internal const val SQL_17_18_CREATE_INDEX =
         "CREATE INDEX IF NOT EXISTS `index_cgm_sample_raw_rxWallMs` ON `cgm_sample_raw` (`rxWallMs`)"
 
-    /** Begins empty, fills forward; rows also expire, so readers must treat absence as normal. */
+    /** Begins empty, fills forward; rows expire too (RAW_SAMPLE_RETENTION_MS). Absent = normal. */
     val MIGRATION_17_18 = object : Migration(17, 18) {
         override fun migrate(connection: SQLiteConnection) {
             connection.execSQL(SQL_17_18_CREATE_TABLE)
@@ -374,18 +374,18 @@ object MigrationRunner {
             "`sourceId` TEXT NOT NULL, `blob` BLOB NOT NULL, `updatedAtMs` INTEGER NOT NULL, " +
             "PRIMARY KEY(`sourceId`))"
 
-    /** DEFAULT is part of the schema Room compares against CgmSourceEntity's @ColumnInfo. */
+    /** DEFAULT is schema Room compares vs @ColumnInfo(defaultValue="-1"), not convenience. */
     internal const val SQL_18_19_ADD_ORDINAL =
         "ALTER TABLE `cgm_source` ADD COLUMN `ordinal` INTEGER NOT NULL DEFAULT -1"
 
-    /** Zero-based rank in addedAtMs,sourceId order; tiebreak's <= counts each row once, no gaps. */
+    /** Zero-based rank in addedAtMs,sourceId order. <= tiebreak counts self, no gaps. */
     internal const val SQL_18_19_BACKFILL_ORDINAL =
         "UPDATE `cgm_source` SET `ordinal` = (" +
             "SELECT COUNT(*) FROM `cgm_source` c2 WHERE c2.`addedAtMs` < `cgm_source`.`addedAtMs` " +
             "OR (c2.`addedAtMs` = `cgm_source`.`addedAtMs` AND c2.`sourceId` <= `cgm_source`.`sourceId`)" +
             ") - 1"
 
-    /** cgm_sensor_secret begins empty, never backfilled; ordinal IS, from a known order. */
+    /** cgm_sensor_secret starts empty, never backfilled. ordinal IS backfilled. */
     val MIGRATION_18_19 = object : Migration(18, 19) {
         override fun migrate(connection: SQLiteConnection) {
             connection.execSQL(SQL_18_19_CREATE_SECRET)
@@ -457,7 +457,7 @@ object MigrationRunner {
         "CREATE INDEX IF NOT EXISTS `index_event_tombstone_pushEnqueuedAtMs` " +
             "ON `event_tombstone` (`pushEnqueuedAtMs`)"
 
-    /** loggedAtMs backfills from updatedAt (set at insert pre-v21); mutation columns stay null. */
+    /** loggedAtMs backfills from updatedAt (pre-v21 rows insert-only). Mutation cols null=fact. */
     val MIGRATION_20_21 = object : Migration(20, 21) {
         override fun migrate(connection: SQLiteConnection) {
             connection.execSQL(SQL_20_21_DOSE_LOGGED_AT)
@@ -485,7 +485,7 @@ object MigrationRunner {
     internal const val SQL_21_22_INFILL_SPAN_INDEX =
         "CREATE INDEX IF NOT EXISTS `index_bg_infill_spanStartMs` ON `bg_infill` (`spanStartMs`)"
 
-    /** Backfill makes every pre-v22 row its own span: runs weren't recorded, nothing to invent. */
+    /** Backfill: each pre-v22 row its own span; runs weren't recorded, would invent one. */
     val MIGRATION_21_22 = object : Migration(21, 22) {
         override fun migrate(connection: SQLiteConnection) {
             connection.execSQL(SQL_21_22_INFILL_SPAN)
@@ -531,7 +531,7 @@ object MigrationRunner {
     internal const val SQL_22_23_LORA_FITTED_AT =
         "ALTER TABLE `lora` ADD COLUMN `fittedAtMs` INTEGER NOT NULL DEFAULT 0"
 
-    /** guardVerdict backfills ABSENT (REFUSES attach); import/restore adapters get no verdict. */
+    /** guardVerdict backfills ABSENT (refuses attach): silence isn't a pass. */
     val MIGRATION_22_23 = object : Migration(22, 23) {
         override fun migrate(connection: SQLiteConnection) {
             connection.execSQL(SQL_22_23_LORA_GUARD_VERDICT)
@@ -564,7 +564,7 @@ object MigrationRunner {
     /** Every pre-v25 forecast, discarded: none of them records which sensor conditioned it. */
     internal const val SQL_24_25_DROP_UNATTRIBUTED = "DELETE FROM `prediction`"
 
-    /** Blobs backfill EMPTY, not synthesised from lo90/hi90; tau backfills to 0.5, the median. */
+    /** Blobs backfill empty, not synthesized from lo90/hi90. tau backfills to 0.5. */
     val MIGRATION_23_24 = object : Migration(23, 24) {
         override fun migrate(connection: SQLiteConnection) {
             connection.execSQL(SQL_23_24_INFILL_BANDS_MGDL)
@@ -573,7 +573,7 @@ object MigrationRunner {
         }
     }
 
-    /** DELETE is the point: a pre-v25 row can't be attributed, so backfilling would fake it. */
+    /** DELETE is the point: pre-v25 rows have no sensor attribution; backfilling would fake it. */
     val MIGRATION_24_25 = object : Migration(24, 25) {
         override fun migrate(connection: SQLiteConnection) {
             connection.execSQL(SQL_24_25_PREDICTION_SOURCE)
@@ -584,7 +584,7 @@ object MigrationRunner {
     internal const val SQL_25_26_DELTA_SOURCE =
         "ALTER TABLE `conformal_delta` ADD COLUMN `sourceId` TEXT DEFAULT NULL"
 
-    /** No DELETE unlike MIGRATION_24_25: a sourceless correction is refused, still says the fit. */
+    /** No DELETE unlike MIGRATION_24_25: refused if sourceless, else row keeps last fit's data. */
     val MIGRATION_25_26 = object : Migration(25, 26) {
         override fun migrate(connection: SQLiteConnection) {
             connection.execSQL(SQL_25_26_DELTA_SOURCE)
@@ -607,7 +607,7 @@ object MigrationRunner {
         "CREATE UNIQUE INDEX IF NOT EXISTS `index_logged_exercise_clientId` " +
             "ON `logged_exercise` (`clientId`)"
 
-    /** No backfill from exercise_session: those bouts' grams are already in sample.exercise. */
+    /** No backfill from exercise_session: grams already in sample.exercise, avoids double-count. */
     val MIGRATION_26_27 = object : Migration(26, 27) {
         override fun migrate(connection: SQLiteConnection) {
             connection.execSQL(SQL_26_27_LOGGED_EXERCISE)
@@ -733,5 +733,5 @@ object MigrationRunner {
 
     fun <T : RoomDatabase> configure(builder: RoomDatabase.Builder<T>): RoomDatabase.Builder<T> =
         builder.addMigrations(*ALL)
-    // No fallbackToDestructiveMigration: a missing migration must fail loudly, not discard history.
+    // No fallbackToDestructiveMigration: missing migration fails loudly, not silently discards.
 }

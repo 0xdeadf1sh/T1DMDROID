@@ -15,7 +15,7 @@ interface BackupDestination {
 
     val label: String
 
-    /** Stream closes either way; no partial file — retention sweep would prune a real backup. */
+    /** Stream closes on return/throw; no partial file left, sweep would prune a real backup. */
     suspend fun write(name: String, body: suspend (OutputStream) -> Unit): StoredBackup
 
     /** Newest first. */

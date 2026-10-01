@@ -10,7 +10,7 @@ import com.t1dm.core.model.InsulinFamily
 import com.t1dm.core.model.InsulinPresetSpec
 import kotlinx.coroutines.withContext
 
-/** JNI bridge over t1dm-core::curve; carbs are appearance (Ra), insulin PK ACTION not IOB. */
+/** JNI bridge over t1dm-core::curve; carbs feed as Ra, insulin as PK ACTION, not IOB. */
 class CurveEngine(
     private val native: NativeCore,
     private val dispatchers: T1dmDispatchers,

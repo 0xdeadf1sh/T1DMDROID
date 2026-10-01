@@ -1,6 +1,6 @@
 package com.t1dm.core.model
 
-/** Deletion marker; updatedAt strictly newer (SPEC §7); actingUntilMs is dose end, null=meal. */
+/** updatedAt strictly newer than the row retired (§7); actingUntilMs is dose end, null for meal. */
 data class EventTombstone(
     val clientId: String,
     val kind: CurveKind,

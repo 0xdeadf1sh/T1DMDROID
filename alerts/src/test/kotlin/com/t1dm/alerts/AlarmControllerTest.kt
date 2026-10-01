@@ -100,7 +100,7 @@ class AlarmControllerTest {
         assertEquals(AlertBand.HIGH, notifier.lastEmit?.threshold?.band)
         val emitsAfterFire = notifier.emitCount
 
-        // A stable WARNING dedupes on StateFlow; onTick re-presents so it isn't silenced for good.
+        // Stable WARNING breach reuses the same object; onTick re-presents it so it re-fires.
         now = MIN
         ticks.emit(Unit)
         runCurrent()

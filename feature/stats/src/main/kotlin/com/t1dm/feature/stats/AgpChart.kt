@@ -18,7 +18,7 @@ import com.t1dm.core.model.UnitSpace
 import kotlin.math.max
 import kotlin.math.min
 
-/** p5-95/p25-75 bands, p50 median, 24h axis; mg/dL→[unit] once; sparse bins bridged linearly. */
+/** p5-p95/p25-p75 bands, p50 median, 24h axis; sparse bins joined linearly, gaps bridged. */
 @Composable
 fun AgpChart(
     agp: List<AgpBin>,

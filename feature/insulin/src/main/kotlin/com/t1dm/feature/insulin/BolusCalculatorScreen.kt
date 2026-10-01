@@ -45,7 +45,7 @@ import com.t1dm.core.design.verticalScrollbar
 import com.t1dm.core.model.InsulinKind
 import kotlin.math.roundToInt
 
-/** Stateless fail-closed verdict; Accept records decision, never actuates. Refusal: no Accept */
+/** Fail-closed verdict view; Accept records only, never actuates. No Accept on refusal. */
 @Composable
 fun BolusCalculatorScreen(
     result: AdviceResult?,
@@ -59,13 +59,13 @@ fun BolusCalculatorScreen(
     /** Null = fresh; else Accept is withheld. */
     stale: AdviceGate.Stale? = null,
     isComputing: Boolean = false,
-    /** Null ⇒ not yet resolved; an Accept that would write a dose stays closed until it lands. */
+    /** Null means unresolved; an Accept that would write a dose stays closed until it lands. */
     insulinLabel: String? = null,
     onAccept: (Candidate) -> Unit = {},
     /** Null = the Settings objective. */
     onRecompute: (targetMgdl: Double?) -> Unit = {},
 ) {
-    // Guards only Slider's start ≤ end; the bounds are the clamp, this never narrows them.
+    // Guards only Slider's start<=end invariant; bounds are the clamp, this never narrows them.
     val lo = minOf(targetLowMgdl, targetHighMgdl)
     val hi = maxOf(targetLowMgdl, targetHighMgdl).let { if (it > lo) it else lo + 1.0 }
     // Null until the slider moves: only a moved slider overrides the Settings objective.
@@ -78,7 +78,7 @@ fun BolusCalculatorScreen(
     val scroll = rememberScrollState()
     val haptics = rememberT1dmHaptics()
 
-    // Padding inside the scroll; scrollbar before `verticalScroll`, so it tracks the true viewport.
+    // padding inside the scroll, scrollbar before verticalScroll, so it tracks the true viewport.
     Column(
         Modifier.fillMaxSize().verticalScrollbar(scroll).fadingEdges(scroll).verticalScroll(scroll)
             .padding(16.dp),
@@ -153,7 +153,7 @@ private fun TargetBgSlider(target: Double, low: Double, high: Double, caption: S
 @Composable
 private fun RefusedCard(refused: AdviceResult.Refused) {
     val haptics = rememberT1dmHaptics()
-    // Keyed on reasons: the same refusal re-rendered is silent, a new rail tripping speaks again.
+    // Keyed on reasons: same refusal re-rendered is silent, a new rail tripping speaks again.
     LaunchedEffect(refused.reasons) { haptics.perform(HapticEvent.Warn) }
     Card(Modifier.fillMaxWidth(), colors = panelCardColors()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -174,7 +174,7 @@ private fun RecommendedBody(
     var acknowledged by remember(rec) { mutableStateOf(false) }
     var confirmed by remember(rec) { mutableStateOf(false) }
     val confirmSatisfied = !rec.requiresConfirmation || confirmed
-    // A third gate, additive to the checkboxes: they gate `enabled`, this gates the press action.
+    // Third gate, additive to the checkboxes: they gate enabled, this gates what the press does.
     var pendingAccept by remember(rec) { mutableStateOf<Candidate?>(null) }
     val haptics = rememberT1dmHaptics()
 
@@ -243,7 +243,7 @@ private fun RecommendedBody(
     if (!targetMatches) {
         Text("Target changed since compute", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
     }
-    // Only press recording a dosing decision. Carb-rescue/0 U writes no dose, carries Commit.
+    // Only press recording a dosing decision; carb-rescue/0U writes+commits, real dose proposes.
     Button(
         onClick = {
             if (!writesDose) {
@@ -287,7 +287,7 @@ private fun DecisionCardView(card: DecisionCard) {
             fieldRow("Assumed IOB", card.assumedIobU?.let { "${fmt(it)} U (logged only)" } ?: "unknown")
             fieldRow("Last logged dose", card.minSinceLastLoggedDose?.let { "$it min ago" } ?: "never")
             fieldRow("Forecast band width", card.bandWidthMgdl?.let { "±${(it / 2).toInt()} mg/dL" } ?: "—")
-            // Disclosed only off default: it shifts the last_bg anchor the other rows qualify.
+            // Disclosed only when not default: shifts the last_bg anchor the other rows qualify.
             if (card.smoothingWindow != DecisionCard.DEFAULT_SMOOTHING_WINDOW) {
                 fieldRow(
                     "BG input filter",
@@ -306,14 +306,14 @@ private fun RankedList(ranked: List<Candidate>) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text("Alternatives", style = MaterialTheme.typography.titleSmall)
         top.forEach { c ->
-            // Median minimum, the quantity the veto reads; the band's minimum is a different block.
+            // Median minimum, what the veto reads; band's minimum would explain a different block.
             val low = c.fan.minMedianBg()?.toInt()
             fieldRow("${fmt(c.doseU)} U", "score ${"%.2f".format(c.score)}" + (low?.let { " · min $it" } ?: ""))
         }
     }
 }
 
-/** Dimmed label derives from content colour IN FORCE, not `onSurface` — polarity may differ. */
+/** Dimmed label uses content colour in force, not onSurface; panelCardColors may reject it. */
 @Composable
 private fun fieldRow(label: String, value: String) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {

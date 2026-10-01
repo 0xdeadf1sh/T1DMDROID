@@ -16,7 +16,7 @@ fun nsIso(tsMs: Long, tzOffsetMin: Int): String =
     OffsetDateTime.ofInstant(Instant.ofEpochMilli(tsMs), ZoneOffset.ofTotalSeconds(tzOffsetMin * 60))
         .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
 
-/** Trend is TENTHS of mg/dL/min; Nightscout arrows cut at whole units (10/20/30). Null ⇒ null. */
+/** Trend is TENTHS mg/dL/min; NS arrows cut at whole units, hence 10/20/30. Null yields null. */
 fun nsDirection(trendTenthsPerMin: Int?): String? = when {
     trendTenthsPerMin == null -> null
     trendTenthsPerMin >= 30 -> "DoubleUp"
@@ -28,10 +28,10 @@ fun nsDirection(trendTenthsPerMin: Int?): String? = when {
     else -> "DoubleDown"
 }
 
-/** Only bgMgdl crosses: exercise is carb EQUIVALENT, opposite sign to a meal (§3); never carbs. */
+/** Only bgMgdl crosses: exercise is carb EQUIVALENT, opposite sign, never reaches carbs. */
 fun SampleEntity.toNsEntry(trendTenthsPerMin: Int?): NsEntryDto? {
     val bg = bgMgdl ?: return null
-    // Fail closed: `sgv` claims sensor signal, not a fill or warm-up; the host can't retract one.
+    // Fail closed: sgv claims sensor signal, not a fill or warm-up; the host can't take one back.
     if (!isRealMeasurement(bgProvenance ?: return null, bgFlag ?: return null)) return null
     // Unsnapped, so two readings contesting one slot reach the host as the two readings they are.
     val at = bgMeasuredAtMs ?: ts
@@ -53,7 +53,7 @@ fun LoggedMealEntity.toNsTreatment(): NsTreatmentDto = NsTreatmentDto(
     utcOffset = tzOffsetMin,
 )
 
-/** Null for BASAL: T1DM basal is units DELIVERED (§3), Nightscout a RATE — errs by duration. */
+/** Null for BASAL: T1DM basal is units DELIVERED (§3), Nightscout's is a RATE with duration. */
 fun LoggedDoseEntity.toNsTreatment(): NsTreatmentDto? {
     if (kind != DoseKind.BOLUS) return null
     return NsTreatmentDto(

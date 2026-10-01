@@ -26,7 +26,7 @@ import com.t1dm.core.design.rememberHapticDetent
 import com.t1dm.core.design.rememberT1dmHaptics
 import kotlin.math.roundToInt
 
-/** One-way mirror to a Nightscout `/api/v1` host. Secret write-only: blank on save keeps stored. */
+/** One-way mirror to Nightscout /api/v1. Secret field write-only: blank save keeps stored one. */
 @Composable
 fun NightscoutSettingsScreen(
     initialUrl: String,

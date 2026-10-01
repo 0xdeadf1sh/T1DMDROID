@@ -7,7 +7,7 @@ import com.t1dm.core.model.PredictedTime
 import com.t1dm.core.model.UnitSpace
 import kotlin.math.roundToInt
 
-/** Predictive line gated in BgGlanceComputer, never a fabricated ETA; circadian is not gated. */
+/** Predictive gated in [BgGlanceComputer]: ineligible forecast shows BG+trend, not an ETA. */
 class LiveNotificationPresenter(
     context: Context,
     private val channelId: String,
@@ -82,7 +82,7 @@ class LiveNotificationPresenter(
     }
 }
 
-/** Fail-closed: warmup or no eligible forecast reads VOID, never STABLE. */
+/** Fail-closed: warmup/ineligible forecast reads VOID; matches [BgGlanceComputer.status]. */
 internal fun statusToken(glance: BgGlance): String = when {
     glance.warmup || glance.forecastUnavailable || !glance.forecastEligible -> "VOID"
     glance.unsure -> "UNSURE"

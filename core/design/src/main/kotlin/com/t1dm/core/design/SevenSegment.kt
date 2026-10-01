@@ -9,9 +9,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 
-/** remainingMs is a LAMBDA invoked in draw scope; a lapsed span clamps to 00:00:00:00, no wrap. */
+/** remainingMs is a lambda invoked in draw scope; a lapsed span clamps to 00:00:00:00. */
 
-/** Bit 0-6 = a-g: top, upper-right, lower-right, bottom, lower-left, upper-left, middle. */
+/** Bits 0-6=a-g: a=top,b=upper-right,c=lower-right,d=bottom,e=lower-left,f=upper-left,g=mid. */
 private val SEGMENT_MASKS = intArrayOf(
     0x3F, // 0
     0x06, // 1

@@ -7,7 +7,7 @@ import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Screen-independent snapshot, off main thread; xs minutes since t0Ms, breakAfter cuts gaps. */
+/** Screen-independent snapshot, off main thread; xs minutes since t0Ms; cuts real dropouts. */
 class GraphFrame internal constructor(
     val t0Ms: Long,
     val tzOffsetMin: Int,
@@ -55,7 +55,7 @@ class GraphFrame internal constructor(
         const val FLAG_INTERPOLATED = 1
         const val FLAG_WARMUP = 2
 
-        /** Own flag: pixel-identical to sensor signal, markers suppress past 6h, line carries. */
+        /** Own flag: pixel-identical to sensor signal; markers hide at 6h+, so line carries it. */
         const val FLAG_RECONSTRUCTED = 3
 
         val EMPTY = GraphFrame(
@@ -76,7 +76,7 @@ suspend fun graphFrameOf(
     buildGraphFrame(readings, unit, maxGapMin, maxPoints, kovatchevFClinicalBatch)
 }
 
-/** Pure CPU, callable from @Preview or a test; missing kovatchevFClinicalBatch falls to mg/dL. */
+/** Pure CPU: callable from Preview/test; kovatchevFClinicalBatch is native f(g), else mg/dL. */
 fun buildGraphFrame(
     readings: List<CgmReading>,
     unit: UnitSpace = UnitSpace.MgDl,
@@ -132,7 +132,7 @@ fun buildGraphFrame(
         // Breaks iff a raw dropout falls between the two kept source indices, not from spacing.
         for (k in 0 until m - 1) breakAfter[k] = breakPrefix[srcIdx[k + 1]] - breakPrefix[srcIdx[k]] > 0
     }
-    // Newest offset, not oldest: oldest freezes axis on record start offset, wrong after DST/move.
+    // Newest offset, not oldest: oldest freezes the axis offset at record start, drifting ticks.
     return GraphFrame(t0, kept.last().tzOffsetMin, unit, xs, ys, flags, breakAfter, minY, maxY)
 }
 
@@ -155,7 +155,7 @@ private class Decimated(
     val xs: FloatArray, val ys: FloatArray, val flags: IntArray, val srcIdx: IntArray,
 )
 
-/** Keeps each bucket's min/max in time order, so spikes/nadirs survive striding; endpoints kept. */
+/** Keeps each bucket's min/max in time order, so spikes/nadirs survive striding. Endpoints kept. */
 private fun decimateMinMax(
     xs: FloatArray, ys: FloatArray, flags: IntArray, maxPoints: Int,
 ): Decimated {

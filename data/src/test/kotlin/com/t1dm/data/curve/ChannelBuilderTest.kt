@@ -40,7 +40,7 @@ class ChannelBuilderTest {
         var scheduleReads = 0
         var basalInjectionReads = 0
 
-        /** Gathers asked for, not queries: default delegates to the two reads above. */
+        /** Gathers what the builder asked for; default delegates to the two reads above. */
         var combinedReads = 0
 
         override suspend fun carbEvents(fromMs: Long, toMs: Long) = carbs

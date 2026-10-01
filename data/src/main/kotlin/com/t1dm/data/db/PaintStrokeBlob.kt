@@ -3,7 +3,7 @@ package com.t1dm.data.db
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/** LE codec for bg_paint_stroke.points: T1P|ver|count, then (i64 tsMs,f32 yFrac); X is absolute. */
+/** LE codec: 'T1P'|u8 version|u32 count, then (i64 tsMs, f32 yFrac) per point; X absolute. */
 object PaintStrokeBlob {
 
     const val VERSION: Int = 1

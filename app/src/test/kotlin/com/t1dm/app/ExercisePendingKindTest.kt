@@ -10,7 +10,7 @@ import java.io.ObjectInputStream
 import java.io.ObjectOutputStream
 import java.io.Serializable
 
-/** Route keeps pending kind in `rememberSaveable`; [ExerciseKind] must round-trip Serializable. */
+/** Route holds pending kind in rememberSaveable across recreation: ExerciseKind must round-trip. */
 class ExercisePendingKindTest {
 
     @Test

@@ -75,7 +75,7 @@ class CgmSourceNamingTest {
         assertEquals(null, descriptor().incidentalSerial(showNames = false))
     }
 
-    /** shortName falls back to the whole name when stripping is empty; only hidden drops it. */
+    /** `shortName` falls back to whole name when stripped; only hidden drops a serial reliably. */
     @Test
     fun `a name that is nothing but the serial still hides`() {
         val d = descriptor(display = "7000000001", serial = "7000000001", ordinal = 3)

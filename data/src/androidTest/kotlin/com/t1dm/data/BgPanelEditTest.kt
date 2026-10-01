@@ -170,6 +170,7 @@ class BgPanelEditTest {
         assertEquals(101, db.cgmReadingDao().byTs(src.value, t0)?.bgMgdl)
     }
 
+
     @Test
     fun a_cut_drops_the_unpromoted_fills_that_followed_it() = runTest {
         seedThreeReadings()
@@ -205,7 +206,7 @@ class BgPanelEditTest {
         assertFalse("and discarding a span that is gone reports so", repo.discardInfillSpan(spanStart))
     }
 
-    /** Stored forecast is what the model SAID; invalidateForecastDerivedInTx must skip it. */
+    /** Stored forecast records what the model SAID; invalidateForecastDerivedInTx skips it. */
     @Test
     fun a_cut_keeps_the_forecasts_that_were_already_made() = runTest {
         seedThreeReadings()
@@ -241,7 +242,7 @@ class BgPanelEditTest {
         )
     }
 
-    /** Cutting RECONSTRUCTED rows while bg_infill calls span promoted leaves it deletable state. */
+    /** Cutting RECONSTRUCTED while bg_infill calls it promoted leaves the band deletable. */
     @Test
     fun a_cut_refuses_to_cross_a_promoted_span() = runTest {
         repo.upsertSource(descriptor(), authoritative = true, nowMs = t0)
@@ -261,7 +262,7 @@ class BgPanelEditTest {
         assertEquals(2, repo.cutBgRange(t0, t0 + 3 * step, now).size)
     }
 
-    /** A measurement replaces reconstruction in place; demotion finds nothing but must succeed. */
+    /** Measurement replaces reconstruction in place, promoted row spared; demotion must succeed. */
     @Test
     fun a_span_the_sensor_superseded_can_still_be_demoted_and_discarded() = runTest {
         repo.upsertSource(descriptor(), authoritative = true, nowMs = t0)

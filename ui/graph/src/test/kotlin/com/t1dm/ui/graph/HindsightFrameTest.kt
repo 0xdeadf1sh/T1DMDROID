@@ -10,7 +10,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Fixture: cycles every 5min from [T0], forecasts flat `200+c` ±{5,10,15}; mis-stride is wrong. */
+/** Fixture: cycles every 5min from T0; cycle c forecasts flat 200+c with a ±{5,10,15} fan. */
 class HindsightFrameTest {
 
     private val STEP = 300_000L
@@ -107,7 +107,7 @@ class HindsightFrameTest {
     }
 
     @Test fun theSweepDrawsTheCalibratedFanRatherThanTheRawOne() {
-        // A sweep from the raw stored fan states a second, narrower uncertainty on the same axes.
+        // A sweep from the raw stored fan would state a narrower uncertainty on the same axes.
         var sawSteps = -1
         var sawNq = -1
         var sawLen = -1
@@ -184,7 +184,7 @@ class HindsightFrameTest {
         assertEquals(2, f.cycleAt((T0 + 2 * STEP).toDouble()))
         assertEquals(2, f.cycleAt((T0 + 2 * STEP).toDouble() + STEP * 0.4))
         assertEquals(2, f.cycleAt((T0 + 2 * STEP).toDouble() - STEP * 0.4))
-        // Past the ends: nothing; unbounded, a cursor a day past the newest cycle drags its fan.
+        // Past the ends: nothing. A cursor a day clear of the newest cycle must not drag its fan.
         assertEquals(-1, f.cycleAt(T0 - STEP.toDouble()))
         assertEquals(-1, f.cycleAt((T0 + 4 * STEP).toDouble() + STEP))
     }
@@ -204,7 +204,7 @@ class HindsightFrameTest {
         assertNull(frameOf(listOf(pred(0, nq = 3))))
     }
 
-    /** Dropout freezes the anchor while cycles fire; keyed on anchor, gap collapses, blanks it. */
+/** Across a CGM dropout the anchor freezes; median gap can collapse to zero, blanking the sweep. */
     @Test fun aDropoutDoesNotCollapseTheCadenceOrHideItsCycles() {
         // 6 healthy cycles, then 12 whose anchor is pinned at the last measured reading (cycle 5).
         val rows = (0 until 6).map { pred(it) } + (6 until 18).map { pred(it, anchorC = 5, stale = true) }
@@ -247,7 +247,7 @@ class HindsightFrameTest {
     }
 
     @Test fun theCatchmentFollowsTheOBSERVEDCadenceNotTheGridStep() {
-        // At 15 min the cursor must reach a cycle between two, or the sweep blinks out.
+        // At 15 min the cursor must reach a cycle from between two, or the sweep blinks out.
         val f = frameOf((0 until 4).map { pred(it * 3) })!!
         assertEquals(3 * STEP, f.cadenceMs)
         assertEquals(1, f.cycleAt((T0 + 3 * STEP).toDouble() + STEP * 1.4))

@@ -3,7 +3,7 @@ package com.t1dm.calc
 import kotlin.math.abs
 import kotlin.math.min
 
-/** Lower better; scores off [FanStep.medianBg] only, never band; ineligible ⇒ POSITIVE_INFINITY. */
+/** Lower is better; every objective scores off medianBg, an ineligible fan returns +INFINITY. */
 object Scoring {
 
     fun scoreFan(fan: PredFan, config: CalcConfig): Double {
@@ -41,7 +41,7 @@ object Scoring {
         return acc
     }
 
-    /** lbgi term load-bearing: with `predictedLowVeto` off, only it stops a predicted-hypo dose. */
+    /** lbgi term is load-bearing: with the veto rail disabled, it's the only hypo guard left. */
     private fun scoreHitTargetBg(fan: PredFan, config: CalcConfig, obj: Objective.HitTargetBg): Double {
         val a = config.asymmetry
         val target = obj.targetMgdl
@@ -58,7 +58,7 @@ object Scoring {
 
     private fun scoreHitTarget(fan: PredFan, config: CalcConfig, obj: Objective.HitTargetAtTime): Double {
         val idx = (obj.atMsFromNow / fan.stepMs).toInt()
-        if (idx !in fan.steps.indices) return Double.POSITIVE_INFINITY // target off the roll
+        if (idx !in fan.steps.indices) return Double.POSITIVE_INFINITY // off the roll
         val target = config.target.targetMgdl
         // Squared deviation at the requested time, plus a hypo regulariser against overshoot.
         val dev = fan.steps[idx].medianBg - target

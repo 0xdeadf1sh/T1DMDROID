@@ -28,7 +28,7 @@ class TrackCursorTest {
         assertEquals(-0.1, p.lon, 1e-9)
     }
 
-    /** Every fix sits on one meridian, so only a diagonal leg separates real interpolation. */
+    /** Every fix sits on one meridian; a diagonal leg is what separates interpolation from luck. */
     @Test
     fun longitude_interpolates_between_two_fixes() {
         val diagonal = listOf(fix(0, 51.0, -0.10), fix(60_000, 51.002, -0.06))

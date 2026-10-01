@@ -10,7 +10,7 @@ import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.model.CurveKind
 
-/** Geometry, not only colour, is re-derived per theme; every glyph drawn white, caller tints it. */
+/** Geometry, not just colour, re-derived per theme; glyphs drawn white, tinted via ContentColor. */
 enum class IconStyle { TRON, UMBRELLA, KITTY }
 
 fun iconStyleForTheme(themeId: String?): IconStyle = when (themeId) {
@@ -94,7 +94,7 @@ private fun cgm(s: IconStyle) = glyph("cgm", s) { // a sensor disc and a broadca
     moveTo(19.5f, 3.5f); lineTo(20.5f, 3.5f); lineTo(20.5f, 6.5f); lineTo(19.5f, 6.5f); close()
 }
 
-private fun security(s: IconStyle) = glyph("watch", s) { // a wristwatch, watch panel route
+private fun security(s: IconStyle) = glyph("watch", s) { // a wristwatch: route is the watch panel
     moveTo(12f, 6.5f); arcTo(5.5f, 5.5f, 0f, true, true, 11.99f, 6.5f); close()
     moveTo(9.6f, 6.9f); lineTo(14.4f, 6.9f); lineTo(13.9f, 2.2f); lineTo(10.1f, 2.2f); close()
     moveTo(9.6f, 17.1f); lineTo(14.4f, 17.1f); lineTo(13.9f, 21.8f); lineTo(10.1f, 21.8f); close()
@@ -103,7 +103,7 @@ private fun security(s: IconStyle) = glyph("watch", s) { // a wristwatch, watch 
 
 private fun exercise(s: IconStyle) = glyph("exercise", s) { // a runner
     moveTo(14.5f, 2.5f); arcTo(2.5f, 2.5f, 0f, true, true, 14.49f, 2.5f); close()
-    // Torso/arm/legs as ONE non-self-intersecting polygon; stride tells it from heart at 28dp.
+    // Torso, arm, legs as ONE non-self-intersecting polygon; stride tells it from heart at 28 dp.
     moveTo(13f, 8f); lineTo(17.5f, 10.5f); lineTo(16.5f, 12.5f); lineTo(13.5f, 11f)
     lineTo(12.5f, 14f); lineTo(15f, 16.5f); lineTo(15f, 21.5f); lineTo(12.8f, 21.5f)
     lineTo(12.8f, 17.5f); lineTo(9f, 14.5f); lineTo(6.5f, 20.5f); lineTo(4.5f, 19.5f)
@@ -137,7 +137,7 @@ private fun backup(s: IconStyle) = glyph("backup", s) { // an archive box: lid, 
     moveTo(8.5f, 15f); lineTo(15.5f, 15f); lineTo(12f, 18.5f); close()
 }
 
-// BG panel lane marks opt out of per-theme geometry; always FILLED, re-tinted, never re-shaped.
+// BG lane marks: always FILLED, never re-shaped across themes, never round (vs point markers).
 
 private fun filledGlyph(name: String, body: PathBuilder.() -> Unit): ImageVector =
     ImageVector.Builder(
@@ -153,7 +153,7 @@ private val CarbMark: ImageVector = filledGlyph("carbmark") {
     moveTo(2.5f, 18f); lineTo(21.5f, 18f); lineTo(20.5f, 21f); lineTo(3.5f, 21f); close()
 }
 
-/** Insulin syringe, upright pointing DOWN; diagonal (nav set) would read as a trace stroke. */
+/** Insulin mark: syringe upright, DOWN - not diagonal (would read as a stroke on the trace). */
 private val InsulinMark: ImageVector = filledGlyph("insulinmark") {
     moveTo(8f, 1f); lineTo(16f, 1f); lineTo(16f, 3.2f); lineTo(13.5f, 3.2f); lineTo(13.5f, 6f)
     lineTo(17.5f, 6f); lineTo(17.5f, 8.2f); lineTo(15.5f, 8.2f); lineTo(15.5f, 16f)
@@ -162,7 +162,7 @@ private val InsulinMark: ImageVector = filledGlyph("insulinmark") {
     lineTo(10.5f, 6f); lineTo(10.5f, 3.2f); lineTo(8f, 3.2f); close()
 }
 
-/** Exercise dumbbell: two weights, two collars, the bar; all rectangles like the other two. */
+/** Exercise mark: a dumbbell, two weights/collars and the bar - all rectangles, like others. */
 private val ExerciseMark: ImageVector = filledGlyph("exercisemark") {
     moveTo(1.5f, 8f); lineTo(5f, 8f); lineTo(5f, 16f); lineTo(1.5f, 16f); close()
     moveTo(6f, 10f); lineTo(8.5f, 10f); lineTo(8.5f, 14f); lineTo(6f, 14f); close()

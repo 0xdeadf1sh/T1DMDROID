@@ -5,7 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 
-/** Exported: HyperOS refuses am start-foreground-service against a non-exported service. */
+/** Exported, unlike [CgmScanService]: HyperOS refuses start-foreground-service on non-exported. */
 class CgmDebugReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return

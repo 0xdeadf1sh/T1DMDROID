@@ -5,7 +5,7 @@ import com.t1dm.core.common.NativeHead
 import timber.log.Timber
 import kotlin.math.abs
 
-/** Re-runnable heads/model; wrong graph gives plausible WRONG fan; failed parity ⇒ [Unusable]. */
+/** Re-runnable BG heads, one per model, opened from the artifact's side file; only when adapted. */
 class HeadCache(private val native: NativeCore) {
 
     sealed interface State {
@@ -54,12 +54,12 @@ class HeadCache(private val native: NativeCore) {
         return State.Ready(head, maxDelta = Double.NaN)
     }
 
-    /** True while a head owes a parity check; caller pays for step states only when needed. */
+    /** True while a model's head owes a parity check; caller pays step states only if needed. */
     @Synchronized
     fun needsVerify(bundle: ModelBundle): Boolean =
         (stateOf(bundle) as? State.Ready)?.maxDelta?.isNaN() == true
 
-    /** Once/model; [stepStates]=step_states of hidden, null if none; [TOL] fp32-fp64 loose. */
+    /** Once per model; stepStates is step_states over hidden. TOL is loose, fp32-vs-fp64 only. */
     @Synchronized
     fun verify(bundle: ModelBundle, stepStates: List<Double>?, headRaw: FloatArray, mSlots: Int) {
         val state = stateOf(bundle) as? State.Ready ?: return

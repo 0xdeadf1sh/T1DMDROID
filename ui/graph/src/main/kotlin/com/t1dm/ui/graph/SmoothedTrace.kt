@@ -6,7 +6,7 @@ import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** mg/dL after causal_smooth (order 2, clamps [20,500]), pre-Kovatchev, into active unit. */
+/** Display only, not the model's input: mg/dL causal_smooth (order 2, [20,500]), pre-Kovatchev. */
 class SmoothedTrace internal constructor(
     /** Absolute epoch-ms per point (ascending). */
     val tsMs: LongArray,
@@ -23,7 +23,7 @@ class SmoothedTrace internal constructor(
     }
 }
 
-/** Index range drawn: visible window widened by one span each side. Empty if nothing in reach. */
+/** Contiguous index range the polyline draws over: visible window widened one span each side. */
 internal fun SmoothedTrace.visibleRange(viewStartMs: Double, viewSpanMs: Double): IntRange {
     if (isEmpty) return IntRange.EMPTY
     val lo = lowerBoundLong(tsMs, kotlin.math.ceil(viewStartMs - viewSpanMs).toLong())
@@ -51,7 +51,7 @@ class SmoothedMgdl internal constructor(
     }
 }
 
-/** Off main thread. [smoothMgdl] causal SavGol, mg/dL, so this module avoids the JNI seam. */
+/** Off the main thread; smoothMgdl is causal SavGol in mg/dL, so this module never links JNI. */
 suspend fun smoothedMgdlOf(
     readings: List<CgmReading>,
     smoothMgdl: (DoubleArray) -> DoubleArray,

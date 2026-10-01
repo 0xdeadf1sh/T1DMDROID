@@ -57,7 +57,7 @@ import kotlin.math.roundToInt
 class GlucoseWidget : GlanceAppWidget() {
     override val sizeMode = SizeMode.Responsive(setOf(Compact, Medium, Large, XLarge))
 
-    /** Three tiers, never blank: live, else snapshot, else unknown; pull is wall-clock bounded. */
+    /** Three tiers, never blank: live pull, else persisted snapshot, else the unknown floor. */
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val nowMs = System.currentTimeMillis()
         val live = boundedWidgetPull(
@@ -84,7 +84,7 @@ class GlucoseWidget : GlanceAppWidget() {
         }
     }
 
-    /** Default replaces the tile with Glance error layout; a stale number beats an error card. */
+    /** The default replaces the tile with Glance's error layout; a stale number beats error. */
     override fun onCompositionError(context: Context, glanceId: GlanceId, appWidgetId: Int, throwable: Throwable) {
         Timber.tag(TAG).w(throwable, "widget composition failed — leaving the previous tile in place")
     }
@@ -101,10 +101,10 @@ class GlucoseWidget : GlanceAppWidget() {
     companion object {
         private const val TAG = "GlucoseWidget"
 
-        /** Reading younger than this renders fresh accent; FGS schedules one re-render past it. */
+        /** A reading younger than this renders the fresh accent; FGS re-renders once it passes. */
         const val FRESH_WINDOW_MS = 2000L
 
-        /** Healthy pull is tens of ms; this only bounds a cold or still-locked process. */
+        /** A healthy pull is tens of ms; this only bounds a cold or still-locked process. */
         const val SNAPSHOT_BUDGET_MS = 2500L
     }
 }
@@ -338,7 +338,7 @@ private fun bandColor(band: AlertBand?, p: T1dmPalette): Color = when (band) {
     null -> p.inkMuted
 }
 
-/** readingAgeMs is 0 with no reading; BgFormat.age would wrongly render that as now. */
+/** BgGlance.readingAgeMs is 0 with no reading, which BgFormat.age renders as a confident "now". */
 private fun ageText(g: BgGlance): String = if (g.hasReading) BgFormat.age(g.readingAgeMs) else "no reading"
 
 private fun forecastText(g: BgGlance): String = when {

@@ -5,12 +5,12 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 
-/** Content colour PINNED (contentColorFor gives inkMuted); read LocalContentColor not onSurface. */
+/** Content colour PINNED, not inferred; contrast then guaranteed by [legibleInkOver]. */
 @Composable
 fun panelCardColors(): CardColors {
     val cs = MaterialTheme.colorScheme
     val container = cs.surfaceVariant
-    // Measured against the panel AS PAINTED: an imported theme's alpha makes raw roles fictional.
+    // Measured against the panel AS PAINTED: raw roles may not describe the painted panel.
     val ink = legibleInkOver(cs.background, container, cs.onSurface)
     return CardDefaults.cardColors(
         containerColor = container,

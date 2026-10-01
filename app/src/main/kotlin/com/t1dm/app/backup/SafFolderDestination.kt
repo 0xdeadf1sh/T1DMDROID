@@ -8,7 +8,7 @@ import com.t1dm.data.backup.Archive
 import java.io.InputStream
 import java.io.OutputStream
 
-/** Matched by [PREFIX], not extension (providers rewrite it); archive id is its gzip magic. */
+/** Matched by PREFIX not extension: providers rewrite names, gzip magic identifies the archive. */
 class SafFolderDestination(
     context: Context,
     private val treeUri: Uri,
@@ -26,7 +26,7 @@ class SafFolderDestination(
     override suspend fun write(name: String, body: suspend (OutputStream) -> Unit): StoredBackup {
         val target = DocumentsContract.createDocument(resolver, parentDocUri, MIME, name)
             ?: throw BackupDestinationException("could not create a file in $label")
-        // A partial document here would be swept by retention, pruning a good backup for room.
+        // A partial doc left here is counted by the retention sweep, pruning a good backup.
         try {
             resolver.openOutputStream(target)?.use { body(it) }
                 ?: throw BackupDestinationException("could not open $name for writing")
@@ -62,7 +62,7 @@ class SafFolderDestination(
                 )
             }
         }
-        // Name is the tie-break: providers report no last-modified, but name carries a stamp.
+        // Name as tie-break: some providers report no last-modified, name carries a sortable stamp.
         out.sortWith(compareByDescending<StoredBackup> { it.modifiedAtMs }.thenByDescending { it.name })
         return out
     }
@@ -123,5 +123,5 @@ class SafFolderDestination(
     }
 }
 
-/** Message shown to user; distinct from a parse failure so the panel names folder vs file. */
+/** Its message is shown to the user; distinct from a parse failure so the panel names the cause. */
 class BackupDestinationException(message: String) : java.io.IOException(message)

@@ -10,7 +10,7 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Every literal below is verbatim from a real host; rewrites notes/enteredBy/created_at/carbs. */
+/** Every literal is a verbatim host body: rewrites enteredBy, invents carbs:0 on none. */
 class NightscoutHostEchoTest {
 
     private val echoedBolus = NsJson.decodeFromString(
@@ -60,7 +60,7 @@ class NightscoutHostEchoTest {
         assertFalse(echoedMeal.matches(sentBolus))
     }
 
-    /** A host keying by timestamp keeps only the first of a grid-snapped pair, 200s the second. */
+    /** A host keying by timestamp keeps only the first of a grid-snapped meal+bolus pair. */
     @Test
     fun `a meal and its bolus do not share a timestamp`() {
         val meal = LoggedMealEntity(

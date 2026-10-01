@@ -9,7 +9,7 @@ enum class GameHold {
     Modal,
 }
 
-/** A bitmask, not one flag: releases arrive out of order, an alarm must not resume the world. */
+/** A bitmask over GameHold; a set, not one flag, since releases arrive out of order. */
 @JvmInline
 value class GameHolds(val bits: Int) {
     fun with(hold: GameHold, on: Boolean): GameHolds =
@@ -26,7 +26,7 @@ value class GameHolds(val bits: Int) {
     }
 }
 
-/** Plain volatile memory, not snapshot state: polled every frame, must not recompose per frame. */
+/** Plain volatile memory, not snapshot: written on main, polled on game thread every frame. */
 class GamePauseGate {
     @Volatile
     var holds: GameHolds = GameHolds.NONE
@@ -39,7 +39,7 @@ class GamePauseGate {
     }
 }
 
-/** A PHASE, not a min delta: [dueNs] advances by [periodNs]. Returns REAL elapsed, not nominal. */
+/** The schedule is a PHASE, not a delta: dueNs advances exactly periodNs per simulated frame. */
 class FrameClockPacer(private val periodNs: Long = FRAME_NS_60) {
     private val slackNs = periodNs / 4
     private var markNs = 0L
@@ -65,7 +65,7 @@ class FrameClockPacer(private val periodNs: Long = FRAME_NS_60) {
     }
 
     companion object {
-        /** Nominal 60 fps; ¼-period slack admits ±4.2 ms drift vs 120 Hz. No rate governor. */
+        /** Nominal 60 fps; quarter-period slack admits ±4.2ms drift vs 120 Hz's 8.3ms gap. */
         const val FRAME_NS_60 = 16_666_667L
     }
 }

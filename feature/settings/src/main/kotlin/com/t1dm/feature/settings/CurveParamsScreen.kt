@@ -91,7 +91,7 @@ fun CurveParamsScreen(
     }
 }
 
-/** Grams/min, committed on release not per drag; range is store's own, thumb can't hit a clamp. */
+/** g/min, committed on release not per sample (kv-backed). [range] matches the writer's clamp. */
 @Composable
 private fun CarbEquivSlider(
     value: Double,

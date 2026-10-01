@@ -2,7 +2,7 @@ package com.t1dm.calc
 
 import com.t1dm.core.model.BackendId
 
-/** null [lastMeasuredTsMs] ⇒ no MEASURED; [interpolatedFraction] = INTERPOLATED/WARMUP share. */
+/** lastMeasuredTsMs null = no MEASURED reading. interpolatedFraction: INTERPOLATED/WARMUP share. */
 data class AnchorInfo(
     val lastMeasuredTsMs: Long?,
     val anchorTsMs: Long,
@@ -18,7 +18,7 @@ data class IobSnapshot(
     /** Bolus and basal. */
     val iobU: Double?,
     val cobG: Double,
-    /** `MAX(MIN(tsMs,loggedAtMs))`, not `MAX(tsMs)`: a dragged dose mustn't quiet its rail. */
+    /** MAX(MIN(tsMs,loggedAtMs)), not MAX(tsMs): a dragged-forward dose mustn't quiet the rail. */
     val lastLoggedDoseTsMs: Long?,
     /** What the IOB ceiling reads; basal on board runs to tens of units at steady state. */
     val bolusIobU: Double? = iobU,
@@ -29,7 +29,7 @@ data class IobSnapshot(
 data class BackendInfo(
     val backend: BackendId,
 ) {
-    /** §3.6-E: only fp32 XNNPACK CPU drives a dose; StubBackend and classical baseline refuse. */
+    /** §3.6-E: only fp32 XNNPACK CPU authority drives a dose; StubBackend/baseline both refuse. */
     val trustworthy: Boolean get() = backend == BackendId.EXECUTORCH_XNNPACK_FP32
 }
 

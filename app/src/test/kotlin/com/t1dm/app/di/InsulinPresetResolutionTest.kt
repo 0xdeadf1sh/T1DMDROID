@@ -81,7 +81,7 @@ class InsulinPresetResolutionTest {
         assertNull(resolveInsulinPreset(catalog.filter { it.family == InsulinFamily.RapidGamma }, InsulinFamily.BasalBateman, null, null))
     }
 
-    /** Per-device state, not config: an export would set another install's next dose curve. */
+    /** Per-device state, not config: an export would set another install next dose curve. */
     @Test
     fun `the last-used insulin is not exportable configuration`() {
         assertTrue(!SettingsStore.isConfigKey(SettingsStore.K_LAST_RAPID_PRESET))

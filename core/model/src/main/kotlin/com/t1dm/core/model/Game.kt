@@ -1,6 +1,6 @@
 package com.t1dm.core.model
 
-/** Hill-climb minigame car physics; terrain IS the glucose trace. Cosmetic, no fail-closed path. */
+/** Hill-climb minigame's 2D car physics; cosmetic only, never touches the fail-closed path. */
 
 /** Which minigame the dashboard panel is in; both read the same trace and write nothing. */
 enum class GameKind {
@@ -14,7 +14,7 @@ enum class GamePropDensity {
     Busy,
 }
 
-/** Every non-Running value is TERMINAL: world freezes, re-returns the same CarState until reset. */
+/** Every non-[Running] value is TERMINAL: world freezes, re-returns same [CarState] until reset. */
 enum class RunState {
     Running,
 
@@ -25,7 +25,7 @@ enum class RunState {
     Finished,
 }
 
-/** heights: ground at x=i*dx, piecewise-linear; negative/non-finite is a GAP (dropout=chasm). */
+/** [heights]: negative or non-finite = GAP (no ground) — how a CGM dropout becomes a chasm. */
 data class TerrainSpec(
     val heights: List<Float>,
     val dx: Float,
@@ -60,7 +60,7 @@ data class CarTuning(
     val crashTiltRad: Float,
 )
 
-/** Angles radians, y-up CCW-positive; rearAngle/frontAngle negated on canvas. Read vx, not dx. */
+/** Pose interpolates: [x] can lag [vx] by one tick — read [vx], don't differentiate [x]. */
 data class CarState(
     val x: Float,
     val y: Float,
@@ -72,7 +72,7 @@ data class CarState(
     val rearY: Float,
     val rearAngle: Float,
     val rearOmega: Float,
-    /** Carrying load or within 0.2m speculative reach of ground — near-contact, not geometric. */
+    /** Near-contact (0.2 m speculative reach) or load-bearing, not geometric. Instantaneous. */
     val rearContact: Boolean,
     val frontX: Float,
     val frontY: Float,
@@ -83,7 +83,7 @@ data class CarState(
     val throttleApplied: Float,
     val impactImpulse: Float,
     val roughness: Float,
-    /** No contact for game.rs AIRBORNE_ARM_TICKS; not !contact; slow to arm, fast to clear. */
+    /** Clear for game.rs AIRBORNE_ARM_TICKS, not simply !contact — a lip can clear for one tick. */
     val airborne: Boolean,
     /** Furthest x reached, from the start line. Monotone non-decreasing. */
     val distanceM: Float,

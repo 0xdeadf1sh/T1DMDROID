@@ -6,7 +6,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Source scan holds each screen's call sites equal to its entries; covers what types can't see. */
+/** Source scan matches each screen's call sites to declared entries; catches bespoke controls. */
 class SettingsIndexTest {
 
     @Test

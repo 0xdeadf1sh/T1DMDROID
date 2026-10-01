@@ -8,7 +8,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import com.t1dm.core.model.ReconstructedBg
 
-/** In the forecasts hand: a run opens/closes into the trace at zero width, breaks at gaps. */
+/** Drawn in the forecast's hand: same pairs/alphas/weight; opens/closes at zero width, breaks. */
 internal fun DrawScope.drawReconstruction(
     rows: List<ReconstructedBg>,
     xOf: (Long) -> Float,
@@ -19,7 +19,7 @@ internal fun DrawScope.drawReconstruction(
     plotRight: Float,
     /** The trace's y in pixels at a grid slot; null where it draws nothing there. */
     anchorPxAt: (Long) -> Float?,
-    /** Hoisted by caller, reused every band/run: Path is native, else 3 built per run per frame. */
+    /** Hoisted by the caller, reused per band per run: a Path is native, three built per frame. */
     scratch: Path,
 ) {
     if (rows.isEmpty()) return
@@ -154,14 +154,14 @@ internal data class ReconTween(
     val to: List<ReconstructedBg>,
 )
 
-/** The only case a move interpolates: sliding between slot sets draws through unspoken-of slots. */
+/** Only case a move may interpolate through: other slot sets draw through unspoken slots. */
 internal fun sameSlots(a: List<ReconstructedBg>, b: List<ReconstructedBg>): Boolean {
     if (a.size != b.size || a.isEmpty()) return false
     for (i in a.indices) if (a[i].tsMs != b[i].tsMs) return false
     return true
 }
 
-/** Only [ReconstructedBg.mgdl] moves: a τ sweep retraces an already-emitted fan, unchanged. */
+/** Only ReconstructedBg.mgdl moves: a τ sweep retraces an already-emitted fan, unchanged. */
 internal fun lerpReconstruction(
     from: List<ReconstructedBg>,
     to: List<ReconstructedBg>,

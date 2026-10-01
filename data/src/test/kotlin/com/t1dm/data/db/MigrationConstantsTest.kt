@@ -9,7 +9,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
-/** Migrations can't read a renameable constant; DDL unchecked till device upgrade, no fallback. */
+/** Migration must not read a renameable constant; DDL unchecked till upgrade (launch crash). */
 class MigrationConstantsTest {
 
     /** One exported schema, whichever directory the suite runs from. */
@@ -46,7 +46,7 @@ class MigrationConstantsTest {
         assertTrue("the lora index DDL is not the one Room expects: $index", text.contains(index))
     }
 
-    /** A Kotlin default governs INSERT, not DDL; additive migration can build an unlike table. */
+    /** Kotlin default governs INSERT, not DDL; migration may diverge from fresh install schema. */
     @Test
     fun `every column the additive migrations add is in the exported schema`() {
         val text = schemaText(23)
@@ -257,7 +257,7 @@ class MigrationConstantsTest {
         assertTrue("zero-based: $sql", sql.trimEnd().endsWith("- 1"))
     }
 
-    /** An allowlist, not a denylist: a denylist would name every vendor in a public-branch file. */
+    /** Allowlist, not denylist: naming vendors leaks into a file shared with the public branch. */
     @Test
     fun `the v19 statements name only tables and columns`() {
         val statements = listOf(
@@ -275,7 +275,7 @@ class MigrationConstantsTest {
         }
     }
 
-    /** loggedAtMs backfills from updatedAt, not 0 — else gap marks hit epoch, firing confirm. */
+    /** loggedAtMs takes updatedAt; backfill 0 epoch-stamps gaps, firing mandatoryConfirmation. */
     @Test
     fun `the v21 statements add columns and back-fill loggedAtMs from updatedAt`() {
         for (sql in listOf(
@@ -305,7 +305,7 @@ class MigrationConstantsTest {
         assertTrue("the rail reads this after the dose row is gone", create.contains("`actingUntilMs`"))
     }
 
-    /** ABSENT means unchecked, blocks like a failed check; 'PASS' attaches pre-guard adapters. */
+    /** ABSENT=unchecked, blocks like failed. PASS default would attach every pre-guard adapter. */
     @Test
     fun `the v23 verdict back-fills to the state that refuses attach`() {
         val sql = MigrationRunner.SQL_22_23_LORA_GUARD_VERDICT
@@ -336,7 +336,7 @@ class MigrationConstantsTest {
         }
     }
 
-    /** The unwind re-derives a replay's curve from the row; shape columns must be NOT NULL. */
+    /** Unwind re-derives a replay's curve from the row; shape columns must be NOT NULL. */
     @Test
     fun `the replay DDL declares exactly the entity's columns, curve shape included`() {
         val declared = BACKTICKED.findAll(MigrationRunner.SQL_26_27_LOGGED_EXERCISE)

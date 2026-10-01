@@ -20,7 +20,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** saved_meal_item has no FK/cascade, so an orphan is permanent. BundledSQLiteDriver, like prod. */
+/** saved_meal_item has no FK/cascade: an orphaned item row is permanent (BundledSQLiteDriver). */
 @RunWith(AndroidJUnit4::class)
 class SavedMealUpdateTest {
 
@@ -87,7 +87,7 @@ class SavedMealUpdateTest {
         assertEquals("the replaced portions must be gone, not merely hidden", 3L, totalItemRows())
     }
 
-    /** observeMeals() selects saved_meal alone; item-only edit must write header or Flow stalls. */
+    /** observeMeals() reads saved_meal alone; an item-only edit must still write the header. */
     @Test
     fun itemOnlyEditStillWritesTheHeader() = runBlocking {
         val id = repo.saveMeal("lunch", listOf(item("rice", 100.0)), t0)
@@ -125,7 +125,7 @@ class SavedMealUpdateTest {
         assertEquals("the other meal is untouched and nothing was stranded", 3L, totalItemRows())
     }
 
-    /** Header UPDATE matches nothing; with no foreign key the items are unreachable orphans. */
+    /** Header UPDATE matches nothing; with no foreign key the items would be unreachable. */
     @Test
     fun updateOfADeletedMealWritesNothing() = runBlocking {
         val id = repo.saveMeal("gone", listOf(item("apple", 100.0)), t0)

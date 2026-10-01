@@ -18,7 +18,7 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
 
-/** Haptic bed with transients; every arm is FINITE, and never calls Vibrator.cancel (per-uid). */
+/** Never calls Vibrator.cancel: it's per-uid and would cancel :alerts too. */
 
 /** Ordered by [priority] — the only thing the mixer arbitrates on. */
 enum class HapticCue(internal val priority: Int, internal val steps: List<HapticStep>) {
@@ -44,13 +44,13 @@ enum class HapticCue(internal val priority: Int, internal val steps: List<Haptic
 /** ~2 frames at 60 fps: 17 binder calls a second rather than 60. */
 internal const val CONTROL_PERIOD_MS = 60L
 
-/** One re-arm's worth: longer than CONTROL_PERIOD_MS so arms overlap, a missed one is inaudible. */
+/** Longer than CONTROL_PERIOD_MS so arms overlap; short enough a missed re-arm is inaudible. */
 internal const val SUSTAIN_MS = 220L
 
 /** The hush around a cue. */
 internal const val DUCK_WINDOW_MS = 120L
 
-/** What the bed holds to for the rest of the hush; not zero, vanishing reads as a fault. */
+/** Held during the rest of the hush. Not zero: vanish-and-reappear reads as a fault. */
 internal const val DUCK_LEVEL = 0.06f
 
 /** Below this a scaled bed is not worth an actuator cycle, so it is rendered as silence. */
@@ -70,7 +70,7 @@ internal sealed interface BedAction {
     data object Idle : BedAction
 }
 
-/** Single-threaded except release/resume; only the driving thread touches the renderer. */
+/** Single-threaded: only release/resume may be called off the one thread driving the surface. */
 internal class HapticMixCore(private val nowMs: () -> Long) {
 
     private var texture = 0f
@@ -85,12 +85,12 @@ internal class HapticMixCore(private val nowMs: () -> Long) {
     var released = false
         private set
 
-    /** Written from the main thread (alarm interlock); read by the driving thread each frame. */
+    /** Written from the main thread; read by the driving thread each frame. */
     fun release() {
         released = true
     }
 
-    /** Plain fields cleared BEFORE the volatile flag, publishing the reset to released's reader. */
+    /** Plain fields cleared before the volatile flag publishes reset; else risks stale duck. */
     fun resume() {
         // Re-enter from silence, so the bed swells back rather than snapping.
         rendered = 0f
@@ -102,7 +102,7 @@ internal class HapticMixCore(private val nowMs: () -> Long) {
         released = false
     }
 
-    /** Called every frame; at most one re-arm per CONTROL_PERIOD_MS, one Lapse down to silence. */
+    /** Called every frame; ≤1 re-arm per CONTROL_PERIOD_MS, exactly one Lapse toward silence. */
     fun bed(level: Float, texture: Float, strength: HapticStrength): BedAction {
         if (released || strength == HapticStrength.OFF) return lapse()
         this.texture = texture.coerceIn(0f, 1f)
@@ -128,7 +128,7 @@ internal class HapticMixCore(private val nowMs: () -> Long) {
         return BedAction.Arm(from, target, this.texture)
     }
 
-    /** Scaled steps to play, or null when DROPPED, the only thing that happens if it can't play. */
+    /** Scaled steps to play, or null when the cue was DROPPED — the only outcome for a busy cue. */
     fun cue(cue: HapticCue, intensity: Float, strength: HapticStrength): List<HapticStep>? {
         if (released || strength == HapticStrength.OFF) return null
         val now = nowMs()
@@ -137,7 +137,7 @@ internal class HapticMixCore(private val nowMs: () -> Long) {
         cuePriority = cue.priority
         cueEndsMs = now + cue.durationMs
         duckUntilMs = now + DUCK_WINDOW_MS
-        // The cue owns the actuator; the next arm re-enters from silence once it finishes.
+        // Cue owns the actuator; next arm re-enters from silence once the cue finishes.
         rendered = 0f
         armedDucked = true
         nextArmMs = cueEndsMs
@@ -176,14 +176,14 @@ private val GAME_ATTRIBUTES: VibrationAttributes by lazy {
     ).build()
 }
 
-/** Emits as media (USAGE_GAME): an always-on bed must not arbitrate as UNKNOWN vs UI ticks. */
+/** Emits as media (USAGE_GAME) so it doesn't arbitrate as UNKNOWN against the app's UI ticks. */
 private abstract class VibratorRenderer(
     protected val vibrator: Vibrator,
     private val composes: Boolean,
 ) : HapticRenderer {
 
     protected fun emit(effect: VibrationEffect) {
-        // Never throws: an absent, busy or policy-blocked vibrator must not take a frame with it.
+        // Never throws: an absent, busy, or policy-blocked vibrator must not cost a frame.
         runCatching { vibrator.vibrate(effect, GAME_ATTRIBUTES) }
     }
 
@@ -202,7 +202,7 @@ private abstract class VibratorRenderer(
     }
 }
 
-/** Only path that sweeps; BasicEnvelopeBuilder not frequency-variant (many LRAs report NaN). */
+/** BasicEnvelopeBuilder, not WaveformEnvelopeBuilder: many LRAs report NaN for frequencyProfile. */
 @RequiresApi(36)
 private class EnvelopeRenderer(
     vibrator: Vibrator,
@@ -231,7 +231,7 @@ private class EnvelopeRenderer(
     private fun point(ms: Long): Long = ms.coerceIn(minPointMs, maxPointMs)
 }
 
-/** Train of PRIMITIVE_LOW_TICKs dense enough to fuse into texture; can't sweep, spacing does. */
+/** PRIMITIVE_LOW_TICK train; grain spacing carries texture since it cannot sweep. */
 private class PrimitiveStreamRenderer(vibrator: Vibrator) : VibratorRenderer(vibrator, composes = true) {
 
     override fun arm(from: Float, to: Float, texture: Float) {
@@ -258,7 +258,7 @@ private class PrimitiveStreamRenderer(vibrator: Vibrator) : VibratorRenderer(vib
         const val GRAIN_SMOOTH_MS = 34f
         const val GRAIN_ROUGH_MS = 12f
 
-        /** compositionSizeMax not exposed publicly; 16 sits under every value seen in the wild. */
+        /** compositionSizeMax isn't public; 16 sits under every value seen in the wild. */
         const val MAX_GRAINS = 16
 
         /** How much of the train is spent arriving at [to]. */
@@ -266,7 +266,7 @@ private class PrimitiveStreamRenderer(vibrator: Vibrator) : VibratorRenderer(vib
     }
 }
 
-/** Stepped amplitude; only path with no primitives/envelopes; 5ms steps = rampStepDurationMs. */
+/** Stepped amplitude; ramps in 5ms steps (rampStepDurationMs) or re-arms read as a pulse train. */
 private class WaveformRenderer(
     vibrator: Vibrator,
     composes: Boolean,
@@ -326,7 +326,7 @@ private class WaveformRenderer(
     }
 }
 
-/** Richest path the actuator can take, ordered by fidelity not API vintage; target lands third. */
+/** Ordered by fidelity, not API vintage; falls to the third (waveform) branch if unsupported. */
 private fun pickRenderer(vibrator: Vibrator): HapticRenderer {
     // Probed as one set: composing LOW_TICK but not SPIN would build a Shock it cannot render.
     val composes = runCatching {
@@ -356,7 +356,7 @@ private fun pickRenderer(vibrator: Vibrator): HapticRenderer {
     return WaveformRenderer(vibrator, composes, amplitude)
 }
 
-/** Intensity read fresh via strengthOf, never a field; bed/cue own-thread, rest called anywhere. */
+/** strengthOf reads fresh each call. bed/cue: surface thread; release/resume/close: any thread. */
 @Stable
 class HapticMixer internal constructor(
     private val renderer: HapticRenderer?,
@@ -368,7 +368,7 @@ class HapticMixer internal constructor(
     @Volatile
     private var closed = false
 
-    /** level is amplitude in [0,1], texture its graininess; mixer decides the actuator write. */
+    /** level is amplitude in [0,1], texture its graininess. Mixer decides when to write. */
     fun bed(level: Float, texture: Float = 0f) {
         val r = renderer ?: return
         if (closed) return
@@ -386,7 +386,7 @@ class HapticMixer internal constructor(
         core.cue(cue, intensity, strengthOf())?.let(r::oneShot)
     }
 
-    /** Alarm interlock: hands actuator back, refuses bed/cue until resume; nothing cancelled. */
+    /** Alarm interlock: refuses bed/cue until resume(); :alerts stays unclipped. */
     fun release() = core.release()
 
     /** The bed swells from silence rather than snapping. */
@@ -413,7 +413,7 @@ class HapticMixer internal constructor(
     }
 }
 
-/** Closed when composition leaves; ui.haptics change mid-run lands next frame, no recompose. */
+/** Closed on composition leave; ui.haptics changes mid-run land next frame, no recomposition. */
 @Composable
 fun rememberHapticMixer(): HapticMixer {
     val engine = LocalT1dmHaptics.current

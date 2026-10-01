@@ -5,7 +5,7 @@ import kotlin.math.ceil
 /** Rate [y] (>= 0) at [xMin] minutes from the log instant. */
 data class BezierPoint(val xMin: Double, val y: Double)
 
-/** Pure shape; [sampleNormalized] area-normalises to total. C¹ Catmull-Rom Hermite, clamped ≥0. */
+/** Pure shape: [sampleNormalized] normalizes area to a total; y scale is otherwise irrelevant. */
 data class BezierCurve(
     val durationMin: Double,
     val points: List<BezierPoint>,
@@ -36,7 +36,7 @@ data class BezierCurve(
         return (h00 * p1.y + h10 * m1 + h01 * p2.y + h11 * m2).coerceAtLeast(0.0)
     }
 
-    /** ceil(durationMin/stepMin) buckets, midpoint rule, sum to [total]; zero if no area. */
+    /** `ceil(durationMin/stepMin)` buckets, midpoint rule, sum to [total]; zero if flat. */
     fun sampleNormalized(total: Double, stepMin: Double = 5.0): List<Double> {
         val n = ceil(durationMin / stepMin).toInt().coerceAtLeast(1)
         val raw = DoubleArray(n) { i -> valueAt((i + 0.5) * stepMin).coerceAtLeast(0.0) }
@@ -46,7 +46,7 @@ data class BezierCurve(
         return raw.map { it * scale }
     }
 
-    /** No positive area; refuse plainly, don't save a silent zero (OOD, clinically meaningless). */
+    /** Flat curve: refuse it, don't save a silent zero — OOD and clinically meaningless. */
     fun isDegenerate(stepMin: Double = 5.0): Boolean {
         val n = ceil(durationMin / stepMin).toInt().coerceAtLeast(1)
         var area = 0.0

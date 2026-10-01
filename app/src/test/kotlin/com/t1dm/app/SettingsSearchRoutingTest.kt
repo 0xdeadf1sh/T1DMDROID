@@ -8,7 +8,7 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Index knows only an opaque key, not routes; :app is where both halves are checked. */
+/** Index names a screen by an opaque key, knows no routes; :app holds the two halves together. */
 class SettingsSearchRoutingTest {
 
     @Test
@@ -66,7 +66,7 @@ class SettingsSearchRoutingTest {
     }
 
     private companion object {
-        /** Outside :feature:settings, missed by the prefix filter; listed explicitly. */
+        /** Outside :feature:settings, missed by registeredSettingsRoutes' prefix filter. */
         val OFF_MODULE_ROUTES = setOf("models", "backup")
     }
 

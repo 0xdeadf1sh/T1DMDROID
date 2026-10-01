@@ -293,7 +293,7 @@ private fun DrawScope.drawHelloKittyBackground(p: T1dmPalette) {
     drawCircle(lerp(bow, Color.White, 0.30f).copy(alpha = 0.7f), radius = rF * 0.11f, center = Offset(bx, by), style = Stroke(width = w * 0.005f))
 }
 
-/** Paper, not print: soft page wash and grain; every speck from [hashFrac], same each recompose. */
+/** Paper, not print: page wash+grain. Every speck from [hashFrac], same on every recompose. */
 private fun DrawScope.drawEInkBackground(p: T1dmPalette) {
     val w = size.width
     val h = size.height

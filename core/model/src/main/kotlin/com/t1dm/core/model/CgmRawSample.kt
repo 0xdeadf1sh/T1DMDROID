@@ -1,6 +1,6 @@
 package com.t1dm.core.model
 
-/** As-received sample at [rxWallMs], off-grid, never snapped back; display/diagnosis only. */
+/** Off-grid, never snapped back; [CgmReading] is the grid (invariants.md §1); display/diagnosis. */
 data class CgmRawSample(
     val sourceId: CgmSourceId,
     val rxWallMs: Long,

@@ -7,7 +7,7 @@ import com.t1dm.core.model.TrackPoint
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
-/** [bodyMassKg] is panel-owned per-device state, deliberately outside the shareable config. */
+/** bodyMassKg is panel-owned per-device state, deliberately outside the shareable config export. */
 interface ExerciseSource {
 
     /** Every recorded session, newest first. */

@@ -21,20 +21,20 @@ fun sha1Hex(input: String): String =
         .digest(input.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
-/** Either form (plaintext or SHA-1); 40 hex=digest, else hashed; 40-hex plaintext fails loudly. */
+/** 40 hex chars is taken as the digest, else hashed; a 40-hex plaintext fails loud at Test. */
 fun normalizeApiSecret(input: String): String {
     val trimmed = input.trim()
     val isDigest = trimmed.length == 40 && trimmed.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
     return if (isDigest) trimmed.lowercase() else sha1Hex(trimmed)
 }
 
-/** URL/flag in kv, secret in Keystore [TokenStore]; secret never enters Room, URL never logged. */
+/** Secret lives in Keystore-backed TokenStore, never the Room DB, so backups can't carry it. */
 class NightscoutConfigStore(
     private val getKv: suspend (String) -> String?,
     private val putKv: suspend (String, String, Long) -> Unit,
     private val tokens: TokenStore,
 ) {
-    /** Read per request, so switching the bridge off takes effect next row, not next launch. */
+    /** Read per request: bridge off takes effect on the next row, not at next launch. */
     suspend fun current(): NightscoutConfig? {
         if (!enabled()) return null
         val url = url()?.takeIf { it.isNotBlank() } ?: return null
@@ -61,7 +61,7 @@ class NightscoutConfigStore(
         return stored?.takeIf { it.isNotBlank() }
     }
 
-    /** Blank [secretInput] KEEPS the secret: field is write-only, reads blank; erase disarms it. */
+    /** Blank secretInput KEEPS the stored secret: field is write-only, reads back blank. */
     suspend fun save(baseUrl: String, secretInput: String, enabled: Boolean, nowMs: Long) {
         putKv(NightscoutKeys.URL, baseUrl.trim().trimEnd('/'), nowMs)
         putKv(NightscoutKeys.ENABLED, if (enabled) "1" else "0", nowMs)

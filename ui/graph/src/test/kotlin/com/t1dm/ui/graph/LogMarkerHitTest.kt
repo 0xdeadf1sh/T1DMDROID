@@ -6,7 +6,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Tap resolves to POSITIONS IN THE FEED, never identity. Geometry: dpPx=1, 1px==1000ms. */
+/** Tap resolves to positions in the feed, never a marker id; 1 px == 1000 ms geometry. */
 class LogMarkerHitTest {
 
     private val T0 = 1_700_000_000_000L
@@ -24,14 +24,14 @@ class LogMarkerHitTest {
     /** A gap two marks always combine across: half the clustering distance. In px. */
     private val STEP = logMarkerSeparationPx(DP) / 2f
 
-    /** How far outside the plot a STRADDLING marks centroid sits — a third of a glyph shows. */
+    /** How far outside the plot a STRADDLING mark's centroid sits — a third of a glyph. */
     private val STRADDLE = LOG_MARKER_DP * DP / 3f
 
     private fun carb(offsetMs: Long) = LogMarker(T0 + offsetMs, CurveKind.CARB)
 
     private fun insulin(offsetMs: Long) = LogMarker(T0 + offsetMs, CurveKind.INSULIN)
 
-    /** Feed split/clustered as the panel does, tapped at (x,y). viewStartMs pans off the edge. */
+    /** Feed split/clustered as the panel does, tapped at (x,y); viewStartMs pans the window. */
     private fun tap(
         feed: List<LogMarker>,
         x: Float,
@@ -64,7 +64,7 @@ class LogMarkerHitTest {
     }
 
     @Test fun noPointCanEverReachTwoMarksOfOneLane() {
-        // Two marks that stayed apart are more than a separation apart; reach is half of it.
+        // Marks that stayed apart are more than a separation apart; the reach is half of it.
         val feed = listOf(carb(0), carb(40_000)) // 40 px apart: past the separation ⇒ two marks
         var hits0 = 0
         var hits1 = 0
@@ -90,7 +90,7 @@ class LogMarkerHitTest {
     }
 
     @Test fun aTapOutsideThePlotIsNotAMarkerTap() {
-        // Pointer node is the whole panel, gutter/margin incl.; without the bound labels open.
+        // Pointer node is the whole panel, gutter+margin — else axis labels open modals.
         val feed = listOf(carb(0), carb(1_000_000))
         assertTrue(tap(feed, LEFT - 1f, carbLaneY).isEmpty())
         assertTrue(tap(feed, RIGHT + 1f, carbLaneY).isEmpty())
@@ -100,7 +100,7 @@ class LogMarkerHitTest {
     }
 
     @Test fun theGutterCannotOpenAMarkStandingOverIt() {
-        // Clustering keeps a mark OUTSIDE the plot up to a separation; reach alone would answer.
+        // A cluster can sit outside the plot by a separation; the plot bound refuses that tap.
         val feed = listOf(carb(0))
         val straddling = T0.toDouble() + STRADDLE * 1000.0 // the mark projects to x = −STRADDLE
         var x = LEFT - logMarkerTapReachPx(DP)
@@ -133,7 +133,7 @@ class LogMarkerHitTest {
     }
 
     @Test fun theColumnHoldsEvenWhenTheTwoLanesCentroidsHaveDrifted() {
-        // A lanes mark absorbing a neighbour misaligns glyphs. Per-lane hit-test keeps one column.
+        // Once a lane absorbs a neighbour, per-lane hit-testing keeps the column one column.
         val feed = listOf(insulin(250_000), insulin(250_000 + (STEP * 1000).toLong()), carb(250_000))
         // The two insulins combined, so their mark stands half a STEP right of the carb's.
         val out = tap(feed, 250f + STEP / 2f, carbLaneY)
@@ -159,7 +159,7 @@ class LogMarkerHitTest {
     }
 
     @Test fun twoLogsInOneGridSlotAreBothNamed() {
-        // Same instant/channel, two rows: feed positions differ though the markers do not.
+        // Same instant and channel, two rows: feed positions differ though markers do not.
         val feed = listOf(carb(250_000), carb(250_000))
         assertEquals(listOf(0, 1), tap(feed, 250f, carbLaneY))
     }

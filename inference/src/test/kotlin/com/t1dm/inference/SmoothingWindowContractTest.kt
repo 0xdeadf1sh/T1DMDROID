@@ -4,7 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** INFERENCE.md §7.1: build_context fails closed on non-odd/positive; caller must snap first. */
+/** INFERENCE.md §7.1: build_context fails closed on non-odd/positive window; callers must snap. */
 class SmoothingWindowContractTest {
 
     @Test

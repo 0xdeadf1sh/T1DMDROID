@@ -13,7 +13,7 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** One forecast to draw; tsMs epoch-ms per step, values unit-converted, lo/hi three nested fans. */
+/** One model's forecast, ready to draw; tsMs absolute epoch-ms, values already unit-converted. */
 class PredSeries internal constructor(
     val modelId: String,
     val selected: Boolean,
@@ -28,7 +28,7 @@ class PredSeries internal constructor(
     val isEmpty: Boolean get() = tsMs.isEmpty()
 }
 
-/** Off-thread (§2.3); calibrateBands is SPEC/inference.md §8.4, applied only here before pixels. */
+/** Off-thread (§2.3); calibrateBands is §8.4, applied here last, stored/pushed/alarms read raw. */
 suspend fun predOverlayOf(
     predictions: List<ModelPrediction>,
     unit: UnitSpace = UnitSpace.MgDl,
@@ -46,7 +46,7 @@ internal fun writePredLanes(p: ModelPrediction, bands: List<Double>, dst: Double
     val n = p.horizonSteps
     val q = p.nQuantiles
     val w = n + 1
-    // Element 0 is the ANCHOR: last BG at anchorTsMs, fan zero-width, median grows from it.
+    // Element 0 is the ANCHOR: last measured BG at anchorTsMs, fan zero-width, grows out of trace.
     for (lane in 0 until PRED_LANES) dst[at + lane * w] = p.lastBg
     // Ascending-τ columns: 0=.05 1=.10 2=.25 3=.50 4=.75 5=.90 6=.95. Fan pairs (outer→inner).
     for (i in 0 until n) {
@@ -58,7 +58,7 @@ internal fun writePredLanes(p: ModelPrediction, bands: List<Double>, dst: Double
     }
 }
 
-/** Pure. calibratedBandsMgdl is an applied §8.4 fan; a length mismatch IGNORED, raw fan drawn. */
+/** Pure. calibratedBandsMgdl is §8.4 fan in bandsMgdl's own layout; a mismatch draws raw. */
 fun buildPredSeries(
     p: ModelPrediction,
     unit: UnitSpace,
@@ -153,7 +153,7 @@ internal fun DrawScope.drawPredSeries(
 internal fun List<PredSeries>.maxTsMs(): Long? =
     mapNotNull { if (it.isEmpty) null else it.tsMs.last() }.maxOrNull()
 
-/** First crossing of lowMgdl/highMgdl by the SELECTED, §3.6-eligible median; empty otherwise. */
+/** First crossing of lowMgdl/highMgdl by the SELECTED, §3.6-eligible median, ETA from nowMs. */
 fun excursionsOf(
     predictions: List<ModelPrediction>,
     lowMgdl: Int,

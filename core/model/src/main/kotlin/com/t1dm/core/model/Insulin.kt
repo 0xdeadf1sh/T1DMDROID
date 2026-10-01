@@ -3,7 +3,7 @@ package com.t1dm.core.model
 /** [BOLUS] is a dose-scaled gamma; [BASAL] a broad Bateman, near-flat once tiled. */
 enum class InsulinKind { BOLUS, BASAL }
 
-/** Self-describing PK params, so a logged dose reconstructs its curve even if defaults change. */
+/** Carries curve params so a dose survives default changes; [customCurve] buckets sum to 1.0. */
 data class InsulinType(
     val id: Long,
     val name: String,
@@ -17,7 +17,7 @@ data class InsulinType(
     val builtin: Boolean = false,
 )
 
-/** Two disjoint catalogues a dose can be written against; a row keeps only the logged label. */
+/** Unifies the two dose catalogues for re-pick UIs; only `logged_dose.note`'s [label] can match. */
 sealed interface InsulinChoice {
     val label: String
     val kind: InsulinKind

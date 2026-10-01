@@ -1,16 +1,16 @@
 package com.t1dm.sensors
 
-/** bucketStartMs is grid-aligned; steps is the running total, written to sample.steps set/LWW. */
+/** bucketStartMs is grid-aligned; steps is bucket total, written LWW, never additively. */
 data class StepBucket(val bucketStartMs: Long, val steps: Int)
 
-/** Folds cumulative TYPE_STEP_COUNTER into deltas, charging the newer bucket. Not thread-safe. */
+/** Folds cumulative TYPE_STEP_COUNTER into per-bucket deltas; first sample only primes baseline. */
 class StepBucketer(private val bucketMs: Long = FIVE_MIN_MS) {
 
     private var lastCumulative: Long = UNSET
     private var bucketStart: Long = UNSET
     private var stepsInBucket: Int = 0
 
-    /** Returns buckets whose total changed: at most just-closed plus now-open; empty if priming. */
+    /** Returns buckets whose total changed: at most closed one plus open one; empty if priming. */
     fun onSample(wallMs: Long, cumulative: Long): List<StepBucket> {
         require(cumulative >= 0L) { "TYPE_STEP_COUNTER is non-negative, got $cumulative" }
         val b = wallMs - Math.floorMod(wallMs, bucketMs)

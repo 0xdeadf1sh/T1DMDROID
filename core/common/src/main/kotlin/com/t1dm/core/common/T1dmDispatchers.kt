@@ -10,9 +10,9 @@ interface T1dmDispatchers {
     val main: CoroutineDispatcher        // Dispatchers.Main — UI only
     val default: CoroutineDispatcher     // CPU: Rust pre/post, decode, grid-stamp, stats, crypto
     val io: CoroutineDispatcher          // Room, disk, HTTP/WS, file
-    val inference: CoroutineDispatcher   // SINGLE-thread: serialises ExecuTorch/Neuron; <=5 models.
+    val inference: CoroutineDispatcher   // SINGLE-thread: serialises ExecuTorch/Neuron, <=5 models
 
-    /** SINGLE-thread: minigame's 60Hz loop only, deliberately neither inference nor default. */
+    /** SINGLE-thread: only the minigame's 60Hz loop; not [inference], not a [default] slice. */
     val game: CoroutineDispatcher
 }
 
@@ -26,7 +26,7 @@ class DefaultT1dmDispatchers(
 ) : T1dmDispatchers {
     private val gameOverride = game
 
-    /** LAZY, unlike eagerly-constructed inference thread: most processes never open minigame. */
+    /** LAZY, unlike eager [inference]: most processes never open the minigame. */
     override val game: CoroutineDispatcher by lazy {
         gameOverride
             ?: Executors.newSingleThreadExecutor { r -> Thread(r, "t1dm-game") }.asCoroutineDispatcher()

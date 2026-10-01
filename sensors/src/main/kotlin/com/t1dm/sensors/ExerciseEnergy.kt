@@ -3,7 +3,7 @@ package com.t1dm.sensors
 import com.t1dm.core.model.ExerciseKind
 import kotlin.math.roundToInt
 
-/** ACSM grade-0: VO2=0.1S+3.5, run 0.2S+3.5 (m/min,mL/kg/min,gross); display-only, no rail/calc. */
+/** ACSM walk/run @grade0: VO2=0.1*S+3.5 (run 0.2*S+3.5), S m/min. Display only, no rail/alarm. */
 object ExerciseEnergy {
 
     /** Where the walking equation gives way to the running one, in m/min (6 km/h). */
@@ -12,13 +12,13 @@ object ExerciseEnergy {
     /** m/min. 24 km/h, past marathon record pace: a bicycle, a vehicle or drift, not a gait. */
     const val MAX_RUN_M_PER_MIN = 400.0
 
-    /** Caloric equivalent of O2 at a mixed substrate — the standard indirect-calorimetry figure. */
+    /** Caloric equivalent of O2 at a mixed substrate — standard indirect-calorimetry figure. */
     const val KCAL_PER_LITRE_O2 = 5.0
 
     /** Resting term of both equations, mL O2/kg/min; dropping it makes the figure net. */
     const val RESTING_VO2 = 3.5
 
-    /** Per-segment, never bout avg; speed=m/trackedMs; null if OTHER/no mass/mostly-dropped. */
+    /** Scored per segment on trackedMs, never activeSec/bout avg. Null if no figure justified. */
     fun kcal(kind: ExerciseKind, segments: Iterable<ExerciseBucket>, bodyMassKg: Double?): Int? {
         if (kind == ExerciseKind.OTHER) return null
         val mass = bodyMassKg ?: return null
@@ -45,7 +45,7 @@ object ExerciseEnergy {
         return (vo2MlPerKg * mass / 1000.0 * KCAL_PER_LITRE_O2).roundToInt()
     }
 
-    /** mL O2/kg/metre: equations' slope in S; over a segment multiplies metres, not speed. */
+    /** mL O2 per kg per metre: the equations' slope in S, multiplies metres not speed. */
     private fun vo2PerMetre(speedMPerMin: Double): Double =
         if (speedMPerMin >= RUN_THRESHOLD_M_PER_MIN) 0.2 else 0.1
 }

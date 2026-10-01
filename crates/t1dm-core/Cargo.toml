@@ -25,6 +25,11 @@ serde_json = "1"
 # Watch link session and codecs (T1DMCOMMON SPEC/watch.md); `watch.rs` is its uniffi face.
 t1dm-watch = { path = "../t1dm-watch" }
 sha2 = "0.10"
+# AiDEX X connected-session crypto (CGM.md §4): the raw AES-128 block cipher (already
+# vendored transitively via aes-gcm) driven in CFB128 by hand, plus MD5 key derivation
+# from the serial. No `cfb-mode` dep — CFB128 is a dozen lines over `encrypt_block`.
+aes = "0.8"
+md-5 = "0.10"
 # Rigid-body solver behind the in-app hill-climb minigame (`game`): oriented-polyline
 # terrain, ball wheels on pin-slot suspension joints. Pinned exactly — the 0.34/0.29 line
 # has only just moved its public math API from nalgebra to glam.

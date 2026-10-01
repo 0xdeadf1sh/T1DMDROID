@@ -3,7 +3,7 @@ package com.t1dm.data.curve
 import com.t1dm.data.ExerciseCurveBucket
 import com.t1dm.data.T1dmRepository
 
-/** Bucket i is 5min after startMs (§1); [written]=idempotent; unmoved values dropped. */
+/** Bucket i is 5min after startMs's slot; written is the same event's last claim, idempotent. */
 fun exerciseCurveBuckets(
     startMs: Long,
     values: DoubleArray,
@@ -28,7 +28,7 @@ internal fun exerciseCurveLaid(
     tzOffsetMinAt: (Long) -> Int,
 ): List<ExerciseCurveBucket> = exerciseCurveBuckets(gridStart, values, emptyMap(), tzOffsetMinAt)
 
-/** Slots a curve laid at gridStart REMOVES from; priorGrams is its own share, others untouched. */
+/** Slots a curve laid at gridStart REMOVES from: claimed values, now none, others untouched. */
 internal fun exerciseCurveTaken(
     gridStart: Long,
     values: DoubleArray,

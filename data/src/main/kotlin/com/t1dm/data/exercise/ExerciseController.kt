@@ -33,7 +33,7 @@ class ExerciseController(
     val sessions: Flow<List<ExerciseSession>> =
         repository.observeExerciseSessions().map { rows -> rows.map { it.toModel() } }
 
-    /** startMs stays a wall-clock instant; offset resolved from it, not from the bout's end. */
+    /** startMs stays wall-clock; offset resolves from it, not from the clock at bout end. */
     suspend fun start(kind: ExerciseKind, startMs: Long = now()): ExerciseSession =
         withContext(dispatchers.io) {
             repository.startExerciseSession(
@@ -53,7 +53,7 @@ class ExerciseController(
             ).toModel()
         }
 
-    /** kcal is null where unjustified, never recomputed; interrupted marks a bout the app ended. */
+    /** kcal null means no figure was justified, never recomputed. interrupted: app-ended bout. */
     suspend fun stop(
         id: Long,
         endMs: Long,
@@ -84,7 +84,7 @@ class ExerciseController(
     suspend fun track(id: Long): List<TrackPoint> =
         withContext(dispatchers.io) { repository.exerciseTrack(id).map { it.toModel() } }
 
-    /** Takes disposal grams back out; re-derived from params, exact per SPEC/invariants.md §5. */
+    /** Unwinds disposal grams via re-derivation; magnitude is a function of duration alone (§5). */
     suspend fun delete(id: Long) = withContext(dispatchers.io) {
         val bout = repository.exerciseSession(id)
         val unwind = if (bout == null) {
@@ -111,7 +111,7 @@ class ExerciseController(
         repository.deleteExerciseSession(id, unwind, now())
     }
 
-    /** source relaid at startMs, rated at CURRENT carb-equiv; null for a zero-duration bout. */
+    /** Replays source at startMs, rated at current carb-equivalent. Null for zero duration. */
     suspend fun replay(source: ExerciseSession, startMs: Long): LoggedExerciseEntity? =
         logExercise(source.kind, source.activeSec / 60.0, startMs, source.id)
 
@@ -144,7 +144,7 @@ class ExerciseController(
         repository.logLoggedExercise(row, exerciseCurveLaid(gridStart, values, tzOffsetMinAt), nowMs)
     }
 
-    /** Moves a replay in time only; re-derived from the ROW, so a rate change can't rewrite it. */
+    /** Moves a replay in time only; same curve array at new start, re-derived from the row. */
     suspend fun shiftLoggedExercise(id: Long, tsMs: Long): LoggedExerciseEntity? =
         withContext(dispatchers.io) {
             val row = repository.loggedExerciseById(id) ?: return@withContext null
@@ -169,7 +169,7 @@ class ExerciseController(
     private suspend fun curveOf(row: LoggedExerciseEntity): DoubleArray =
         curves.gamma(row.grams, row.k, row.theta, row.curveDurationMin)
 
-    /** Closes every unstopped bout at its last provable instant; run at launch, never resumed. */
+    /** Closes unstopped bouts at the newest provable instant; killed recordings are NOT resumed. */
     suspend fun reconcileOpenSessions(nowMs: Long): Int = withContext(dispatchers.io) {
         val open = repository.openExerciseSessions()
         for (row in open) {
@@ -187,11 +187,11 @@ class ExerciseController(
     }
 }
 
-/** Never "now": newest fix is the last provable instant; clamped so a bout can't end early. */
+/** Never "now": uses the newest fix as last-provable instant, clamped to not precede start. */
 internal fun interruptedEndMs(startMs: Long, newestFixTsMs: Long?): Long =
     maxOf(newestFixTsMs ?: startMs, startMs)
 
-/** Unknown names decode to ExerciseKind.OTHER; kind is raw TEXT so a later build stays readable. */
+/** Unknown names decode to ExerciseKind.OTHER; kind is raw TEXT for forward compatibility. */
 internal fun ExerciseSessionEntity.toModel() = ExerciseSession(
     id = id,
     startMs = startMs,

@@ -57,16 +57,16 @@ import kotlinx.coroutines.CoroutineDispatcher
 /** Above the 48 dp touch-target floor; two fit without crowding the 220 dp panel. */
 private val PEDAL_SIZE = 76.dp
 
-/** Apparent car width; GameViewport.zoomedWidthM picks the span a true-scale car is this wide. */
+/** Apparent car width: GameViewport.zoomedWidthM picks the span for a true-scale car this wide. */
 private val CAR_DRAW_DP = 120.dp
 
-/** Ground cut before chart's left edge, as a multiple of visible span; fixed margin fails at 6h. */
+/** Ground cut before the chart's left edge, fraction of span: fixed margin fits no single scale. */
 internal const val TRACK_LEAD_SPANS = 1f
 
 /** The pair must fit between the pedals. */
 private val GAUGE_RADIUS = 30.dp
 
-/** Solver runs on gameDispatcher, never inference/default; alarmRaised releases the actuator. */
+/** Solver runs on gameDispatcher, never inference or default; alarmRaised releases actuator now. */
 @Composable
 fun GameScreen(
     modifier: Modifier = Modifier,
@@ -193,7 +193,7 @@ private fun GameStage(
     // Past the furniture's per-frame set; the gauges' own labels share the cache.
     val measurer = rememberTextMeasurer(cacheSize = 32)
     val gaugeRadiusPx = with(density) { GAUGE_RADIUS.toPx() }
-    // Pixels per car-local metre off tune's length, so a retune can't change the drawn size.
+    // Pixels per car-local metre, off tune's own length so a retune cannot change the drawn size.
     val carScalePx = with(density) { CAR_DRAW_DP.toPx() } / (tuning.chassisHalfLen * 2f)
     val gaugeInsetPx = with(density) { 8.dp.toPx() }
     val furnitureColors = MaterialTheme.colorScheme
@@ -256,7 +256,7 @@ private fun GameStage(
         drawOverlay = { f, p ->
             drawGauges(
                 f,
-                // Panel, not plot rect: the plot's asymmetric insets sit the pair off-centre.
+                // Panel, not plot rect: asymmetric plot insets sit the pair right of centre.
                 centreX = size.width * 0.5f,
                 bottomY = p.plotBottom - gaugeInsetPx,
                 radius = gaugeRadiusPx,
@@ -320,7 +320,7 @@ private fun TerminalCard(hud: HudState, modifier: Modifier, onRestart: () -> Uni
     }
 }
 
-/** pressed reads only in the draw lambda: a press invalidates the zone's draw, not composition. */
+/** pressed reads only in the draw lambda: a press invalidates this zone's draw, not composition. */
 @Composable
 private fun PedalZone(
     skin: GameSkin,

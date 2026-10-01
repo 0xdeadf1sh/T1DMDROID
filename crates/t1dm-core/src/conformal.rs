@@ -1,19 +1,19 @@
-//! §8.4 recalibration, per-patient on-device; order stat SIDE-AWARE (ceil above, floor below).
+//! Split-conformal recal of the BG fan (§8.4); on-device, single patient, no shipped delta.
 
 use crate::accuracy::{tau_index, ForecastWindow, QUANTILE_LEVELS};
 use crate::CoreError;
 
-/// Resolved to a column by lookup (§6.1 levels), never a literal index.
+/// Resolved to a column by lookup, like every §6.1 level; never a literal index.
 const MEDIAN_TAU: f64 = 0.5;
 
-/// Calibration share of chronological windows (rest held out/scored); fixed, not exposed.
+/// Calibration share of chronologically ordered windows; fixed, not exposed, keeps coverage honest.
 const CAL_FRACTION: f64 = 0.7;
 
 /// The band whose held-out coverage is reported; resolved by lookup, as [`MEDIAN_TAU`] is.
 const REPORT_TAU_LO: f64 = 0.05;
 const REPORT_TAU_HI: f64 = 0.95;
 
-/// delta: steps·nq, step-major ascending τ; zero if !sufficient; cov/width are HELD-OUT split.
+/// delta is steps*n_quantiles, step-major ascending τ; zeros if insufficient. §6.2 needs widths.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct ConformalFit {
     pub delta: Vec<f64>,
@@ -53,7 +53,7 @@ impl ConformalFit {
     }
 }
 
-/// Smallest cal count with no order-stat clamp (19 for §6's 7 levels); a floor, not a suggestion.
+/// Smallest calibration count with no clamped order stat, from QUANTILE_LEVELS; floor, not advice.
 #[uniffi::export]
 pub fn conformal_min_cal_windows() -> u32 {
     let median = tau_index(MEDIAN_TAU);
@@ -104,7 +104,7 @@ fn conformal_offset(sorted: &[f64], tau: f64) -> f64 {
     }
 }
 
-/// Fits a per-(step,τ) band correction from matured windows (§8.4); split is CHRONOLOGICAL.
+/// Fit a per-(step,τ) additive band correction from matured windows (§8.4); chronological order.
 #[uniffi::export]
 pub fn fit_quantile_conformal(
     windows: Vec<ForecastWindow>,
@@ -227,7 +227,7 @@ pub fn fit_quantile_conformal(
     })
 }
 
-/// Applies delta (§8.4): add, restore median exactly, clamp outward so fan can't cross; else Err.
+/// Apply a fitted delta (§8.4): add, restore median exactly, clamp outward so the fan can't cross.
 #[uniffi::export]
 pub fn apply_quantile_conformal(
     bands_mgdl: Vec<f64>,
@@ -260,7 +260,7 @@ pub fn apply_quantile_conformal(
     Ok(apply_delta(&bands_mgdl, &delta, steps, nq, median_idx))
 }
 
-/// Batched apply (§8.4); fans_mgdl fan-major, one delta corrects all; fails the whole batch.
+/// apply_quantile_conformal over many fans in one FFI crossing (§8.4); one delta corrects all.
 #[uniffi::export]
 pub fn apply_quantile_conformal_batch(
     fans_mgdl: Vec<f64>,
@@ -294,7 +294,7 @@ pub fn apply_quantile_conformal_batch(
     Ok(out)
 }
 
-/// delta-side §8.4 invariants, shared by both applies; returns (steps, is_identity).
+/// delta-side invariants of §8.4, shared by both applies; nonzero median moves point forecast.
 fn check_delta(delta: &[f64], median_idx: usize, nq: usize) -> Result<(usize, bool), CoreError> {
     let bad = |reason: String| CoreError::Internal { reason };
     if delta.is_empty() || delta.len() % nq != 0 {
@@ -634,7 +634,7 @@ mod tests {
 
     #[test]
     fn a_fitted_delta_applied_to_its_own_calibration_set_hits_the_nominal_rate() {
-        // Spread period divides both splits, so held-out IS the calibration set, not chance.
+        // Spread far wider than the fan's ±15, period dividing both splits, no sampling accident.
         let offsets: Vec<f64> = (0..400).map(|i| ((i % 40) as f64 - 19.5) * 3.0).collect();
         let fit = fit_quantile_conformal(set(&offsets), 0).unwrap();
         assert!(fit.sufficient);

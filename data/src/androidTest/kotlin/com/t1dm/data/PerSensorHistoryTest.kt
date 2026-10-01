@@ -22,7 +22,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** The BG panel's history is ONE sensor's, never a model's. */
+/** The BG panel's history is ONE sensor's, never a model's — SPEC.private.md §3.1. */
 @RunWith(AndroidJUnit4::class)
 class PerSensorHistoryTest {
 

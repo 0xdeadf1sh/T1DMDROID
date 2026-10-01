@@ -1,6 +1,6 @@
 package com.t1dm.core.model
 
-/** 90% band lives ONLY here (wire has no uncertainty); re-mirrored/restored rows draw band-less */
+/** 90% band lives only here; re-mirrored/restored values have none — hatched, never re-promote. */
 data class ReconstructedBg(
     val tsMs: Long,
     val mgdl: Double,
@@ -9,25 +9,25 @@ data class ReconstructedBg(
     val modelId: String,
     val spanStartMs: Long,
     val promoted: Boolean,
-    /** 7 mg/dL levels, ascending τ; empty if row predates column (outer pair only). */
+    /** 7 mg/dL levels, ascending τ, or empty (pre-column row, outer pair). Never interpolate. */
     val bands: List<Double> = emptyList(),
     /** Which quantile [mgdl] is the line at. `0.5` is the median. */
     val tau: Double = 0.5,
 )
 
-/** Which of §4's three geometries (SPEC/inference.md) a span is; derived, never chosen. */
+/** One of `SPEC/inference.md` §4's three geometries; derived from span position, never chosen. */
 enum class MaskGeometry {
-    /** No left bracket, anchored only by its right neighbour; drawable, never promotable. */
+    /** No left anchor, only right. Drawable, never promotable — would extend history one anchor. */
     BACKCAST,
 
     /** Measured evidence on both sides. The only geometry a promotion may come from. */
     INFILL,
 
-    /** Past newest measurement; length is the descriptor's horizon, not drag; nothing stored. */
+    /** Past newest measurement; length is the descriptor's horizon, not the drag. Never stored. */
     FORECAST,
 }
 
-/** In-memory only (no Room txn under the slider); commits on release. [mgdl] keyed by tsMs. */
+/** In memory only: a Room txn per frame under the τ slider would stall it; commits on release. */
 data class SpanLinePreview(
     val spanStartMs: Long,
     val tau: Double,

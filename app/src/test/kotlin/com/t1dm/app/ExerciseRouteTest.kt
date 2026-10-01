@@ -5,7 +5,7 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Both entries fail silently: off-wheel is unreachable, crumbsFor falls to a raw-route crumb. */
+/** Both entries fail silently: destinations unreachable, crumbsFor falls to a raw-route crumb. */
 class ExerciseRouteTest {
 
     @Test

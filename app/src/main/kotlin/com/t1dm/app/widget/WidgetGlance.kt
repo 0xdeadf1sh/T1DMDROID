@@ -17,7 +17,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 /** [GlyStatus] as the tile colours it; VOID is any fail-closed ineligibility. */
 internal enum class GlyKind { STABLE, UNSURE, EXCURSION, VOID }
 
-/** BG, trend and forecast share [BgGlanceComputer] with the notification and the watch. */
+/** BG, trend and forecast share BgGlanceComputer with the notification and the watch. */
 internal data class WidgetSnapshot(
     val glance: BgGlance,
     val unit: UnitSpace,
@@ -48,7 +48,7 @@ internal data class WidgetSnapshot(
 /** Minutes. Shared so the live pull and [WidgetStateStore]'s rebuild cannot drift apart. */
 internal const val STALE_MIN = 15
 
-/** Collapses both failures to null; an eternal suspend isn't caught, else spinner stays up. */
+/** Collapses timeout and error to null; a hung suspend has no guard and would stall glance. */
 internal suspend fun boundedWidgetPull(
     budgetMs: Long,
     onTimeout: () -> Unit = {},
@@ -62,7 +62,7 @@ internal suspend fun boundedWidgetPull(
     return snapshot
 }
 
-/** Fails as a UNIT (else persists boot defaults); pinned to `default` for cancellable timeout. */
+/** Fails as a unit (falls back to WidgetStateStore); per-read fields default individually. */
 internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
     val container = (context.applicationContext as T1dmApplication).container
     return withContext(container.dispatchers.default) {
@@ -71,7 +71,7 @@ internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
         // 36 rows: the newest MEASUREMENT may sit behind promoted reconstructions.
         val rows = src?.let { container.repository.recentReadings(it, 36) } ?: emptyList()
         val readings = GlanceReadings.create(rows)
-        val direction = runCatching { container.directionNow(rows) }.getOrNull()
+        val direction = src?.let { runCatching { container.directionNow(it, rows) }.getOrNull() }
         val latest = readings.latest
         val unit = runCatching { container.statsRepository.currentUnitSpace() }.getOrDefault(UnitSpace.MgDl)
         val animationsEnabled = runCatching { container.settingsStore.currentAnimationsEnabled() }.getOrDefault(true)
@@ -83,7 +83,7 @@ internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
         val onBoard = runCatching { container.iobCobNow() }.getOrNull()
         val clock = state.selectedPredictedTime
         val steps = runCatching { container.stepsToday() }.getOrNull()
-        // Volatile holds coded defaults pre-refresh; persisted here as the tile's alarm geometry.
+        // Volatile holds defaults until refresh; cold-start render would persist them as real.
         if (!container.alarmConfigHydrated) runCatching { container.refreshAlarmConfig() }
         val cfg = container.alarmConfig
         val ageMs = latest?.let { (nowMs - it.rxWallMs).coerceAtLeast(0L) }

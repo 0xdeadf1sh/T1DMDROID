@@ -96,7 +96,7 @@ class CustomFoodUpdateTest {
         assertTrue("the old name must leave the index with the row", repo.searchFoods("oatcake").isEmpty())
     }
 
-    /** upsert, unlike deleteCustom, isn't custom-gated; hard-sets custom=true, traps seed edits. */
+    /** `upsert` isn't custom-gated; edit at a seed id could turn it into a user food. */
     @Test
     fun aSeedRowIsRefusedAndNeverBecomesAUserFood() = runBlocking {
         repo.seedFoods(listOf(food("basmati rice", carbs = 28.0, custom = false)))
@@ -128,7 +128,7 @@ class CustomFoodUpdateTest {
         assertTrue("the FTS row went with it", repo.searchFoods("sourdough").isEmpty())
     }
 
-    /** saved_meal_item denormalizes carbs/GI/curve at add time, no FK to food; don't re-resolve. */
+    /** `saved_meal_item` denormalizes at add time, no FK to `food`; never re-resolve by foodId. */
     @Test
     fun editingAFoodLeavesSavedMealSnapshotsAlone() = runBlocking {
         val id = insert(food("polenta", carbs = 70.0, gi = 68.0))

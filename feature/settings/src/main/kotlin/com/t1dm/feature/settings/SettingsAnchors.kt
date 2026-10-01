@@ -16,7 +16,7 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.pulseHighlight
 
-/** One-shot request to reveal a knob. Ambient, not a route arg: that replays the pulse on Back. */
+/** One-shot request to reveal a knob; ambient, not a route arg, or Back replays the pulse. */
 @Stable
 class SettingsFocusController {
     internal var pending by mutableStateOf<String?>(null)
@@ -30,7 +30,7 @@ class SettingsFocusController {
 
 val LocalSettingsFocus = staticCompositionLocalOf { SettingsFocusController() }
 
-/** Only the hunted row reports position (fires every frame). ROOT-space, not positionInParent. */
+/** Only the hunted row reports position (fires every scroll frame); positions are ROOT-space. */
 @Stable
 internal class SettingsAnchorRegistry {
     var wanted by mutableStateOf<String?>(null)

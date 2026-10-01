@@ -33,7 +33,7 @@ class FoodSeedDbTest {
             ApplicationProvider.getApplicationContext(),
             AppDatabase::class.java,
         )
-            // Mirror AppDatabase.build: FTS5 is Room-invisible, OEM SQLite lacks fts5 anyway.
+            // Mirrors AppDatabase.build: FTS5 is Room-invisible; OEM SQLite has no fts5 module.
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onCreate(connection: SQLiteConnection) = FoodFts.create(connection)
             })

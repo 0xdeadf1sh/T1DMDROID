@@ -16,10 +16,10 @@ internal fun sampleHoldsMeasurement(sample: SampleEntity?): Boolean =
 internal fun reconstructionTakesSample(sample: SampleEntity?): Boolean =
     sample == null || sample.bgMgdl == null || sample.bgProvenance == ReadingProvenance.RECONSTRUCTED
 
-/** Does [incoming] take [stored]'s slot? Storage-side: NORMAL>suppressed, nearest, earlier wins. */
+/** One source: NORMAL beats suppressed, then nearest |rxWallMs-tsMs|, then earliest. */
 internal fun supersedesGridSlot(stored: CgmReadingEntity?, incoming: CgmReadingEntity): Boolean {
     if (stored == null) return true
-    // A reconstruction fills a HOLE only; without this it would take the slot from a real reading.
+    // Reconstruction fills a hole only, else it'd steal the slot via the early-out below.
     if (incoming.provenance == ReadingProvenance.RECONSTRUCTED) {
         return stored.bgMgdl == null || stored.provenance == ReadingProvenance.RECONSTRUCTED
     }

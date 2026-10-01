@@ -13,11 +13,11 @@ import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** DISPLAY-ONLY: from [RolledForecast], never ModelPrediction, so it cant reach :calc or alerts. */
+/** DISPLAY-ONLY rolled forecast; never a ModelPrediction, so it can't reach calc or alerts. */
 class RolledSeries internal constructor(
     val tsMs: LongArray,
     val median: FloatArray,
-    /** Nested lower edges, outer→inner. A producer with no interior levels gives ONE pair. */
+    /** Nested lower edges outer→inner; a roll with no interior levels has ONE pair. */
     val lo: Array<FloatArray>,
     val hi: Array<FloatArray>,
     /** Prefix length inside the validated horizon; steps past it are extrapolated. */
@@ -30,7 +30,7 @@ class RolledSeries internal constructor(
     val extrapolatedSteps: Int get() = (size - validatedSteps).coerceAtLeast(0)
     val maxTsMs: Long? get() = if (isEmpty) null else tsMs.last()
 
-    /** Rolled step nearest [ms], or -1 outside span. INDEX, so caller checks [extrapolatedAt]. */
+    /** Nearest rolled step to [ms], or -1 outside span; caller must check extrapolatedAt too. */
     fun nearestIndex(ms: Double): Int = nearestWithinHalfStep(tsMs, ms)
 
     fun extrapolatedAt(i: Int): Boolean = i >= validatedSteps
@@ -52,7 +52,7 @@ fun buildRolledSeries(
     if (rolled == null || rolled.isEmpty) return null
     val n = rolled.size
     val ts = LongArray(n) { i -> rolled.anchorTsMs + (i + 1L) * rolled.stepMs }
-    // Ascending-τ: 0=.05 1=.10 2=.25 3=.50 4=.75 5=.90 6=.95. Pairs outer→inner as buildPredSeries.
+    // τ columns ascend 0=.05..6=.95; fan pairs outer→inner, matching buildPredSeries' order.
     val q = if (n > 0 && rolled.bandsMgdl.size % n == 0) rolled.bandsMgdl.size / n else 0
     val pairs = if (q >= N_QUANTILES) 3 else 1
     // Lanes of n: median, then lo outer→inner, then hi outer→inner.
@@ -82,17 +82,17 @@ fun buildRolledSeries(
     )
 }
 
-/** Fans terminal outer edge at the shared instant. Drawn once, no double uncertainty state. */
+/** Fan's terminal outer edge at the instant it meets the roll; tsMs is checked, not assumed. */
 class RolledSeam(val tsMs: Long, val lo: Float, val hi: Float)
 
 /** Where the band opens: one step before the validated boundary, so the tail abuts the prefix. */
 internal fun RolledSeries.bandFromIndex(): Int =
     (validatedSteps.coerceIn(0, size) - 1).coerceAtLeast(0)
 
-/** Paints a BAND, not bare median: sound, tail ≥2 steps. Also gates other fans §8.4 correction. */
+/** True if the roll paints a band (sound, tail≥2 steps); shared predicate for §8.4 gating too. */
 fun RolledSeries.paintsBand(): Boolean = !degenerate && size - bandFromIndex() >= 2
 
-/** Band's opening lower edge: the fan's when [seam] falls on that instant, else the roll's own. */
+/** Band's opening lower edge: the fan's if [seam] falls on that instant, else the roll's own. */
 internal fun RolledSeries.bandOpenLo(seam: RolledSeam?, band: Int): Float {
     val i = bandFromIndex()
     // Only the OUTERMOST pair meets the fan: the seam carries one uncertainty, not a fan.
@@ -108,7 +108,7 @@ internal fun RolledSeries.bandOpenHi(seam: RolledSeam?, band: Int): Float {
 // Raw-pixel and roll-independent; one immutable effect serves every draw.
 private val EXTRAPOLATED_MEDIAN_DASH: PathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 5f))
 
-/** In [drawPredSeries]s own hand (same alphas/weight): the roll is the cycle re-fed to itself. */
+/** Drawn like drawPredSeries deliberately — the roll is the cycle forecast re-fed to itself. */
 internal fun DrawScope.drawRolledSeries(
     s: RolledSeries,
     absToPx: AbsToPx,
@@ -121,7 +121,7 @@ internal fun DrawScope.drawRolledSeries(
     if (s.isEmpty) return
     fun px(i: Int) = absToPx.of(s.tsMs[i].toDouble())
 
-    // Band starts where the cycle fan stops, opening from its edge; past that no correction is fit.
+    // Band starts where the cycle fan stops; past that boundary no correction may be invented.
     if (s.paintsBand()) {
         val from = s.bandFromIndex()
         // `drawPredSeries`'s own order and alphas: innermost first, outermost last and heaviest.
@@ -144,7 +144,7 @@ internal fun DrawScope.drawRolledSeries(
         }
     }
 
-    // Over the prefix too: no cycle forecast at warm-up, a roll beginning mid-air is unreadable.
+    // Drawn over the prefix too — during warm-up there's no cycle forecast to anchor against.
     val alpha = if (s.degenerate) 0.5f else 1f
     val effect = if (s.degenerate) EXTRAPOLATED_MEDIAN_DASH else null
     for (i in 0 until s.size - 1) {

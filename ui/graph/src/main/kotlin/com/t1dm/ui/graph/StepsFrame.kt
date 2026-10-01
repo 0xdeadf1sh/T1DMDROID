@@ -8,7 +8,7 @@ import kotlinx.coroutines.withContext
 import kotlin.math.ceil
 import kotlin.math.max
 
-/** Pedometer count per grid bucket; NO_DATA isn't a measured zero; scale is frame's own max. */
+/** Pedometer count per 5-min bucket; NO_DATA (unmeasured) differs from a measured 0. */
 class StepsFrame internal constructor(
     val gridStartMs: Long,
     val stepMs: Long,
@@ -21,16 +21,16 @@ class StepsFrame internal constructor(
     /** Absolute epoch-ms at the LEFT edge of bucket [i]. */
     fun tsAt(i: Int): Long = gridStartMs + i.toLong() * stepMs
 
-    /** Steps in bucket at ms; null off-grid/NO_DATA; measured 0 means the patient was still. */
+    /** Steps at ms; null off-grid or NO_DATA; measured 0 returns 0 (patient was still). */
     fun stepsAt(ms: Long): Int? {
         if (steps.isEmpty()) return null
-        // floorDiv, not /: truncation toward zero reads bucket 0 an instant before the grid starts.
+        // floorDiv, not /: truncation would read bucket 0 for an instant before the grid starts.
         val i = Math.floorDiv(ms - gridStartMs, stepMs).toInt()
         if (i !in steps.indices) return null
         return steps[i].takeIf { it != NO_DATA }
     }
 
-    /** Bucket ms falls in, CLAMPED into the array, not a sentinel; bounds the cull only. */
+    /** Bucket ms falls in, CLAMPED into the array, not a sentinel; bounds the viewport cull. */
     internal fun clampedIndexAt(ms: Double): Int {
         if (size == 0) return 0
         val d = (ms - gridStartMs.toDouble()) / stepMs.toDouble()
@@ -42,7 +42,7 @@ class StepsFrame internal constructor(
     }
 
     companion object {
-        /** Unmeasured bucket, distinct from 0 (a MEASUREMENT); negative so it never wins a peak. */
+        /** Unmeasured, distinct from a measured 0; negative so it never wins a peak scan. */
         const val NO_DATA: Int = -1
 
         val EMPTY = StepsFrame(0L, 300_000L, IntArray(0), 0)
@@ -77,7 +77,7 @@ private const val BAR_GAP_DP: Float = 0.5f
 /** Fraction of the band's height the tallest bar reaches. */
 private const val BAR_HEADROOM: Float = 0.92f
 
-/** A seam a host test can record geometry through; production sink is a per-composition scratch. */
+/** Test seam for recording geometry; production sink is scratch the composition holds. */
 internal interface StepBarSink {
     fun bar(left: Float, top: Float, right: Float, bottom: Float)
 }
@@ -104,7 +104,7 @@ internal class StepBarPath : StepBarSink {
     }
 }
 
-/** Step bars over [lo,hi] into sink, pure. Below MIN_BAR_DP buckets merge on MAX, not position. */
+/** Visible bars over [lo,hi], pure; below MIN_BAR_DP buckets merge into one MAX bar, keep peaks. */
 internal fun emitStepBars(
     frame: StepsFrame,
     absToPx: AbsToPx,
@@ -116,21 +116,21 @@ internal fun emitStepBars(
     sink: StepBarSink,
 ) {
     if (frame.isEmpty || hi < lo) return
-    // Pitch measured THROUGH the bars' own projection, so it cannot disagree with them.
+    // Pitch measured THROUGH the same projection the bars draw with, so it matches them.
     val firstX = absToPx.of(frame.tsAt(lo).toDouble())
     val pitch = absToPx.of(frame.tsAt(lo).toDouble() + frame.stepMs) - firstX
     if (pitch <= 0f) return
 
-    // Floored at one PHYSICAL pixel, not MIN_BAR_DP: bound is pixel columns, not density-free.
+    // Floored at one PHYSICAL pixel too: never more bars than pixel columns, a physical bound.
     val minBarPx = max(MIN_BAR_DP * dpPx, 1f)
     val group = if (pitch >= minBarPx) 1 else ceil(minBarPx / pitch).toInt().coerceAtLeast(1)
     val slot = pitch * group
-    // Never let the gap eat the bar: a dense window's pitch can be narrower than the gap itself.
+    // Never let the gap eat the bar: a dense window can pitch narrower than the gap itself.
     val barW = (slot - BAR_GAP_DP * dpPx).coerceAtLeast(slot * 0.5f)
     val availH = (plotBottom - bandTop).coerceAtLeast(1f) * BAR_HEADROOM
     val scale = availH / frame.max.toFloat()
 
-    // Anchored on DATA not cull: grouping from lo would re-cut groups every pan, shimmering.
+    // Anchored on DATA, not the cull: grouping from lo would re-cut groups every pan, shimmering.
     var i = (lo / group) * group
     while (i <= hi) {
         val end = if (i + group - 1 < hi) i + group - 1 else hi
@@ -149,7 +149,7 @@ internal fun emitStepBars(
     }
 }
 
-/** bars is caller's scratch, reset per frame; one drawPath call, nothing allocated here. */
+/** bars is caller scratch, reset per frame; whole band is one drawPath, nothing allocated here. */
 internal fun DrawScope.drawStepsBars(
     frame: StepsFrame,
     absToPx: AbsToPx,

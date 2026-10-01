@@ -2,7 +2,7 @@ package com.t1dm.sensors
 
 import com.t1dm.core.model.TrackPoint
 
-/** Phone wall time, before [ExerciseBucketer] believes it. [toTrackPoint] crosses on accept. */
+/** Phone wall time, unvetted by ExerciseBucketer; toTrackPoint crosses only on accepted fix. */
 data class ExerciseFix(
     val tsMs: Long,
     val lat: Double,
@@ -19,7 +19,7 @@ fun ExerciseFix.toTrackPoint() = TrackPoint(
     speedMps = speedMps,
 )
 
-/** [distanceM] null ⇒ no fix accepted. [trackedMs] is real time; metres/[activeSec] isnt speed. */
+/** distanceM null = no fix accepted; never sample.exercise, which holds carb grams instead. */
 data class ExerciseBucket(
     val bucketStartMs: Long,
     val activeSec: Int,

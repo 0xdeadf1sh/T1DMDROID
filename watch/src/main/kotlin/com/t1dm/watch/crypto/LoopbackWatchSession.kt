@@ -3,7 +3,7 @@ package com.t1dm.watch.crypto
 import java.security.MessageDigest
 import java.security.SecureRandom
 
-/** Host-test stand-in for Rust WatchSession: SHA-256 keystream/MAC, NOT secure, never shipped. */
+/** Host-test SHA-256 stand-in for WatchSession, not secure; reproduces SPEC/watch.md §5.1. */
 class LoopbackWatchSession internal constructor(
     override var epoch: Int,
     private var sendSeq: Long,
@@ -112,7 +112,7 @@ class LoopbackWatchSession internal constructor(
         sas = if (state == WatchSessionState.AWAIT_SAS) sas() else null,
     )
 
-    // Record: ver||epoch||seq||ct||tag (SPEC/watch.md §5.1); 13-byte header is the AAD.
+    // Record: ver||epoch||seq||ct||tag per SPEC/watch.md §5.1; dir picks the keystream.
 
     private fun authHeader(seq: Long): ByteArray {
         val b = ByteArray(HDR_LEN)
@@ -204,7 +204,7 @@ class LoopbackWatchSessionFactory(private val burnMargin: Long = 256L) : WatchSe
     override fun fresh(): WatchSession = LoopbackWatchSession(epoch = 0, sendSeq = 0L)
 
     override fun resume(material: WatchKeyMaterial?, burnedCeiling: Long): WatchSession {
-        // No persisted keys, so a fresh session, but seq still begins above the ceiling + margin.
+        // No persisted keys, so a fresh session, but seq still begins above ceiling + margin.
         val start = if (burnedCeiling > 0) burnedCeiling + burnMargin else 0L
         return LoopbackWatchSession(epoch = 0, sendSeq = start)
     }

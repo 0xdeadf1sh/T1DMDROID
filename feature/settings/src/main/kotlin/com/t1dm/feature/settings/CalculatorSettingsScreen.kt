@@ -2,7 +2,7 @@ package com.t1dm.feature.settings
 
 import androidx.compose.runtime.Composable
 
-/** Thresholds unbounded; rail fails closed regardless; objective is opaque, no :calc dep (§3.6). */
+/** Thresholds unbounded, an enabled rail fails closed on bad input; objective is an opaque key. */
 @Composable
 fun CalculatorSettingsScreen(
     objectiveOptions: List<Pair<String, String>>,

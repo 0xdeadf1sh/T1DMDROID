@@ -9,7 +9,7 @@ import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import kotlinx.coroutines.Dispatchers
 
-/** Keep-forever: hand-written migrations only, never destructive fallback. */
+/** Keep-forever: migrations in [MigrationRunner], no destructive fallback. */
 @Database(
     entities = [
         CgmSourceEntity::class,
@@ -73,10 +73,10 @@ abstract class AppDatabase : RoomDatabase() {
     companion object {
         const val NAME = "t1dm.db"
 
-        /** Must equal @Database version; every branch bumps — a branch-only enum throws on read. */
+        /** Must equal `@Database(version)`; a bump lands on every branch, sharing one db file. */
         const val SCHEMA_VERSION = 31
 
-        /** [FoodFts] isn't a Room entity: fresh install creates it, upgrade via M4_5, same DDL. */
+        /** [FoodFts] isn't a Room entity: fresh installs create it, upgrades via MIGRATION_4_5. */
         fun build(context: Context): AppDatabase =
             MigrationRunner
                 .configure(Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, NAME))

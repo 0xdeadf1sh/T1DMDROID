@@ -12,12 +12,12 @@ import com.t1dm.app.settings.SettingsStore
 import timber.log.Timber
 import java.util.concurrent.TimeUnit
 
-/** A failed pass is `retry` not `failure`: causes are transient; BackupManager recorded why. */
+/** A failed pass returns `retry`: [BackupManager] already recorded the reason. */
 class AutoBackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
         val container = (applicationContext as T1dmApplication).container
-        // A run can outlive its scheduling setting; declining here is not a failure, not a retry.
+        // Can outlive the setting that scheduled it: declining is not a failure or a retry.
         if (container.settingsStore.currentBackupCadenceHours() == SettingsStore.BACKUP_CADENCE_OFF) {
             cancel(applicationContext)
             return Result.success()
@@ -38,7 +38,7 @@ class AutoBackupWorker(context: Context, params: WorkerParameters) : CoroutineWo
         private const val TAG = "Backup"
         private const val NAME = "t1dm.backup.auto"
 
-        /** `UPDATE` not `KEEP`: period is configured; `KEEP` leaves a change inert till cancel. */
+        /** `UPDATE`, not `KEEP`: `KEEP` would leave a cadence change with no effect. */
         fun sync(context: Context, cadenceHours: Int) {
             val wm = WorkManager.getInstance(context)
             if (cadenceHours == SettingsStore.BACKUP_CADENCE_OFF) {

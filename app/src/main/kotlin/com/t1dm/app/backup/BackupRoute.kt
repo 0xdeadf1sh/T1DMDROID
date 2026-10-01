@@ -25,7 +25,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Archive work runs on AppContainer.appScope: navigating away must not abandon a write. */
+/** Runs on [AppContainer.appScope]: the route's scope dies on navigate-away, mid-archive. */
 @Composable
 fun BackupRoute(container: AppContainer, onNotice: (String) -> Unit) {
     val ctx = LocalContext.current

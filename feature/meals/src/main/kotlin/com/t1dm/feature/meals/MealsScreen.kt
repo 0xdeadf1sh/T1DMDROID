@@ -51,7 +51,7 @@ private const val CARB_MIN = 5.0
 private const val CARB_MAX = 120.0
 private const val CARB_STEPS = 22
 
-/** Owns EXACTLY ONE vertical scroll ([footer] inside); sibling after gets maxHeight=0, no nest. */
+/** Owns the one vertical scroll incl. footer: sibling after this gets maxHeight=0, silently. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MealsScreen(
@@ -132,7 +132,7 @@ fun MealsScreen(
                 )
             }
         }
-        // Whole points: a raw slider float logged GI 54.317, read back as "GI 54.3"; grain=5pts.
+        // Whole points: raw float logged GI 54.317, read back "GI 54.3". Haptic: 1 tick/5 pts.
         Slider(
             value = gi,
             onValueChange = { giDetent.at((it / 5f).roundToInt()); gi = it.roundToInt().toFloat() },

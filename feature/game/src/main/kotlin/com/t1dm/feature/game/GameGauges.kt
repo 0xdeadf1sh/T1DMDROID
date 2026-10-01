@@ -16,7 +16,7 @@ import kotlin.math.sin
 private const val SWEEP_DEG = 225f
 private const val START_DEG = 157.5f
 
-/** Not composables: [CarFrame] reads in draw phase; 60/s needle invalidates draw, no recompose. */
+/** Not composables: CarFrame reads in draw; a 60Hz needle invalidates draw, recomposes none. */
 internal fun DrawScope.drawGauges(
     f: CarFrame,
     centreX: Float,
@@ -44,7 +44,7 @@ internal fun DrawScope.drawGauges(
     )
 }
 
-/** Spans the PLOT's width (x axis is time); sits over trace covered. See [CarFrame.progress]. */
+/** Spans plot's width (x=time, matches track); measured from the seat, see CarFrame.progress. */
 internal fun DrawScope.drawProgress(
     progress: Float,
     left: Float,

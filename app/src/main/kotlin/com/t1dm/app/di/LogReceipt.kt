@@ -6,7 +6,7 @@ import java.time.format.DateTimeFormatter
 
 enum class LoggedEventKind { MEAL, DOSE }
 
-/** [tsMs] grid-snap time; [clientId] phone-minted. */
+/** tsMs is grid-snapped, not the press. */
 data class LogHandle(
     val kind: LoggedEventKind,
     val rowId: Long,

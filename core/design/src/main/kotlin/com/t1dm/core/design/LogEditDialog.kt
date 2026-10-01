@@ -23,7 +23,7 @@ import com.t1dm.core.model.CurveKind
 import com.t1dm.core.model.InsulinChoice
 import com.t1dm.core.model.LoggedEntry
 
-/** [amount]: grams/units/min; nulls: [gi] clears index, [insulin] keeps curve, [note] CARB-only */
+/** unit varies by kind; gi null clears index; insulin null keeps curve; note is CARB-only. */
 data class LogEdit(
     val amount: Double,
     val gi: Double?,
@@ -35,22 +35,22 @@ data class LogEdit(
 /** 0..100; `CurveEngine.Presets.carbGammaForGi` clamps to it, so a value outside is a typo. */
 private val GI_RANGE = 0..100
 
-/** Whole: slider steps whole (fractional reads "GI 54.3"); blank = cleared, not rejected. */
+/** Whole: slider steps in whole points; blank clears the index, not a rejected field. */
 internal fun giFieldOrNull(text: String): Double? =
     text.takeIf { it.isNotBlank() }?.toIntOrNull()?.toDouble()
 
 internal fun giFieldValid(text: String): Boolean =
     text.isBlank() || text.toIntOrNull()?.let { it in GI_RANGE } == true
 
-/** Of the row's own kind, order preserved; retyping bolus→basal is a different dose, not edit. */
+/** Of the row's own kind, in order given: retyping bolus into basal is a different dose. */
 internal fun offeredInsulins(entry: LoggedEntry, insulins: List<InsulinChoice>): List<InsulinChoice> =
     insulins.filter { it.kind == entry.insulin }
 
-/** Which chip opens selected, or -1; row keeps only the LABEL (catalogues share no id). */
+/** Which chip opens selected, or -1. Row keeps only the LABEL, catalogues share no id. */
 internal fun loggedInsulinIndex(entry: LoggedEntry, offered: List<InsulinChoice>): Int =
     offered.indexOfFirst { it.label == entry.detail }
 
-/** Shift in minutes from stored instant, snapped to 5-min grid; retype rewrites note too. */
+/** Shift is minutes vs stored instant, snapped to the 5-min grid; retype rewrites note too. */
 @Composable
 fun EditLogDialog(
     entry: LoggedEntry,
@@ -63,12 +63,12 @@ fun EditLogDialog(
     var giText by remember(entry.clientId) { mutableStateOf(entry.gi?.let { fmtGi(it) }.orEmpty()) }
     var noteText by remember(entry.clientId) { mutableStateOf(entry.detail.orEmpty()) }
     var shiftText by remember(entry.clientId) { mutableStateOf("0") }
-    // Null until tapped, so opening to edit an amount can't silently re-resolve the curve.
+    // Null until a chip is tapped, so opening the dialog cannot silently re-resolve the curve.
     var picked by remember(entry.clientId) { mutableStateOf<InsulinChoice?>(null) }
     val offered = offeredInsulins(entry, insulins)
     val loggedIndex = loggedInsulinIndex(entry, offered)
 
-    // Bout magnitude = duration × carb-equivalent (own duration); a replay moves time only.
+    // Bout magnitude is duration times carb-equivalent, both its own; a replay moves only in time.
     val timeOnly = entry.kind == CurveKind.EXERCISE
     val amount = if (timeOnly) entry.amount else amountText.toDoubleOrNull()
     val gi = giFieldOrNull(giText)
@@ -114,11 +114,11 @@ fun EditLogDialog(
                 if (entry.kind == CurveKind.INSULIN && offered.isNotEmpty()) {
                     val pickedChoice = picked
                     val chipScroll = rememberLazyListState()
-                    // Opens on row's insulin; else wide catalogue scrolls past the selected chip.
+                    // Opens on the row's insulin, else a wide catalogue scrolls past the chip.
                     LaunchedEffect(entry.clientId, loggedIndex) {
                         if (loggedIndex >= 0) chipScroll.scrollToItem(loggedIndex)
                     }
-                    // Scrolls not wraps: text slot has no scroll; overflow row is unreachable.
+                    // Scrolls not wraps: text slot has no scroll; a wrapped row clips away.
                     LazyRow(state = chipScroll, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(offered.size) { i ->
                             val choice = offered[i]
@@ -166,7 +166,7 @@ fun EditLogDialog(
     )
 }
 
-/** §3.6-F: deleting an OLDER dose silently relaxes iobCeiling; this dialog is the only guard. */
+/** §3.6-F: deleting an OLDER dose lowers IOB, log-gap unmoved; this is the only guard. */
 @Composable
 fun DeleteLogDialog(entry: LoggedEntry, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     val haptics = LocalT1dmHaptics.current

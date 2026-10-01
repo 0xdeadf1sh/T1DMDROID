@@ -15,7 +15,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** No destructive fallback, DDL drift crashes on launch; validate is lenient about food_fts. */
+/** No destructive fallback: a DDL drift here is a launch crash on the phone. */
 @RunWith(AndroidJUnit4::class)
 class MigrationTest {
 
@@ -32,7 +32,7 @@ class MigrationTest {
 
     @Before
     fun cleanFile() {
-        // Each @Test recreates the DB at v1/vN from scratch, dropping any prior method's file.
+        // Each @Test recreates the DB from scratch; drop any file the previous method left.
         dbFile.delete()
         instrumentation.targetContext.getDatabasePath("$TEST_DB-wal").delete()
         instrumentation.targetContext.getDatabasePath("$TEST_DB-shm").delete()
@@ -113,7 +113,7 @@ class MigrationTest {
 
     @Test
     fun migrate6To7_clientIdColumnsAndUniqueIndexMatchSchema() {
-        // clientId back-filled with a fresh UUID before the UNIQUE index; retired columns dead.
+        // clientId back-fills a UUID before the index; old carb/bolus/basal cols stay dead.
         helper.createDatabase(6).close()
         helper.runMigrationsAndValidate(7, listOf(MigrationRunner.MIGRATION_6_7))
     }
@@ -142,7 +142,7 @@ class MigrationTest {
 
     @Test
     fun migrate8To9_noteTableIsGoneAndQueuedNoteRowsArePurged() {
-        // Outbox purge is load-bearing: OutboxKind.valueOf(NOTE) would throw on every later drain.
+        // Outbox purge is load-bearing: `OutboxKind.valueOf("NOTE")` throws on every later drain.
         helper.createDatabase(8).use { db ->
             db.execSQL("INSERT INTO `note` (`tsMs`,`tzOffsetMin`,`text`,`updatedAt`) VALUES (1,0,'x',1)")
             db.execSQL(
@@ -217,7 +217,7 @@ class MigrationTest {
 
     @Test
     fun migrate11To12_advertNameIsAddedAndLeftNull() {
-        // Nothing is backfilled: advertised name was discarded at match time, genuinely unknown.
+        // Not backfilled: name was discarded at match time; existing sensor's is genuinely unknown.
         helper.createDatabase(11).use { db ->
             db.execSQL(
                 "INSERT INTO `cgm_source` " +
@@ -258,7 +258,7 @@ class MigrationTest {
 
     @Test
     fun migrate13To14_authorityIsRenamedAndActivitySeededFromIt() {
-        // active RENAMED to authoritative, new active seeded from it, not all sensors made active.
+        // `active` renames to `authoritative`; new `active` seeds from it, not every sensor.
         helper.createDatabase(13).use { db ->
             db.execSQL(
                 "INSERT INTO `cgm_source` " +
@@ -312,7 +312,7 @@ class MigrationTest {
 
     @Test
     fun migrate15To16_exerciseTablesMatchSchemaAndNoSampleIsBackfilled() {
-        // No backfill: null sample.exercise means magnitude was never recorded, true pre-feature.
+        // No backfill: null `sample.exercise` means magnitude never recorded (true pre-feature).
         helper.createDatabase(15).use { db ->
             db.execSQL(
                 "INSERT INTO `sample` (`ts`,`tzOffsetMin`,`bgMgdl`,`bgSource`,`bgProvenance`,`bgFlag`," +
@@ -355,7 +355,7 @@ class MigrationTest {
 
     @Test
     fun migrate16To17_exerciseBecomesGramsAndTheSecondsAreDropped() {
-        // Column changes MEANING: active seconds become carb-equiv grams; unrecoverable, dropped.
+        // Column changes MEANING: seconds become carb-grams; no function recovers them, so dropped.
         helper.createDatabase(16).use { db ->
             db.execSQL(
                 "INSERT INTO `sample` (`ts`,`tzOffsetMin`,`bgMgdl`,`bgSource`,`bgProvenance`,`bgFlag`," +
@@ -443,7 +443,7 @@ class MigrationTest {
 
     @Test
     fun migrate18To19_theSecretTableIsAddedAndEverySourceIsNumberedInListOrder() {
-        // Ordinal is what a user reads as 'this sensor'; backfill is deterministic, list-ordered.
+        // Ordinal is user's "this physical sensor"; backfill is deterministic, matches list order.
         helper.createDatabase(18).use { db ->
             fun source(id: String, added: Long) = db.execSQL(
                 "INSERT INTO `cgm_source` " +
@@ -476,7 +476,7 @@ class MigrationTest {
         assertEquals(3, countRows(db, "SELECT COUNT(*) FROM `cgm_source`"))
         assertEquals(3, countRows(db, "SELECT COUNT(*) FROM `cgm_source` WHERE `warmupWindowMin` = 60"))
 
-        // One row per sensor: two secrets for one sensor is two answers to which key it holds.
+        // One row per sensor: two secrets is two answers to "which key does it hold".
         db.execSQL("INSERT INTO `cgm_sensor_secret` (`sourceId`,`blob`,`updatedAtMs`) VALUES ('aidexx:A',X'0102',1)")
         assertTrue(
             "a second secret was accepted for a sensor that already had one",
@@ -490,7 +490,7 @@ class MigrationTest {
 
     @Test
     fun migrate18To19_isIdempotentOnADatabaseThatAlreadyHasTheColumn() {
-        // Interrupted migration re-applies whole on next open; the ALTER can't survive a re-run.
+        // Interrupted migration re-applies whole on reopen; ALTER can't survive that, so excluded.
         helper.createDatabase(18).use { db ->
             db.execSQL(
                 "INSERT INTO `cgm_source` " +
@@ -612,7 +612,7 @@ class MigrationTest {
         db.close()
     }
 
-    /** Pre-v24 fan is EMPTY, not synthesised from two edges (indistinguishable from a model). */
+    /** Pre-v24 fan is EMPTY, never synthesised; interior would look model-emitted. tau=0.5. */
     @Test
     fun migrate23To24_anOldFillHasNoFanAndIsTheMedian() {
         val seed = helper.createDatabase(23)

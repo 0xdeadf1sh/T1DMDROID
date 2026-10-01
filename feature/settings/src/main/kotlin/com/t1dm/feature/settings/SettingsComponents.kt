@@ -45,7 +45,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 private const val ANCHOR_WAIT_MS = 2_000L
 
-/** [screen] names the page to the index, letting this scaffold claim its own anchor requests. */
+/** screen names the page to the search index; it owns the scroll, so it lands search results. */
 @Composable
 fun SettingsScaffold(
     screen: SettingsScreenKey,
@@ -79,7 +79,7 @@ fun SettingsScaffold(
             registry.focused = null
         }
         registry.wanted = null
-        // Released even unfound; an uncleared request re-fires on the next visit.
+        // Released even when the row was never found; an uncleared request re-fires next visit.
         focus.request(null)
     }
     CompositionLocalProvider(LocalSettingsAnchors provides registry) {
@@ -109,7 +109,7 @@ fun SettingsSectionHeader(text: String) {
     )
 }
 
-/** Bare label, not [SettingsKnob]: hub rows navigate, not index entries. Disabled ⇒ silent. */
+/** Takes a bare label, not a SettingsKnob: hub rows navigate, not tune, not index entries. */
 @Composable
 fun SettingsNavRow(label: String, subtitle: String? = null, enabled: Boolean = true, onClick: () -> Unit = {}) {
     val haptics = rememberT1dmHaptics()
@@ -256,7 +256,7 @@ fun ToggleRow(knob: SettingsKnob, checked: Boolean, onCheckedChange: (Boolean) -
     }
 }
 
-/** [tickOnSelect] is false only for the haptics-intensity picker, which plays the chosen level. */
+/** tickOnSelect is false for the intensity picker, which answers a tap with the level chosen. */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun <T> ChipPicker(

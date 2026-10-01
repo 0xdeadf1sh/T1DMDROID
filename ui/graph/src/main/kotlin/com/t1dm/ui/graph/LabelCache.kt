@@ -1,6 +1,6 @@
 package com.t1dm.ui.graph
 
-/** Memoises axis labels; not thread-safe — composed then read from draw, both on UI thread. */
+/** Memoises axis label strings; not thread-safe, built and read only on the UI thread. */
 class GraphLabelCache {
     private val values = HashMap<Int, String>()
     private val times = HashMap<Long, String>()
@@ -20,7 +20,7 @@ class GraphLabelCache {
         return values.getOrPut(v.toRawBits(), compute)
     }
 
-    /** [stepMs] in the key: formatTime renders MM-dd ≥12h, HH:mm below — same instant differs. */
+    /** [stepMs] in the key: `formatTime` renders `MM-dd` at/above 12h step, `HH:mm` else. */
     fun time(ms: Long, tzOffsetMin: Int, stepMs: Long, compute: () -> String): String {
         if (tzOffsetMin != timesTag || stepMs != timesStep) {
             times.clear(); timesTag = tzOffsetMin; timesStep = stepMs
@@ -29,14 +29,14 @@ class GraphLabelCache {
         return times.getOrPut(ms, compute)
     }
 
-    /** Keyed inside the day; own map, not [times] — one instant needs both rows above 12h step. */
+    /** Keyed on an instant in the day; own map, not [times]: above 12h step, same key diverges. */
     fun date(ms: Long, tzOffsetMin: Int, compute: () -> String): String {
         if (tzOffsetMin != datesTag) { dates.clear(); datesTag = tzOffsetMin }
         if (dates.size > MAX) dates.clear()
         return dates.getOrPut(ms, compute)
     }
 
-    /** [tag] is the clock object, structural-compared; a digest could collide and mislabel. */
+    /** [tag] is the clock object, compared structurally; a digest could collide and mislabel. */
     fun clock(ms: Long, tag: Any?, compute: () -> String): String {
         if (tag != clocksTag) { clocks.clear(); clocksTag = tag }
         if (clocks.size > MAX) clocks.clear()

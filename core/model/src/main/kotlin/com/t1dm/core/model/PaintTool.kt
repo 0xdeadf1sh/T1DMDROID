@@ -1,6 +1,6 @@
 package com.t1dm.core.model
 
-/** Enum here, TEXT column there: unknown → fine pencil; no eraser; width/alpha are SEEDS. */
+/** An enum HERE, open TEXT column THERE: renderer resolves an unknown name to the fine pencil. */
 enum class PaintTool(
     val key: String,
     val displayName: String,
@@ -16,7 +16,7 @@ enum class PaintTool(
 
     HIGHLIGHTER("highlighter", "Highlighter", 18f, 0.22f),
 
-    /** Round-capped not flat: models the eraser's reach; a half-nib phantom hit is absurd here. */
+    /** Round-capped, not flat like highlighter: the eraser reach is modelled on a round cap. */
     BROAD("broad", "Broad", 96f, 1f);
 
     companion object {

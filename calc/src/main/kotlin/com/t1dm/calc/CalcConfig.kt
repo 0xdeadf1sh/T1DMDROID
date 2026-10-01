@@ -1,6 +1,6 @@
 package com.t1dm.calc
 
-/** Every threshold is user-set and UNBOUNDED (§3.6); a rail fails closed, threshold tunes where. */
+/** Every threshold is user-set and UNBOUNDED (§3.6); a rail still fails closed regardless. */
 
 data class TargetRange(
     val lowMgdl: Double = 70.0,
@@ -16,17 +16,17 @@ sealed interface Objective {
     /** [atMsFromNow] is measured from the roll start. */
     data class HitTargetAtTime(val atMsFromNow: Long) : Objective
 
-    /** Median hypo term, so protection doesn't rest on the disableable predicted-low veto. */
+    /** Scorer's own median hypo term; protection doesn't rest on the disableable veto. */
     data class HitTargetBg(val targetMgdl: Double) : Objective
 }
 
-/** Both directions score off the median; these weights are the whole hypo/hyper preference. */
+/** Both directions score off the median; weights are the whole hypo/hyper preference. */
 data class Asymmetry(
     val hypoWeight: Double = 3.0,
     val hyperWeight: Double = 1.0,
 )
 
-/** Disabled rail is a no-op, enabled fails closed (§3.6-C); baselineDegeneracy not toggleable. */
+/** Disabled rail is a no-op; enabled fails closed (§3.6-C); baselineDegeneracy not toggleable. */
 data class RailToggles(
     val predictedLowVeto: Boolean = true,
     val iobCeiling: Boolean = true,

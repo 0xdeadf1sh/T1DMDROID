@@ -1,14 +1,14 @@
 package com.t1dm.core.model
 
-/** Display-only; not a data class (array fields give a lying identity `equals`). */
+/** Not a `data class`: array fields would give it a lying identity-based `equals`. */
 class PaintStroke(
-    val id: Long,                      // 0 until the store mints it
+    val id: Long,
     val createdAtMs: Long,
-    val tool: String,                  // open TEXT vocabulary; a later-build stroke still decodes
+    val tool: String,
     val colorArgb: Int,
     val widthDp: Float,
-    val tsMs: LongArray,               // absolute epoch-ms instants
-    val yFrac: FloatArray,             // PLOT BOX fraction (0=top,1=bottom); outside [0,1] clips.
+    val tsMs: LongArray,
+    val yFrac: FloatArray,
 ) {
     init {
         require(tsMs.size == yFrac.size) {

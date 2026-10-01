@@ -2,7 +2,7 @@ package com.t1dm.ui.graph
 
 import com.t1dm.core.model.MaskGeometry
 
-/** Every bound comes from the descriptor; fromDescriptor false is the cut-only, 5-min fallback. */
+/** Every bound is from the model descriptor; fromDescriptor=false falls to the 5-min grid. */
 data class MaskControls(
     val patchMs: Long,
     val maxSpans: Int,
@@ -19,7 +19,7 @@ data class MaskSelection(val startMs: Long, val endMs: Long) {
     fun patches(patchMs: Long): Int = ((endMs - startMs) / patchMs).toInt()
 }
 
-/** Absolute boundaries, not window-relative: window-derived would move under a pan. */
+/** Absolute boundaries, not window-relative: a window-derived one would move under a pan. */
 internal fun snapDown(ms: Long, patchMs: Long): Long = Math.floorDiv(ms, patchMs) * patchMs
 
 /** `SPEC/inference.md` §4. Derived from where the span sits, never chosen. */
@@ -29,7 +29,7 @@ fun geometryOf(sel: MaskSelection, c: MaskControls): MaskGeometry = when {
     else -> MaskGeometry.INFILL
 }
 
-/** One stretch, snapped to patches; clamps a too-long drag toward the anchor, not refusing it. */
+/** One stretch, snapped to patches; clamps past the longest span, shrinking toward the anchor. */
 fun selectionOf(dragFromMs: Long, dragToMs: Long, c: MaskControls): MaskSelection? {
     if (c.patchMs <= 0L) return null
     val lo = snapDown(minOf(dragFromMs, dragToMs), c.patchMs)
@@ -67,7 +67,7 @@ internal enum class GraphGesture { NAVIGATE, PAINT, EDIT }
 /** A second finger switches SELECT to TRANSFORM, one-way. */
 internal enum class EditGesture { SELECT, TRANSFORM }
 
-/** Stretch as drawn, a patch snap travels not teleports. Double not Float: ~130ms gap by 2026. */
+/** Drawn stretch so snapping travels, not teleports; Double not Float: ~130ms gap by 2026. */
 internal fun lerpSelection(from: MaskSelection?, to: MaskSelection?, t: Float): MaskSelection? {
     if (to == null) return null
     if (from == null || t >= 1f) return to

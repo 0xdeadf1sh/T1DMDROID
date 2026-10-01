@@ -21,7 +21,7 @@ import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 import com.t1dm.core.model.UnitSpace
 
-/** Last-known render; rebuilds a CgmReading and re-runs BgGlanceComputer, fails closed to VOID. */
+/** Last-known render, Glance's per-widget Preferences, for when the live pull can't run; §3.6. */
 internal object WidgetStateStore {
 
     /** Absent ⇒ no last-known render for this widget id. */

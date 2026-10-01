@@ -5,12 +5,12 @@ import com.t1dm.core.model.PROBE_DOSE_U
 import com.t1dm.core.model.SensitivityEstimate
 import timber.log.Timber
 
-/** GI is the resolver's to pin; it moves how much has appeared by the probe horizon. */
+/** GI is the resolver's to pin: shifts appearance by probe horizon; probes need matching GIs. */
 fun interface CarbResolver {
     suspend fun resolve(grams: Double, atMs: Long): List<CurveEvent>
 }
 
-/** ISF/ICR from three rolls, differenced at validated-window end; unfiltered, no rail reads it. */
+/** Null = no response; a response is unfiltered (wrong sign included) and unused downstream. */
 class SensitivityProbe(
     private val port: ForecastPort,
     private val insulin: BolusResolver,
@@ -21,7 +21,7 @@ class SensitivityProbe(
     suspend fun probe(
         nowMs: Long,
         config: CalcConfig,
-        /** Pinned across three rolls: different BG filters attribute the step to it. */
+        /** Pinned across rolls: differing filters would blame the filter's own step on the dose. */
         smoothingWindow: Int? = null,
     ): SensitivityEstimate? {
         val steps = config.horizon.validatedSteps
@@ -63,7 +63,7 @@ class SensitivityProbe(
         val insulinDrop = terminal[0] - terminal[1]
         val carbRise = terminal[2] - terminal[0]
 
-        // No direction/magnitude filter: reports what the model said; only non-finite refuses.
+        // No direction/magnitude filter: reports raw model output; only non-finite math refuses.
         val isf = insulinDrop / PROBE_DOSE_U
         val icr = isf * PROBE_CARB_G / carbRise
         if (!isf.isFinite() || !icr.isFinite()) {
@@ -88,7 +88,7 @@ class SensitivityProbe(
     companion object {
         private const val TAG = "Sensitivity"
 
-        /** Ten grams not one: a gram's rise sits inside the decode's own grain; not linear. */
+        /** Ten grams: a 1g rise sits inside the decode's grain; response isn't assumed linear. */
         const val PROBE_CARB_G = 10.0
     }
 }

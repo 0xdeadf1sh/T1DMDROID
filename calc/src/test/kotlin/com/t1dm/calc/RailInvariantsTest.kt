@@ -193,7 +193,7 @@ class RailInvariantsTest {
 
     @Test
     fun a_wide_fan_still_yields_a_nonzero_dose_end_to_end() = runTest {
-        // Base 60/growth 3.0 keeps lower edge under 70 all roll; default band (5/0.6) too narrow.
+        // Base 60/growth 3.0 puts lower edge under 70 floor; default band too narrow for this.
         val port = FakeForecastPort(startBg = 260.0, mgdlPerU = 15.0, bandBase = 60.0, bandGrowthPerStep = 3.0)
         val advisor = advisorOf(port, anchor = fakeAnchor(now, currentBg = 260.0), iob = fakeIob(now, iobU = 0.0))
         val r = advisor.recommendBolus(now, emptyList(), CalcConfig()) as AdviceResult.Recommended

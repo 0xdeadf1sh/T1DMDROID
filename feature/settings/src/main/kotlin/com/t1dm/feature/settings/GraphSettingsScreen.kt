@@ -32,7 +32,7 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** mg/dL step 5, axis grows above maxMgdl; smoothingWindow filters model channel, not drawing. */
+/** mg/dL, stepped by 5. [smoothingWindow] filters the model's input channel, not just drawing. */
 @Composable
 fun GraphSettingsScreen(
     minMgdl: Int,
@@ -108,7 +108,7 @@ private fun SmoothingSection(
         "Filters the model input, not just the drawing",
         style = MaterialTheme.typography.bodyMedium,
     )
-    // Keyed on window: a cold flow means unkeyed remember never adopts the persisted value.
+    // Keyed on window: unkeyed remember seeds the thumb from placeholder, never persisted.
     val startIdx = stops.indexOf(window).coerceAtLeast(0)
     var sliderPos by remember(window) { mutableFloatStateOf(startIdx.toFloat()) }
     var lastIdx by remember(window) { mutableIntStateOf(startIdx) }

@@ -96,7 +96,7 @@ class GameSynthTest {
         val red = rateAt(9_000f)
         assertTrue("idle=$idle mid=$mid", mid > idle)
         assertTrue("mid=$mid red=$red", red > mid)
-        // 800→9000 rpm is an 11× fundamental; a constant mapping clears no doubling.
+        // 800->9000 rpm is an 11x fundamental; collapsing to a constant clears no doubling.
         assertTrue("idle=$idle red=$red", red > idle * 3)
     }
 

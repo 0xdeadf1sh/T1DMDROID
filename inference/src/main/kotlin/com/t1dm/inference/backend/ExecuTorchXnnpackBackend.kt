@@ -7,7 +7,7 @@ import org.pytorch.executorch.Module
 import org.pytorch.executorch.Tensor
 import java.io.File
 
-/** CPU fp32, ExecuTorch 1.3.1. [Module] unsafe concurrently; forward runs single-thread only. */
+/** CPU fp32 authority, ExecuTorch 1.3.1; loaded Module isn't concurrency-safe, single-thread. */
 class ExecuTorchXnnpackBackend : InferenceBackend {
     override val id = BackendId.EXECUTORCH_XNNPACK_FP32
     override val caps = BackendCaps()

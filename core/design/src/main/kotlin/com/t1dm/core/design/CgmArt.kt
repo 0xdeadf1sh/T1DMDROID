@@ -9,7 +9,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 
-/** CGM sensor icon, centred/scaled to `size`; [primary] theme accent, [ink] neutral foreground. */
+/** CGM sensor icon, centred/scaled to `size`. [primary]=accent (dome/arcs), [ink]=patch. */
 
 private fun Color.mix(other: Color, t: Float): Color = lerp(this, other, t)
 

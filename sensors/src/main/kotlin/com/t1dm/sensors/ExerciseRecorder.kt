@@ -19,7 +19,7 @@ import kotlinx.coroutines.withContext
 
 data class ExerciseSummary(val activeSec: Int, val distanceM: Double?, val kcal: Int?)
 
-/** One instance/bout; [run] cancels its scope, [finish] must outlive it; never self-stops. */
+/** finish() must run on a scope outliving run()'s: the flush must survive its cancellation. */
 class ExerciseRecorder(
     private val session: ExerciseSession,
     private val source: LocationSource,
@@ -56,7 +56,7 @@ class ExerciseRecorder(
         merge(fixes.map { Event.Fix(it) }, ticker().map { Event.Tick(it) }).collect { onEvent(it) }
     }
 
-    /** Safe on a double stop: same duration ⇒ same curve, unchanged, no double count. */
+    /** Safe on double stop: same duration resolves to same curve, writer finds it unchanged. */
     suspend fun finish(endMs: Long): ExerciseSummary = withContext(dispatchers.default) {
         bodyMass = bodyMassKg()
         advance(bucketer.onTick(endMs))
@@ -88,7 +88,7 @@ class ExerciseRecorder(
         }
     }
 
-    /** Open partial via [ExerciseBucketer.peek] (onFix returns only closed); grid-driven write. */
+    /** Write is driven by bucket boundary crossings, not the ticker: curve is whole-duration. */
     private suspend fun advance(buckets: List<ExerciseBucket>) {
         for (b in buckets) segments[b.bucketStartMs] = b
         val open = bucketer.peek()
@@ -154,7 +154,7 @@ class ExerciseRecorder(
     }
 
     companion object {
-        /** Finer than the write grid, because the live panel reads the same seconds. */
+        /** Finer than the write grid: live panel reads these same seconds. */
         const val TICK_MS = 30_000L
 
         /** Burst cap between ticks; at a 4 s cadence the 30 s tick flushes first, at ≤8 fixes. */

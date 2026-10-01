@@ -6,7 +6,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.graphics.Color
 import org.json.JSONObject
 
-/** Semantic roles, never literals; chrome via [toColorScheme], bands via LocalT1dmSemantics. */
+/** Semantic roles; chrome maps via toColorScheme, bands via LocalT1dmSemantics. */
 data class T1dmPalette(
     val id: String,
     val displayName: String,
@@ -127,7 +127,7 @@ val HelloKittyPalette = T1dmPalette(
     urgentHigh = Color(0xFFFF2D6E),
 )
 
-/** Grayscale by construction: bands separate by lightness; direction is position, not colour. */
+/** Grayscale: bands separate by lightness only; low=high, urgentLow=urgentHigh by design. */
 val EInkPalette = T1dmPalette(
     id = ThemeIds.EINK,
     displayName = "E-Ink",
@@ -158,10 +158,10 @@ fun paletteForId(id: String?): T1dmPalette =
 
 fun isKnownThemeId(id: String?): Boolean = id == ThemeIds.CUSTOM || BundledPalettes.any { it.id == id }
 
-/** An id can outlive its palette (kv row, exports, launcher alias); a caller can notice, fix it. */
+/** Retired theme ids survive in kv rows/exports/aliases; caller can notice and rewrite it. */
 fun normalizeThemeId(id: String?): String = if (isKnownThemeId(id)) id!! else ThemeIds.TRON
 
-/** The ONE place a custom theme is decoded, so Activity/FGS-notification/widget all agree. */
+/** The one place a custom theme decodes, so Activity, FGS notification and widget agree. */
 fun resolvePalette(themeId: String?, customThemeJson: String?): T1dmPalette =
     if (themeId == ThemeIds.CUSTOM && !customThemeJson.isNullOrBlank()) {
         runCatching { parseThemeJson(customThemeJson) }.getOrDefault(TronPalette)
@@ -169,7 +169,7 @@ fun resolvePalette(themeId: String?, customThemeJson: String?): T1dmPalette =
         paletteForId(themeId)
     }
 
-/** Imported file: `format:"t1dm.theme"`, `name`, `dark`, `colors` block of #RRGGBB/#AARRGGBB. */
+/** Imported file: format="t1dm.theme" tag, name, dark, colors block of #RRGGBB strings. */
 fun parseThemeJson(text: String): T1dmPalette {
     val root = runCatching { JSONObject(text) }
         .getOrElse { throw IllegalArgumentException("Not a theme file — invalid JSON") }

@@ -2,10 +2,10 @@ package com.t1dm.calc
 
 import com.t1dm.core.common.KovatchevScale
 
-/** Index only; Rust kovatchev_f is authority, [KovatchevScale] its pure-Kotlin mirror (§5/§11). */
+/** Index; Rust `kovatchev_f` is authority, [KovatchevScale] its mirror (INFERENCE.md §5§11). */
 object KovatchevRisk {
 
-    /** Clamped [20,500]; NaN scores low bound so garbage BG reads maximal hypo, not risk-free. */
+    /** Clamped `[20,500]`; NaN clamps low, so garbage BG reads max hypo, not `NaN<0.0==false`. */
     fun f(bgMgdl: Double): Double = KovatchevScale.f(bgMgdl)
 
     fun risk(bgMgdl: Double): Double {

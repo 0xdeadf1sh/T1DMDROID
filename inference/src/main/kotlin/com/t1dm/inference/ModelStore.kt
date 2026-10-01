@@ -23,7 +23,7 @@ data class ModelBundle(
 /** A descriptor the crate would not decode: model files are present, so say which and why. */
 data class RefusedDescriptor(val file: String, val reason: String)
 
-/** Loads .pte+descriptor.json pushed to getExternalFilesDir(models); app never parses the .pt. */
+/** Loads .pte + descriptor.json from getExternalFilesDir; descriptor is sole pre/post source. */
 class ModelStore(
     private val modelsDir: File,
     private val native: NativeCore,
@@ -45,7 +45,7 @@ class ModelStore(
         return descriptors.mapNotNull { bundleOf(it, dir) }
     }
 
-    /** Engines the last discover refused, so caller can say why, not just "none installed". */
+    /** Engines the last discover refused, so the caller can say why, not that none is installed. */
     val refused: List<String> get() = refusedEngines.toList()
 
     /** Descriptors the last discover refused, read like [refused]: name one, not "none". */
@@ -65,7 +65,7 @@ class ModelStore(
             return refuse(descriptorFile, "not valid JSON")
         }
         val id = resolveId(descriptorFile, obj)
-        // No projection step: retranscription drops keys silently until a forecast decodes wrong.
+        // No projection step: a second transcription drops keys until a bad decode surfaces.
         val parsed = native.parseDescriptorOrRefusal(json)
         val desc = parsed.descriptor
         if (desc == null) {
@@ -73,12 +73,12 @@ class ModelStore(
             return refuse(descriptorFile, firstClause(parsed.reason))
         }
         val artifact = obj.optString("artifact").ifBlank { "$id.xnnpack.pte" }
-        // Pushed separately, may be absent; bundle returns non-existent pte, routes to StubBackend.
+        // Pushed separately from the descriptor, may be absent; controller routes to StubBackend.
         val pte = File(dir, artifact)
         if (!pte.exists()) {
             Timber.tag(TAG).w("artifact %s for model %s absent; StubBackend will stand in", artifact, id)
         }
-        // Absent, the model still forecasts from its own head_raw; it just takes no adapter.
+        // Absent, the model still forecasts from the graph's own head_raw; just takes no adapter.
         val head = desc.head?.let { File(dir, it.file) }?.takeIf { it.exists() }
         if (desc.head != null && head == null) {
             Timber.tag(TAG).w("head file %s for model %s absent; no adapter can attach", desc.head?.file, id)
@@ -114,7 +114,7 @@ class ModelStore(
         reason?.substringBefore(';')?.substringBefore(" at line ")?.trim()?.ifBlank { null }
             ?: "refused by the pre/post parse"
 
-    /** Sole source of truth, so `discover` and [delete] agree on which artifact an id names. */
+    /** Sole source of truth, so discover and delete agree on which artifact an id names. */
     private fun resolveId(descriptorFile: File, obj: JSONObject): String =
         obj.optString("id").ifBlank { descriptorFile.name.removeSuffix(".descriptor.json").ifBlank { "model" } }
 

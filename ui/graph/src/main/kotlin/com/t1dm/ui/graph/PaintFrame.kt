@@ -4,7 +4,7 @@ import com.t1dm.core.model.PaintStroke
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Immutable snapshot of the annotation layer, off-thread. x=abs epoch-ms, y=plot-box fraction. */
+/** Immutable snapshot of the panel's annotation layer; x=epoch-ms, y=fraction of plot height. */
 class PaintFrame internal constructor(
     /** Row id per stroke, in paint order. */
     val ids: LongArray,
@@ -28,7 +28,7 @@ class PaintFrame internal constructor(
 
     val pointCount: Int get() = tsMs.size
 
-    /** Intersection, not containment; edges inclusive, matching observeOverlapping in :data. */
+    /** Intersection, not containment; both edges inclusive, matching :data's overlap predicate. */
     fun intersects(s: Int, fromMs: Double, toMs: Double): Boolean =
         maxTsMs[s] >= fromMs && minTsMs[s] <= toMs
 
@@ -41,10 +41,10 @@ class PaintFrame internal constructor(
 
         const val TOOL_HIGHLIGHTER = 3
 
-        /** Geometry is [TOOL_FINE]'s, so an older build resolving onto it still draws correctly. */
+        /** Geometry is TOOL_FINE's, so an older build resolving onto it still draws correctly. */
         const val TOOL_BROAD = 4
 
-        /** Total: a future name resolves to [TOOL_FINE], not throwing or vanishing. */
+        /** Total: a future name resolves to TOOL_FINE rather than throwing or vanishing. */
         fun toolIdOf(tool: String): Int = when (tool) {
             "marker" -> TOOL_MARKER
             "chalk" -> TOOL_CHALK
@@ -71,7 +71,7 @@ suspend fun paintFrameOf(
     maxPointsPerStroke: Int = 4096,
 ): PaintFrame = withContext(Dispatchers.Default) { buildPaintFrame(strokes, maxPointsPerStroke) }
 
-/** Pure, safe from @Preview/test. Past maxPointsPerStroke a stroke is strided, endpoints kept. */
+/** Pure; ordered by createdAtMs then id, as :data reads back; past cap, strided endpoints. */
 fun buildPaintFrame(strokes: List<PaintStroke>, maxPointsPerStroke: Int = 4096): PaintFrame {
     val kept = strokes.asSequence()
         .filter { !it.isEmpty }

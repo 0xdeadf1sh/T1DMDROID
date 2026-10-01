@@ -1,5 +1,7 @@
 package com.t1dm.app.cgm
 
+import com.t1dm.cgm.CgmReceivedSamples
+import com.t1dm.cgm.Ct5AnchorRepair
 import com.t1dm.cgm.CgmRepository
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
@@ -44,7 +46,10 @@ class AppCgmRepository(
 
     override suspend fun upsertReading(reading: CgmReading) = repository.upsertReading(reading)
 
-    /** An unreadable row returns null; bytes stay: only copy, a failed open must never delete. */
+    override suspend fun divideRatesByTenOnce(sourcePrefix: String, beforeMs: Long, onceKey: String): Int =
+        repository.divideRatesByTenOnce(sourcePrefix, beforeMs, onceKey, nowMs())
+
+    /** Unreadable returns null, bytes stay on disk: only copy, not recoverable from the sensor. */
     override suspend fun loadSensorSecret(id: CgmSourceId): ByteArray? =
         repository.sensorSecret(id)?.let(cipher::open)
 
@@ -61,6 +66,40 @@ class AppCgmRepository(
         repository.putKv(cursorKey(id), cursor.toString(), nowMs())
 
     private fun cursorKey(id: CgmSourceId) = "cgm.cursor.${id.value}"
+
+    override suspend fun loadHighestDeliveredId(id: CgmSourceId): Int =
+        repository.getKv(highestKey(id))?.toIntOrNull() ?: 0
+
+    override suspend fun saveHighestDeliveredId(id: CgmSourceId, glucoseId: Int) =
+        repository.putKv(highestKey(id), glucoseId.toString(), nowMs())
+
+    private fun highestKey(id: CgmSourceId) = "cgm.highestId.${id.value}"
+
+    override suspend fun loadSensorAddress(id: CgmSourceId): String? = repository.getKv(addressKey(id))
+
+    override suspend fun saveSensorAddress(id: CgmSourceId, address: String) =
+        repository.putKv(addressKey(id), address, nowMs())
+
+    private fun addressKey(id: CgmSourceId) = "cgm.address.${id.value}"
+
+    override suspend fun loadSensorLifetimeMin(id: CgmSourceId): Int? =
+        repository.getKv(lifetimeKey(id))?.toIntOrNull()
+
+    override suspend fun saveSensorLifetimeMin(id: CgmSourceId, minutes: Int) =
+        repository.putKv(lifetimeKey(id), minutes.toString(), nowMs())
+
+    private fun lifetimeKey(id: CgmSourceId) = "cgm.lifetimeMin.${id.value}"
+
+    override suspend fun advertArrivals(id: CgmSourceId): List<Ct5AnchorRepair.Arrival> =
+        repository.advertArrivals(id).map { (rx, min) -> Ct5AnchorRepair.Arrival(rx, min) }
+
+    override suspend fun deleteReadingsForSource(id: CgmSourceId): Int =
+        repository.deleteReadingsForSource(id)
+
+    override suspend fun receivedSampleMinutes(id: CgmSourceId, notBeforeMs: Long): CgmReceivedSamples {
+        val since = maxOf(repository.rawSamplesCompleteSince(nowMs()), notBeforeMs)
+        return CgmReceivedSamples(since, repository.receivedSampleMinutes(id, since).toSet())
+    }
 
     override suspend fun insertRawAdvert(
         sourceId: CgmSourceId?,

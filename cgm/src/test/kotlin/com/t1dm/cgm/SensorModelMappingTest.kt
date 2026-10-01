@@ -11,7 +11,7 @@ class SensorModelMappingTest {
 
     @Test
     fun `every prefix this vendor recognises resolves to one model`() {
-        // LinX / AiDEX X / Lumi / Smart are brand skins of one MicroTech platform.
+        // LinX / AiDEX X / Lumi / Smart are brand skins of one MicroTech platform, one protocol.
         val models = CgmConstants.MODEL_BY_NAME_PREFIX.values.toSet()
         assertEquals(setOf(CgmSensorModelId.AIDEX_X), models)
     }
@@ -26,7 +26,7 @@ class SensorModelMappingTest {
 
     @Test
     fun `the prefix list is derived from the table, never kept beside it`() {
-        // Juggluco keeps a second hand-maintained copy of its list with one entry missing.
+        // Juggluco's second hand-maintained copy is missing an entry, and mishandles those devices.
         assertEquals(CgmConstants.MODEL_BY_NAME_PREFIX.keys.toList(), CgmConstants.NAME_PREFIXES)
     }
 
@@ -51,17 +51,18 @@ class SensorModelMappingTest {
 
     @Test
     fun `a discovered sensor is described by what it advertised, not by a hardcoded brand`() {
-        val d = AidexXPlugin.descriptorFor("9AB31F02C4", advertName = "LinX-9AB31F02C4")
+        val d = AidexXConnectedSource.descriptorFor("9AB31F02C4", advertName = "LinX-9AB31F02C4")
         assertEquals("LinX-9AB31F02C4", d.advertName)
         assertEquals("LinX 9AB31F02C4", d.displayName)
-        // What the BG panel prints.
+        // `shortName` is what the BG panel prints.
         assertEquals("LinX", d.shortName)
         assertEquals(CgmSensorModelId.AIDEX_X, d.sensorModelId)
     }
 
     @Test
     fun `a sensor met without its advertised name still classifies, and says so by recording none`() {
-        val d = AidexXPlugin.descriptorFor("9AB31F02C4")
+        // The registry path that rebuilds a descriptor from a stored serial alone.
+        val d = AidexXConnectedSource.descriptorFor("9AB31F02C4")
         assertNull(d.advertName)
         assertEquals(CgmSensorModelId.AIDEX_X, d.sensorModelId)
         assertTrue(d.displayName.endsWith("9AB31F02C4"))

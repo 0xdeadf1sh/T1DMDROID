@@ -1,8 +1,8 @@
 package com.t1dm.core.model
 
-/** Split-conformal recalibration (§8.4); median never moves; fan is display-only, unstored. */
+/** Split-conformal band recal, on device (§8.4); median never moves, fan is display-only. */
 
-/** [delta]: steps·nQuantiles, step-major τ (bandsMgdl layout); zero when [sufficient] false. */
+/** delta is steps*nQuantiles, step-major ascending τ, bandsMgdl layout; zeros if not sufficient. */
 data class ConformalFit(
     val delta: List<Double>,
     val steps: Int,
@@ -55,7 +55,7 @@ data class BandCalibration(
     val meanWidth90Cal: Double?,
     val windowDays: Int,
     val fittedAtMs: Long,
-    /** CGM source scoped to; null never matches, so an unstamped correction stops applying. */
+    /** CGM source every window was scoped to; null never matches, unstamped correction stops. */
     val sourceId: String? = null,
 ) {
     /** Trusted only as long as the history it was fitted on; past it, the raw fan. */
@@ -63,7 +63,7 @@ data class BandCalibration(
 
     fun expiredAt(nowMs: Long): Boolean = nowMs >= expiresAtMs
 
-    /** Identity is (modelId, fittedAtMs) — one fit per model; structural, not reference. */
+    /** By fit identity: one fit per model in flight; (modelId,fittedAtMs) decides, not delta. */
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         val o = other as? BandCalibration ?: return false
@@ -81,7 +81,7 @@ enum class BandFitRefusal {
     HORIZON_UNKNOWN,
 }
 
-/** [refusal] non-null: walk never ran ([fit]/counts absent). Both null: walk scored nothing. */
+/** refusal non-null: walk never ran, fit/counts absent not zero. Both null: walk scored nothing. */
 data class BandCalibrationOutcome(
     val fit: ConformalFit?,
     val stored: Boolean,

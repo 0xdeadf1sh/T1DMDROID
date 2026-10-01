@@ -43,7 +43,7 @@ class AlarmController(
 
     private fun onTick() {
         engine.onTick(clock(), temperatureC())
-        // Re-presents each tick so an expired snooze or deduped alarm resurfaces (§3.6 C1).
+        // Re-presents each tick: expired snooze resurfaces (§3.6 C1); notifier throttles sound.
         val current = engine.state.value
         if (current.isActive) notifier.emit(current)
     }

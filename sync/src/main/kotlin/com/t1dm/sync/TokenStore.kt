@@ -10,7 +10,7 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-/** A credential at rest, keyed by id; never in the Room DB (backup/export could leak). */
+/** A credential at rest, keyed by id; must never sit in the DB a backup could leak. */
 interface TokenStore {
     suspend fun get(profileId: String): String?
     suspend fun put(profileId: String, token: String)
@@ -28,16 +28,16 @@ class InMemoryTokenStore(seed: Map<String, String> = emptyMap()) : TokenStore {
     override suspend fun clearAll() { map.clear() }
 }
 
-/** HW-bound AES-256-GCM wraps tokens; iv:ciphertext in private prefs, key non-exportable. */
+/** Hardware-bound AES-256-GCM key wraps each token in `SharedPreferences`; key non-exportable. */
 class KeystoreTokenStore(context: Context) : TokenStore {
     private val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    /** One id's plaintext in heap till put/remove/clearAll/death; keyed by iv:ciphertext. */
+    /** One id's plaintext in heap until [put]/[remove]/[clearAll]; keyed by its ciphertext. */
     private var cachedFor: String? = null
     private var cachedPacked: String? = null
     private var cachedToken: String? = null
 
-    /** Bumped by [forget], read in [get]'s unwrap; stops a pre-erase unwrap publishing late. */
+    /** Bumped by [forget]; decrypt runs outside the monitor, epoch check stops a stale publish. */
     private var epoch = 0L
 
     /** The Keystore HANDLE, not key material: its bytes never leave the TEE. */
@@ -56,7 +56,7 @@ class KeystoreTokenStore(context: Context) : TokenStore {
         val cipher = Cipher.getInstance(TRANSFORM)
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(GCM_TAG_BITS, iv))
         val token = String(cipher.doFinal(ct), Charsets.UTF_8)
-        // Caller asked before the erase, answered; the CACHE must not outlive the ciphertext.
+        // Caller asked before erase, answered anyway; only the CACHE must not outlive ciphertext.
         synchronized(this) {
             if (epoch == began) {
                 cachedFor = profileId
@@ -82,7 +82,7 @@ class KeystoreTokenStore(context: Context) : TokenStore {
         forget()
     }
 
-    /** Drops every wrapped token AND the wrapping key; a later token regenerates it. */
+    /** Drops every wrapped token AND the wrapping key; a fresh token later regenerates it. */
     override suspend fun clearAll() {
         prefs.edit().clear().apply()
         forget()

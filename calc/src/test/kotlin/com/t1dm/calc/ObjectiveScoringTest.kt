@@ -74,7 +74,7 @@ class ObjectiveScoringTest {
             objective = Objective.HitTargetBg(targetMgdl = 110.0),
             asymmetry = Asymmetry(hypoWeight = 5.0, hyperWeight = 1.0),
         )
-        // Equal distance under symmetric weights cancels deviation; only hypo term separates.
+        // Equal distance either side, symmetric weights: deviation cancels, only hypo term differs.
         val symmetric = CalcConfig(
             objective = Objective.HitTargetBg(targetMgdl = 110.0),
             asymmetry = Asymmetry(hypoWeight = 1.0, hyperWeight = 1.0),

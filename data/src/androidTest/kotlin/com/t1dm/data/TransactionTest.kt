@@ -28,7 +28,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** [BundledSQLiteDriver] (prod config); proves suspend DAO calls join the tx, not auto-commit. */
+/** Built with BundledSQLiteDriver, production config, against the same confinement machinery. */
 @RunWith(AndroidJUnit4::class)
 class TransactionTest {
 
@@ -53,7 +53,7 @@ class TransactionTest {
     @After
     fun tearDown() = db.close()
 
-    /** Both rows gone only if both DAOs executed on the same confined writer connection. */
+    /** Both rows gone only if the two DAOs executed on the same confined writer connection. */
     @Test
     fun daoWritesInsideTransactionRollBackTogether() = runBlocking {
         val src = sourceEntity("aidexx:ROLLBACK")
@@ -63,7 +63,7 @@ class TransactionTest {
                 transactor.immediateTransaction {
                     db.cgmSourceDao().upsert(src)
                     db.kvDao().put(KvEntity("k", "v", 1L))
-                    // A read DAO inside the writer tx confines too, seeing the uncommitted rows.
+                    // A read DAO inside the writer tx confines too, sees the uncommitted rows.
                     assertNotNull(db.cgmSourceDao().byId(src.sourceId))
                     assertEquals("v", db.kvDao().get("k"))
                     throw boom
@@ -104,7 +104,7 @@ class TransactionTest {
         assertEquals("both stay active", 2, rows.count { it.active })
     }
 
-    /** upsertSource runs per enumeration; must read authoritative from stored row, not memory. */
+    /** upsertSource runs per sighting; authoritative reads the stored row, not the descriptor. */
     @Test
     fun upsertSource_reSightingPreservesAuthority() = runBlocking {
         repo.upsertSource(descriptor("aidexx:A"), authoritative = true, nowMs = 1L)

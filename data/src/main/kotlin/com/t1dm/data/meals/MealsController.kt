@@ -65,7 +65,7 @@ class MealsController(
     suspend fun saveCustomFood(food: Food) =
         repository.upsertFood(food.toCustomEntity(now()))
 
-    /** False when the row vanished or is a seed row; see [T1dmRepository.updateCustomFood]. */
+    /** False when the row vanished or is a bundled seed; see [T1dmRepository.updateCustomFood]. */
     suspend fun updateCustomFood(food: Food): Boolean =
         repository.updateCustomFood(food.toCustomEntity(now()))
 
@@ -80,10 +80,10 @@ class MealsController(
 
     suspend fun deleteSavedMeal(id: Long) = repository.deleteSavedMeal(id)
 
-    /** customCurve IS the resolved curve; carb channel reproduces it, regardless of presets. */
+    /** [LoggedMealEntity.customCurve] IS the resolved curve; carb channel reproduces it exactly. */
     suspend fun logMeal(components: List<MealComponent>, tsMs: Long = now()): LoggedMealEntity =
         withContext(dispatchers.io) {
-            // Round to nearest, not floor: matches CGM/dose slot; floor misaligns by a step.
+            // Round-to-nearest, not floor: matches CGM/food/dose writers; floor misaligns carb/BG.
             val gridTs = Math.floorDiv(tsMs + CurveEngine.STEP_MS / 2, CurveEngine.STEP_MS) * CurveEngine.STEP_MS
             val resolved = resolver.resolveCombined(components, gridTs)
             val tz = TimeZone.getDefault().getOffset(gridTs) / 60_000

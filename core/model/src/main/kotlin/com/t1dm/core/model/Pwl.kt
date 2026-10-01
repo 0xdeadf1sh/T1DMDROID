@@ -3,7 +3,7 @@ package com.t1dm.core.model
 /** A rate [y] (>= 0, linear amount axis) at time [xMin] (min). */
 data class PwlKnot(val xMin: Double, val y: Double)
 
-/** Pure shape; absolute y scale is irrelevant, sampleNormalized area-normalizes to a total. */
+/** A pure shape: absolute y scale is irrelevant, sampleNormalized area-normalizes to a total. */
 data class PwlCurve(
     val durationMin: Double,
     val knots: List<PwlKnot>,

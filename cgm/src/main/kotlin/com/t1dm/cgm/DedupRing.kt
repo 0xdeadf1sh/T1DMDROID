@@ -1,6 +1,6 @@
 package com.t1dm.cgm
 
-/** Recent `minFromStart` ring; [record] is post-CRC only; not thread-safe, one ring per source. */
+/** [record] runs only post-CRC; corrupt frames can't poison a slot. One ring per [CgmSource]. */
 class DedupRing(private val capacity: Int = 16) {
     private val ring = IntArray(capacity) { Int.MIN_VALUE }
     private var idx = 0

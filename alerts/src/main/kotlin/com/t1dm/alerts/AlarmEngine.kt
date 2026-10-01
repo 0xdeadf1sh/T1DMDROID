@@ -43,7 +43,7 @@ class AlarmEngine(private var config: AlarmConfig = AlarmConfig.DEFAULT) {
         publish()
     }
 
-    /** Forgets link state only; a standing threshold breach is never cleared here. */
+    /** Forgets link state only; [ThresholdAlarm] stays so a standing low doesn't go quiet. */
     @Synchronized
     fun onSourceChanged(nowMs: Long) {
         lossOfSignal.onSourceChanged(nowMs)
@@ -51,7 +51,7 @@ class AlarmEngine(private var config: AlarmConfig = AlarmConfig.DEFAULT) {
         publish()
     }
 
-    /** Swaps sub-evaluator params only; never clears a breach, so a standing low stays audible. */
+    /** No clear, no publish: a raised threshold must not silence a standing low. */
     @Synchronized
     fun updateConfig(config: AlarmConfig) {
         this.config = config

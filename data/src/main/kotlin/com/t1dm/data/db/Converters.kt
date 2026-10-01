@@ -29,7 +29,7 @@ class Converters {
         v?.let(ForecastStatus::valueOf)
 
     @TypeConverter fun backendIdToString(v: BackendId?): String? = v?.name
-    /** Total: unpruned backend column; a dropped-backend row must not crash the whole query. */
+    /** Total on purpose: backend never pruned, else a dropped row throws the whole query. */
     @TypeConverter fun stringToBackendId(v: String?): BackendId? =
         v?.let { runCatching { BackendId.valueOf(it) }.getOrDefault(BackendId.UNKNOWN) }
 }

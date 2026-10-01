@@ -71,7 +71,7 @@ class PaintLayerTest {
     }
 
     @Test fun frame_everyDomainToolHasItsOwnRenderId() {
-        // A key added to PaintTool with no toolIdOf case collapses silently onto the fine pencil.
+        // A key without a case in toolIdOf collapses silently onto the fine pencil.
         val ids = PaintTool.entries.map { PaintFrame.toolIdOf(it.key) }
         assertEquals(PaintTool.entries.size, ids.toSet().size)
         assertEquals(PaintFrame.TOOL_FINE, PaintFrame.toolIdOf(PaintTool.FINE.key))
@@ -207,7 +207,7 @@ class PaintLayerTest {
         return out
     }
 
-    /** Skias stroke-to-fill at corridorWidthPx is points within half that width; needs a device. */
+    /** Skia's stroke-to-fill of the same runs at corridorWidthPx is within half that width. */
     private fun distanceToTrace(
         px: Float, py: Float, xs: FloatArray, ys: FloatArray, runs: List<Pair<Int, Int>>,
     ): Float {

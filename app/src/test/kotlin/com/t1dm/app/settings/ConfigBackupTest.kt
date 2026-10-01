@@ -9,7 +9,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** importJson validates `format` at root; legacy flat docs must reach it byte-for-byte. */
+/** importJson validates format at the root; a legacy flat doc must reach it byte-for-byte. */
 class ConfigBackupTest {
 
     private val T0 = 1_721_000_000_000L
@@ -63,7 +63,7 @@ class ConfigBackupTest {
     }
 
     @Test fun `a drawings-only file imports its drawings and claims no settings`() {
-        // Settings importer refuses files with no recognised keys; this one must claim none.
+        // Settings importer refuses a file with no recognised keys, so this one must claim none.
         val doc = ConfigBackup.wrap(LEGACY_FLAT, listOf(stroke()))
         val strokesOnly = "{\"format\":\"t1dm.backup\",\"version\":1,\"paintings\":" +
             doc.json.substringAfter("\"paintings\":").substringBeforeLast("}") + "}"
@@ -73,7 +73,7 @@ class ConfigBackupTest {
     }
 
     @Test fun `an unrelated JSON object is handed on to be refused, not read as a drawings-only file`() {
-        // Drawings-only verdict skips settings importer, else a foreign file imports as success.
+        // Drawings-only verdict skips the settings importer, so a foreign file imports as success.
         val parsed = ConfigBackup.parse("""{"hello":"world"}""")
         assertEquals("""{"hello":"world"}""", parsed.configJson)
         assertTrue(parsed.paintings.isEmpty())

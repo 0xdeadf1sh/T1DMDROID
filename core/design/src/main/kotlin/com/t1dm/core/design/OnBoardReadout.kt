@@ -17,7 +17,7 @@ import com.t1dm.core.model.IobCobReadout
 import com.t1dm.core.model.SensitivityEstimate
 import com.t1dm.core.model.UnitSpace
 
-/** Sole ORDER/WORDING def: IOB, COB, ICR, ISF. Layout not shared; use [IobCobLine] elsewhere. */
+/** One definition of the read-out's ORDER/WORDING (IOB,COB,ICR,ISF); layout is per-consumer. */
 object OnBoardReadout {
 
     const val SENSITIVITY_NA = "ICR/ISF N/A"
@@ -30,13 +30,13 @@ object OnBoardReadout {
     fun cob(cobG: Double, compact: Boolean): String =
         if (compact) "COB ${"%.0f".format(cobG)}g" else "COB ${"%.0f".format(cobG)} g"
 
-    /** Below 10 g/U: %.0f rounds anything under 0.5 (even negative) to flat 0g/U, hiding sign. */
+    /** Below 10 g/U, %.0f renders anything under 0.5 (small negatives included) as 0g/U. */
     fun icr(gPerU: Double, compact: Boolean): String {
         val n = if (Math.abs(gPerU) < 10.0) "%.1f".format(gPerU) else "%.0f".format(gPerU)
         return if (compact) "ICR ${n}g/U" else "ICR $n g/U"
     }
 
-    /** Scales per SPEC/invariants.md §3; Kovatchev stays mg/dL, not a per-unit constant. */
+    /** Scales per SPEC/invariants.md §3; Kovatchev falls back to mg/dL, not a per-unit value. */
     fun isf(isfMgdlPerU: Double, unit: UnitSpace, compact: Boolean): String {
         val (n, u) = when (unit) {
             UnitSpace.MmolL -> "%.1f".format(isfMgdlPerU / MGDL_PER_MMOLL) to "mmol/L/U"
@@ -50,7 +50,7 @@ object OnBoardReadout {
         return if (minutes % 60L == 0L) "${minutes / 60L}h" else "${minutes}m"
     }
 
-    /** Sign only; magnitude deliberately unjudged (no band in SensitivityProbe by design). */
+    /** Sign only — magnitude is deliberately not judged; SensitivityProbe carries no band. */
     fun suspect(estimate: SensitivityEstimate): Boolean =
         estimate.isfMgdlPerU <= 0.0 || estimate.icrGPerU <= 0.0
 
@@ -60,7 +60,7 @@ object OnBoardReadout {
         } else {
             listOf(
                 icr(estimate.icrGPerU, compact),
-                // Horizon qualifies both: marginal response at window, not whole-dose meaning.
+                // Horizon qualifies both: marginal response, not whole-dose meaning.
                 "${isf(estimate.isfMgdlPerU, unit, compact)} @${horizon(estimate.horizonMs)}",
             )
         }
@@ -68,7 +68,7 @@ object OnBoardReadout {
     private const val MGDL_PER_MMOLL = 18.0182
 }
 
-/** Reads N/A, not blank (blank ≡ unshipped feature); [provenance] names IOB source (§3.6-F). */
+/** Sensitivity pair reads N/A, not blank — provenance names where IOB came from (§3.6-F). */
 @Composable
 fun IobCobLine(
     iobCob: IobCobReadout,
@@ -94,7 +94,7 @@ fun IobCobLine(
             withStyle(SpanStyle(color = if (marked) suspectInk else ink)) { append(it) }
         }
     }
-    // Horizontal scroll (4 parts, phone width); one ScrollState syncs the provenance line too.
+    // Horizontally scrollable (softWrap=false); one ScrollState keeps both lines synced.
     val scroll = rememberScrollState()
     Column(modifier.fillMaxWidth().horizontalScroll(scroll).padding(top = 4.dp)) {
         Text(text, style = MaterialTheme.typography.bodyMedium, color = ink, softWrap = false)

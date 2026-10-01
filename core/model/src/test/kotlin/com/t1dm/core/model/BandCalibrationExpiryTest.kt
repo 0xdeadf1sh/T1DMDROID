@@ -5,7 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Split conformal needs exchangeability: a correction is trusted only for the fitted span. */
+/** Split conformal needs exchangeability; a fit is trusted only for the span it was fitted on. */
 class BandCalibrationExpiryTest {
 
     private val day = 86_400_000L

@@ -3,6 +3,7 @@ package com.t1dm.cgm
 import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.CgmSourceDescriptor
 import com.t1dm.core.model.CgmSourceId
+import com.t1dm.core.model.ReadingProvenance
 
 /** Recording [CgmRepository] double: captures the connected source's persistence calls. */
 open class FakeCgmRepository : CgmRepository {
@@ -22,6 +23,15 @@ open class FakeCgmRepository : CgmRepository {
 
     override suspend fun upsertReading(reading: CgmReading) {
         upsertedReadings += reading
+    }
+
+    data class RateRepair(val prefix: String, val beforeMs: Long, val onceKey: String, val upsertsSoFar: Int)
+
+    val rateRepairs = mutableListOf<RateRepair>()
+
+    override suspend fun divideRatesByTenOnce(sourcePrefix: String, beforeMs: Long, onceKey: String): Int {
+        rateRepairs += RateRepair(sourcePrefix, beforeMs, onceKey, upsertedReadings.size)
+        return 0
     }
 
     override suspend fun insertRawAdvert(
@@ -80,6 +90,13 @@ open class FakeCgmRepository : CgmRepository {
     }
 
     private val cursors = HashMap<String, Int>()
+    private val highest = HashMap<String, Int>()
+
+    override suspend fun loadHighestDeliveredId(id: CgmSourceId): Int = highest[id.value] ?: 0
+
+    override suspend fun saveHighestDeliveredId(id: CgmSourceId, glucoseId: Int) {
+        highest[id.value] = glucoseId
+    }
 
     override suspend fun loadSourceCursor(id: CgmSourceId): Int = cursors[id.value] ?: 0
 
@@ -87,8 +104,52 @@ open class FakeCgmRepository : CgmRepository {
         cursors[id.value] = cursor
     }
 
+    private val addresses = HashMap<String, String>()
+
+    override suspend fun loadSensorAddress(id: CgmSourceId): String? = addresses[id.value]
+
+    override suspend fun saveSensorAddress(id: CgmSourceId, address: String) {
+        addresses[id.value] = address
+    }
+
+    val lifetimes = HashMap<String, Int>()
+
+    override suspend fun loadSensorLifetimeMin(id: CgmSourceId): Int? = lifetimes[id.value]
+
+    override suspend fun saveSensorLifetimeMin(id: CgmSourceId, minutes: Int) {
+        lifetimes[id.value] = minutes
+    }
+
     override suspend fun clearSensorSecret(id: CgmSourceId) {
         sensorSecrets -= id
         secretsCleared += id
+    }
+
+    /** The retention floor the fake vouches from; zero says the whole wear. */
+    var rawSamplesCompleteSinceMs: Long = 0L
+
+    /** Arrivals the fake will report, per source. */
+    val arrivals = mutableMapOf<CgmSourceId, List<Ct5AnchorRepair.Arrival>>()
+
+    val readingsDeletedFor = mutableListOf<CgmSourceId>()
+
+    override suspend fun advertArrivals(id: CgmSourceId): List<Ct5AnchorRepair.Arrival> =
+        arrivals[id] ?: emptyList()
+
+    override suspend fun deleteReadingsForSource(id: CgmSourceId): Int {
+        readingsDeletedFor += id
+        val before = upsertedReadings.size
+        upsertedReadings.removeAll { it.sourceId == id }
+        return before - upsertedReadings.size
+    }
+
+    override suspend fun receivedSampleMinutes(id: CgmSourceId, notBeforeMs: Long): CgmReceivedSamples {
+        val since = maxOf(rawSamplesCompleteSinceMs, notBeforeMs)
+        return CgmReceivedSamples(
+            completeSinceMs = since,
+            minutes = upsertedReadings
+                .filter { it.sourceId == id && it.provenance == ReadingProvenance.MEASURED && it.rxWallMs >= since }
+                .mapNotNullTo(HashSet()) { it.minFromStart },
+        )
     }
 }

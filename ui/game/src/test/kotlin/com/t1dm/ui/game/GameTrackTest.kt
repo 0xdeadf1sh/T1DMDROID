@@ -122,7 +122,7 @@ class GameTrackTest {
     }
 
     @Test fun theNadirIsGroundEvenWhenTheAxisFloorSitsOnIt() {
-        // `a+(b-a)·1` can land 1 ulp under `b`; at the run min this reads no ground (mg/dL exact).
+        // a+(b-a)·1 can land 1ulp under b; solid then reads a negative height as no ground.
         val bg = intArrayOf(140, 120, 108, 35, 60, 90, 110, 126)
         val rs = bg.mapIndexed { i, v -> reading(T0 + i * GRID, v) }
         val t = buildGameTrack(traceIn(UnitSpace.MmolL, rs), rangeMinMgdl = 70, rangeMaxMgdl = 200)
@@ -171,7 +171,7 @@ class GameTrackTest {
     }
 
     @Test fun interpolatedPointsAreSolidGround() {
-        // The panel bridges interpolated readings, so ground does too; only a real dropout cuts.
+        // Panel bridges interpolated readings, so ground does too; only a real dropout cuts.
         val rs = (0 until 20).map {
             reading(T0 + it * GRID, 120).copy(
                 provenance = if (it in 8..11) ReadingProvenance.INTERPOLATED else ReadingProvenance.MEASURED,

@@ -11,11 +11,11 @@ import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Stored forecasts read back, display-only, never re-forecast; step 0 is the anchor, zero fan. */
+/** Stored forecasts, display-only. Rectangular: median[c*span+i], band-major over cycles. */
 class HindsightFrame internal constructor(
-    /** Ascending issue instants (stored made_at); the only array the cursor is matched against. */
+    /** Ascending issue instants (stored made_at); the only array the cursor matches against. */
     val madeMs: LongArray,
-    /** Measured reading the forecast grew from, x of step 0; behind madeMs, repeats over gap. */
+    /** The reading the forecast grew from, x of step 0; behind madeMs, repeats over gaps. */
     val anchorMs: LongArray,
     val stepMs: Long,
     /** Steps per cycle including the prepended anchor: `horizonSteps + 1`. */
@@ -27,13 +27,13 @@ class HindsightFrame internal constructor(
     val hi: FloatArray,
     /** The forecast was not `OK` when made, so it is drawn fan-less. */
     val degenerate: BooleanArray,
-    /** Anchor already past freshness gate when issued (§3.6-D); must not redraw as if driven. */
+    /** Anchor was already past the freshness gate at issue (§3.6-D); must not redraw as if not. */
     val stale: BooleanArray,
 ) {
     val cycles: Int get() = madeMs.size
     val isEmpty: Boolean get() = madeMs.isEmpty()
 
-    /** Cycle issued nearest ms, within half cadenceMs; -1 between cycles, else drags over gap. */
+    /** The cycle issued nearest ms, within half cadenceMs; -1 between cycles, not the last one. */
     fun cycleAt(ms: Double): Int {
         val n = madeMs.size
         if (n == 0) return -1
@@ -55,7 +55,7 @@ class HindsightFrame internal constructor(
 /** The three nested pairs [buildPredSeries] fixes. */
 private const val BANDS = 3
 
-/** rows ascending by cycleTsMs; calibrateFans applies §8.4 to the sweep, null keeps the raw fan. */
+/** rows must ascend by cycleTsMs; calibrateFans applies §8.4 to the sweep; null keeps raw fan. */
 suspend fun hindsightFrameOf(
     rows: List<ModelPrediction>,
     unit: UnitSpace = UnitSpace.MgDl,
@@ -78,17 +78,17 @@ suspend fun hindsightFrameOf(
     }
     if (kept == 0) return@withContext null
 
-    // Both passes must admit exactly the same rows, else the second writes off the first's arrays.
+    // Both passes must admit the same rows: the second writes at c into arrays the first sized.
     fun admits(p: ModelPrediction): Boolean {
         val n = p.horizonSteps
         return n != 0 && p.nQuantiles >= BANDS * 2 + 1 && p.bandsMgdl.size == n * p.nQuantiles &&
             n + 1 == span && p.stepMs == stepMs && p.nQuantiles == nq
     }
 
-    // §8.4 in one crossing, all or none: a disagreeing size leaves every fan raw (SPEC §6.2).
+    // §8.4 in one crossing: admitted rows share a shape/model id, hence a delta; all or none.
     val fanLen = (span - 1) * nq
     val calibrated: List<Double>? = calibrateFans?.let { calibrate ->
-        // Lazy: on the common path there is no stored correction, so the batch is never flattened.
+        // Lazy: on the common path there's no stored correction, so the batch is never flattened.
         val build = {
             val flat = ArrayList<Double>(kept * fanLen)
             for (p in rows) if (admits(p)) flat.addAll(p.bandsMgdl)
@@ -135,7 +135,7 @@ suspend fun hindsightFrameOf(
     )
 }
 
-/** Median not mean/min: holes drag a mean up, a tight pair pulls a min down; falls to stepMs. */
+/** Median, not mean/min: holes drag a mean up, a tight pair pulls a min down; falls to stepMs. */
 private fun cadenceOf(madeMs: LongArray, stepMs: Long): Long {
     if (madeMs.size < 2) return stepMs
     val gaps = LongArray(madeMs.size - 1) { madeMs[it + 1] - madeMs[it] }
@@ -144,7 +144,7 @@ private fun cadenceOf(madeMs: LongArray, stepMs: Long): Long {
     return if (med > 0L) med else stepMs
 }
 
-/** Own winding, not drawPredSeries (per-pointer sample); τ pairing baked into f at build. */
+/** Own winding, not drawPredSeries (per-pointer). Colours are the second accent, avoids a blend. */
 internal fun DrawScope.drawHindsightFan(
     f: HindsightFrame,
     c: Int,
@@ -182,7 +182,7 @@ internal fun DrawScope.drawHindsightFan(
         }
     }
 
-    // Dashed/dimmed when not eligible: only place a no-op forecast could otherwise look real.
+    // Dashed and dimmed when not eligible: hindsight is the only place a dead forecast reads live.
     val notEligible = !f.eligible(c)
     var px = absToPx.of(t0.toDouble())
     var py = valToPx.of(f.median[mBase])

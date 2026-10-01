@@ -32,15 +32,15 @@ interface CgmSourceDao {
     @Query("SELECT sourceId FROM cgm_source WHERE active = 1 ORDER BY addedAtMs, sourceId")
     suspend fun activeSourceIds(): List<String>
 
-    /** Ids only, never joined to cgm_reading (Room invalidates per TABLE; lastSeenMs churns). */
+    /** Ids, no join to `cgm_reading`: Room invalidates per table, `lastSeenMs` touches per scan. */
     @Query("SELECT sourceId FROM cgm_source WHERE sensorModelId = :sensorModelId ORDER BY addedAtMs, sourceId")
     fun observeIdsForSensorModel(sensorModelId: String): Flow<List<String>>
 
-    /** Exactly-one-authoritative: clear all, then set the row. Run inside a @Transaction. */
+    /** Exactly-one-authoritative: clear all, then set the chosen row. Run in a @Transaction. */
     @Query("UPDATE cgm_source SET authoritative = 0")
     suspend fun clearAuthoritative()
 
-    /** active/hidden ride along (both invariant of authoritative); nothing un-hides/reactivates. */
+    /** `active`/`hidden` ride along: authoritative's invariants; nothing re-lists or restarts. */
     @Query("UPDATE cgm_source SET authoritative = 1, active = 1, hidden = 0 WHERE sourceId = :sourceId")
     suspend fun setAuthoritative(sourceId: String)
 
@@ -48,15 +48,15 @@ interface CgmSourceDao {
     @Query("UPDATE cgm_source SET active = 1, hidden = 0 WHERE sourceId = :sourceId")
     suspend fun activate(sourceId: String)
 
-    /** authoritative=0 guard is in WHERE not precondition; invariant holds regardless of UI. */
+    /** `authoritative = 0` guard is in WHERE: the one door in, so authoritative stays active. */
     @Query("UPDATE cgm_source SET active = 0 WHERE sourceId = :sourceId AND authoritative = 0")
     suspend fun deactivate(sourceId: String)
 
-    /** authoritative=0 guard in WHERE not precondition; never-hidden holds regardless of UI. */
+    /** `authoritative = 0` guard is in WHERE: the one door in, so authoritative never hides. */
     @Query("UPDATE cgm_source SET hidden = 1, active = 0 WHERE sourceId = :sourceId AND authoritative = 0")
     suspend fun hide(sourceId: String)
 
-    /** Column-scoped, not an upsert: flags untouched, so the exactly-one invariant holds. */
+    /** Column-scoped, not an upsert: flags are untouched, exactly-one invariant holds. */
     @Query("UPDATE cgm_source SET warmupWindowMin = :minutes WHERE sourceId = :sourceId")
     suspend fun setWarmupWindowMin(sourceId: String, minutes: Int)
 
@@ -66,14 +66,14 @@ interface CgmSourceDao {
     @Query("SELECT * FROM cgm_source ORDER BY addedAtMs")
     suspend fun all(): List<CgmSourceEntity>
 
-    /** Read pre-restore: imports can't land a SECOND authoritative row; active is unconstrained. */
+    /** Read before restore: imports can't land a 2nd authoritative row; `active` unconstrained. */
     @Query("SELECT COUNT(*) FROM cgm_source WHERE authoritative = 1")
     suspend fun authoritativeCount(): Int
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertIgnoreAll(rows: List<CgmSourceEntity>): List<Long>
 
-    /** -1 when none minted; read inside assigning transaction, or two sensors claim one number. */
+    /** `-1` when none minted; read inside the assigning txn, or two sensors claim one number. */
     @Query("SELECT COALESCE(MAX(ordinal), -1) FROM cgm_source")
     suspend fun maxOrdinal(): Int
 
@@ -93,7 +93,7 @@ interface CgmSensorSecretDao {
     @Query("SELECT * FROM cgm_sensor_secret WHERE sourceId = :sourceId")
     suspend fun byId(sourceId: String): CgmSensorSecretEntity?
 
-    /** Per-sensor, no delete-all: erasing the only release means destroys hardware, not data. */
+    /** Per-sensor, no delete-all: erasing the release for an on-arm sensor destroys hardware. */
     @Query("DELETE FROM cgm_sensor_secret WHERE sourceId = :sourceId")
     suspend fun deleteById(sourceId: String)
 }
@@ -139,14 +139,14 @@ interface CgmReadingDao {
     )
     suspend fun recent(sourceId: String, limit: Int): List<CgmReadingEntity>
 
-    /** Source-scoped (row per source,slot); a different sensor's slot corrupts scoring as error. */
+    /** Source-scoped: a row per `(source, slot)`; cross-source scoring reads as model error. */
     @Query(
         "SELECT * FROM cgm_reading WHERE sourceId = :sourceId AND tsMs BETWEEN :fromMs AND :toMs " +
             "ORDER BY tsMs",
     )
     suspend fun rangeForSource(sourceId: String, fromMs: Long, toMs: Long): List<CgmReadingEntity>
 
-    /** Two queries not one: SQLite's MIN/MAX optimisation is lone-aggregate only. */
+    /** Two queries, not one: SQLite's MIN/MAX optimisation applies only to a lone aggregate. */
     @Query("SELECT MIN(tsMs) FROM cgm_reading WHERE sourceId = :sourceId")
     suspend fun oldestTs(sourceId: String): Long?
 
@@ -156,6 +156,18 @@ interface CgmReadingDao {
 
     @Query("SELECT MAX(tsMs) FROM cgm_reading WHERE sourceId = :sourceId")
     suspend fun newestTs(sourceId: String): Long?
+
+    @Query("SELECT COUNT(*) FROM cgm_reading WHERE sourceId = :sourceId")
+    suspend fun countForSource(sourceId: String): Int
+
+    @Query(
+        "SELECT COUNT(*) FROM cgm_reading WHERE sourceId = :sourceId AND bgMgdl IS NOT NULL " +
+            "AND provenance = 'MEASURED' AND flag = 'NORMAL'",
+    )
+    suspend fun countMeasuredForSource(sourceId: String): Int
+
+    @Query("DELETE FROM cgm_reading WHERE sourceId = :sourceId")
+    suspend fun deleteForSource(sourceId: String): Int
 
     @Query("DELETE FROM cgm_reading WHERE sourceId = :sourceId AND tsMs = :ts")
     suspend fun deleteAt(sourceId: String, ts: Long)
@@ -168,7 +180,7 @@ interface CgmReadingDao {
     )
     suspend fun divideRatesByTen(prefix: String, beforeMs: Long): Int
 
-    /** Demotion must use this: promoted rows file under the authoritative source THEN, not now. */
+    /** Demotion must use this: a promoted row is filed under whoever was authoritative then. */
     @Query("SELECT * FROM cgm_reading WHERE tsMs = :ts")
     suspend fun allAt(ts: Long): List<CgmReadingEntity>
 
@@ -186,7 +198,7 @@ interface CgmReadingDao {
     )
     suspend fun newestMeasuredBefore(sourceId: String, ts: Long): Long?
 
-    /** Nearest measurement, prefers left (§7.4); never clock's zone now (DST/flight straddle). */
+    /** Nearest, preferring left (inference.md §7.4); never clock zone, may span DST or flight. */
     @Query(
         "SELECT tzOffsetMin FROM cgm_reading WHERE sourceId = :sourceId AND provenance = 'MEASURED' " +
             "ORDER BY (CASE WHEN tsMs <= :ts THEN 0 ELSE 1 END), ABS(tsMs - :ts) LIMIT 1",
@@ -199,28 +211,34 @@ interface CgmReadingDao {
     @Query("SELECT DISTINCT sourceId FROM cgm_reading")
     suspend fun sourceIds(): List<String>
 
-    /** Keyset not OFFSET: table is keep-forever, export walks all; OFFSET would make quadratic. */
+    /** Keyset not OFFSET: keep-forever table, export walks all, OFFSET would be quadratic. */
     @Query("SELECT * FROM cgm_reading WHERE sourceId = :sourceId AND tsMs > :afterTs ORDER BY tsMs LIMIT :limit")
     suspend fun pageFrom(sourceId: String, afterTs: Long, limit: Int): List<CgmReadingEntity>
 
-    /** IGNORE not REPLACE: archive may FILL a gap, never rewrite; -1 return how restore counts. */
+    /** IGNORE not [upsertAll]'s REPLACE: fills gaps, never a held slot; -1 is restore's count. */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertIgnoreAll(rows: List<CgmReadingEntity>): List<Long>
 }
 
-/** No Flow: Room invalidates per TABLE, written on every sample/sweep; read on demand only. */
+/** No `Flow`: Room invalidates per table, and this writes on every sample and retention sweep. */
 @Dao
 interface CgmRawSampleDao {
-    /** IGNORE not REPLACE: nothing beats the filed sample; write is idempotent, retries free. */
+    /** IGNORE not REPLACE: nothing later beats the filed sample; write is idempotent. */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertIgnore(row: CgmRawSampleEntity): Long
 
-    /** Window is in FILED instants, not grid slots; rawSamplesForSlot owns that conversion. */
+    /** Window is FILED instants, not grid slots; [T1dmRepository.rawSamplesForSlot] converts. */
     @Query(
         "SELECT * FROM cgm_sample_raw WHERE sourceId = :sourceId " +
             "AND rxWallMs BETWEEN :fromMs AND :toMs ORDER BY rxWallMs",
     )
     suspend fun rangeForSource(sourceId: String, fromMs: Long, toMs: Long): List<CgmRawSampleEntity>
+
+    @Query(
+        "SELECT DISTINCT minFromStart FROM cgm_sample_raw WHERE sourceId = :sourceId " +
+            "AND rxWallMs >= :sinceMs AND minFromStart IS NOT NULL",
+    )
+    suspend fun minutesForSource(sourceId: String, sinceMs: Long): List<Int>
 
     @Query("SELECT COUNT(*) FROM cgm_sample_raw")
     suspend fun count(): Int
@@ -228,6 +246,9 @@ interface CgmRawSampleDao {
     /** Returns the rows dropped. */
     @Query("DELETE FROM cgm_sample_raw WHERE rxWallMs < :beforeMs")
     suspend fun pruneBefore(beforeMs: Long): Int
+
+    @Query("DELETE FROM cgm_sample_raw WHERE sourceId = :sourceId")
+    suspend fun deleteForSource(sourceId: String): Int
 
     /** [CgmReadingDao.divideRatesByTen]'s twin for the sub-grid rows, bounded on filed instants. */
     @Query(
@@ -252,14 +273,21 @@ interface SampleDao {
     @Query("SELECT * FROM sample WHERE ts > :cursor ORDER BY ts LIMIT :limit")
     suspend fun page(cursor: Long, limit: Int): List<SampleEntity>
 
+    /** Un-projects one source's BG only; `updatedAt` untouched, or watermark re-sends others. */
+    @Query(
+        "UPDATE sample SET bgMgdl = NULL, bgSource = NULL, bgProvenance = NULL, bgFlag = NULL " +
+            "WHERE bgSource = :bgSource",
+    )
+    suspend fun clearBgFromSource(bgSource: String): Int
+
     @Query("SELECT MAX(ts) FROM sample")
     suspend fun maxTs(): Long?
 
-    /** Bounded, not [maxTs]: exercise disposal curve writes its tail into slots ahead of clock. */
+    /** Bounded, unlike [maxTs]: exercise disposal curve writes its tail ahead of the clock. */
     @Query("SELECT MAX(ts) FROM sample WHERE ts <= :atMs")
     suspend fun maxTsAtOrBefore(atMs: Long): Long?
 
-    /** Scalar sample-write signal; per-TABLE invalidation emits on same writes as observeRange. */
+    /** Scalar `sample`-write signal: per-table invalidation emits on what `observeRange` would. */
     @Query("SELECT MAX(ts) FROM sample")
     fun observeMaxTs(): Flow<Long?>
 
@@ -279,7 +307,7 @@ interface SampleDao {
     @Query("SELECT COALESCE(SUM(steps), 0) FROM sample WHERE ts BETWEEN :fromMs AND :toMs")
     suspend fun stepsInRange(fromMs: Long, toMs: Long): Int
 
-    /** Only NULL dropped, ZERO kept: 0 is still five minutes, missing is never-measured. */
+    /** Only NULL drops; recorded ZERO kept: `0` is a still 5min, missing means never measured. */
     @Query(
         "SELECT ts, steps FROM sample WHERE ts BETWEEN :fromMs AND :toMs " +
             "AND steps IS NOT NULL ORDER BY ts",
@@ -292,7 +320,7 @@ interface SampleDao {
     @Query("DELETE FROM sample")
     suspend fun deleteAll()
 
-    /** IGNORE: wide row is a PROJECTION; a phone-projected slot beats an archived copy. */
+    /** IGNORE: wide row is a projection, so an already-projected slot beats an archived copy. */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertIgnoreAll(rows: List<SampleEntity>): List<Long>
 }
@@ -330,11 +358,11 @@ interface LoggedDoseDao {
     @Query("SELECT * FROM logged_dose WHERE clientId = :clientId")
     suspend fun byClientId(clientId: String): LoggedDoseEntity?
 
-    /** Not MAX(tsMs): earlier of claimed/logged, so edits move mark only backward, never quiet. */
+    /** Not `MAX(tsMs)`: earlier of claimed/logged, so an edit moves the mark backward only. */
     @Query("SELECT MAX(MIN(tsMs, loggedAtMs)) FROM logged_dose")
     suspend fun latestLoggedMarkTs(): Long?
 
-    /** LATER of pre/post-edit curve ends; post-edit alone lets a shortening edit end IOB early. */
+    /** LATER of pre/post-edit curve ends: post-edit alone lets shortening leave IOB wrong. */
     @Query(
         "SELECT MAX(MAX(tsMs + CAST(durationMin * 60000 AS INTEGER), " +
             "COALESCE(mutatedActingUntilMs, 0))) FROM logged_dose WHERE mutatedAtMs IS NOT NULL",
@@ -357,7 +385,7 @@ interface LoggedDoseDao {
     @Query("DELETE FROM logged_dose")
     suspend fun deleteAll()
 
-    /** (tsMs,id) cursor; tsMs alone isn't unique — tsMs-only cursor could skip or loop on ties. */
+    /** `(tsMs, id)` cursor: `tsMs` alone isn't unique, a `tsMs`-only one skips or loops on ties. */
     @Query(
         "SELECT * FROM logged_dose WHERE tsMs > :afterTs OR (tsMs = :afterTs AND id > :afterId) " +
             "ORDER BY tsMs, id LIMIT :limit",
@@ -397,7 +425,7 @@ interface LoggedMealDao {
     @Query("DELETE FROM logged_meal WHERE id = :id")
     suspend fun delete(id: Long)
 
-    /** Multi-food builder meals (gi IS NULL) excluded; simple carb form can't round-trip them. */
+    /** Multi-food builder meals (gi IS NULL) excluded: simple carb form can't round-trip them. */
     @Query(
         "SELECT grams AS grams, gi AS gi FROM logged_meal WHERE gi IS NOT NULL " +
             "GROUP BY grams, gi ORDER BY MAX(tsMs) DESC LIMIT :limit",
@@ -450,7 +478,7 @@ interface BasalScheduleDao {
     @Query("SELECT * FROM basal_schedule ORDER BY scheduleId, timeOfDayMin")
     suspend fun all(): List<BasalScheduleEntity>
 
-    /** Restore's merge key; schedule restores WHOLE (no per-row identity), else interleave. */
+    /** Restore's merge key: a schedule restores WHOLE, rows lack per-row identity to merge on. */
     @Query("SELECT DISTINCT scheduleId FROM basal_schedule")
     suspend fun scheduleIds(): List<String>
 }
@@ -459,12 +487,21 @@ interface BasalScheduleDao {
 interface CgmAdvertRawDao {
     @Insert suspend fun insert(advert: CgmAdvertRawEntity): Long
 
+    /** Frame arrival beside its sample index; neither derives from bind: together, wear-start. */
+    @Query(
+        "SELECT rxWallMs, minFromStart FROM cgm_advert_raw " +
+            "WHERE sourceId = :sourceId AND minFromStart IS NOT NULL ORDER BY rxWallMs",
+    )
+    suspend fun arrivalsForSource(sourceId: String): List<AdvertArrivalRow>
+
     @Query("DELETE FROM cgm_advert_raw WHERE rxWallMs < :beforeMs")
     suspend fun pruneBefore(beforeMs: Long): Int
 
     @Query("DELETE FROM cgm_advert_raw")
     suspend fun deleteAll()
 }
+
+data class AdvertArrivalRow(val rxWallMs: Long, val minFromStart: Int)
 
 data class OutboxEvictRow(val id: Long, val kind: OutboxKind, val createdAtMs: Long)
 
@@ -482,15 +519,15 @@ interface OutboxDao {
     @Query("SELECT COUNT(*) FROM outbox")
     suspend fun count(): Int
 
-    /** Any state, unlike [deleteUntriedByDedupKey] (spares tried rows: no-idempotency hosts). */
+    /** Any state, unlike [deleteUntriedByDedupKey]. */
     @Query("DELETE FROM outbox WHERE dedupKey = :dedupKey")
     suspend fun deleteByDedupKey(dedupKey: String): Int
 
-    /** Ranked and trimmed in Kotlin: Android SQLite lacks `DELETE … ORDER BY … LIMIT`. */
+    /** Ranked/trimmed in Kotlin: Android SQLite lacks `DELETE ORDER BY LIMIT`. */
     @Query("SELECT id, kind, createdAtMs FROM outbox ORDER BY createdAtMs, id")
     suspend fun evictionRows(): List<OutboxEvictRow>
 
-    /** No SENT state (drainer DELETEs on success); absent = sent OR evicted, indistinguishable. */
+    /** No SENT state, drainer DELETEs on success; absent means sent, same as evicted. */
     @Query("SELECT * FROM outbox WHERE id = :id")
     suspend fun byId(id: Long): OutboxEntity?
 
@@ -515,7 +552,7 @@ interface OutboxDao {
     @Query("UPDATE outbox SET state = :state, attempts = :attempts, nextAttemptMs = :nextAttemptMs WHERE id = :id")
     suspend fun reschedule(id: Long, state: OutboxState, attempts: Int, nextAttemptMs: Long)
 
-    /** Conditional makes INFLIGHT a mutex token; 0 means deleted/claimed under it, don't send. */
+    /** Conditional: makes INFLIGHT a mutex token; zero means deleted or claimed underneath. */
     @Query("UPDATE outbox SET state = :to WHERE id = :id AND state = :from")
     suspend fun claim(id: Long, from: OutboxState, to: OutboxState): Int
 
@@ -574,7 +611,7 @@ interface KvDao {
 
     @Upsert suspend fun putAll(entries: List<KvEntity>)
 
-    /** Drops watch pairing/epoch/nonce-ceiling rows too, so a re-pair can't reuse (key,nonce). */
+    /** Drops watch pairing/epoch/nonce-ceiling rows: a re-pair can't reuse a (key, nonce). */
     @Query("DELETE FROM kv")
     suspend fun deleteAll()
 }
@@ -605,7 +642,7 @@ interface FoodDao {
 
     @Query("SELECT * FROM food WHERE id = :id") suspend fun byId(id: Long): FoodEntity?
 
-    /** match is raw FTS5 MATCH; SkipQueryVerification since food_fts is hand-rolled, unmodeled. */
+    /** [match] is raw FTS5 MATCH; `@SkipQueryVerification` since `food_fts` isn't a Room entity. */
     @SkipQueryVerification
     @Query(
         "SELECT food.* FROM food JOIN food_fts ON food.id = food_fts.rowid " +
@@ -643,7 +680,7 @@ interface SavedMealDao {
 
     @Insert suspend fun insertItems(items: List<SavedMealItemEntity>)
 
-    /** 0 = meal deleted under editor (item rows orphan, no FK); issued even if name unchanged. */
+    /** 0 means deleted under the editor: no FK, so item rows written then orphan permanently. */
     @Query("UPDATE saved_meal SET name = :name, updatedAt = :nowMs WHERE id = :id")
     suspend fun updateMeal(id: Long, name: String, nowMs: Long): Int
 
@@ -713,7 +750,7 @@ interface InsulinTypeDao {
 interface PaintStrokeDao {
     @Insert suspend fun insert(stroke: PaintStrokeEntity): Long
 
-    /** Intersection not containment; wide strokes still draw. Later paints over earlier. */
+    /** Intersection not containment, ends inclusive: a wider stroke still draws; order by time. */
     @Query(
         "SELECT * FROM bg_paint_stroke WHERE maxTsMs >= :fromMs AND minTsMs <= :toMs " +
             "ORDER BY createdAtMs, id",
@@ -726,7 +763,7 @@ interface PaintStrokeDao {
     @Query("DELETE FROM bg_paint_stroke")
     suspend fun deleteAll()
 
-    /** Cursor is rowid, not createdAtMs: strokes insert in order, id unique, createdAtMs isn't. */
+    /** Rowid is the cursor, not `createdAtMs`: inserted in order, `id` unique, that isn't. */
     @Query("SELECT * FROM bg_paint_stroke WHERE id > :afterId ORDER BY id LIMIT :limit")
     suspend fun pageFrom(afterId: Long, limit: Int): List<PaintStrokeEntity>
 
@@ -753,11 +790,11 @@ interface BgInfillDao {
     @Query("DELETE FROM bg_infill WHERE ts BETWEEN :fromMs AND :toMs")
     suspend fun deleteRange(fromMs: Long, toMs: Long)
 
-    /** Promoted rows exempt: table holds only copy of a promoted band; demotion reads it here. */
+    /** Promoted rows exempt: only copy of a promoted sample's band; demotion reads span here. */
     @Query("DELETE FROM bg_infill WHERE modelId = :modelId AND promotedAtMs IS NULL")
     suspend fun deleteByModel(modelId: String)
 
-    /** A fill over a since-edited curve describes a history no longer existing; promoted exempt. */
+    /** A fill over a since-edited curve describes history that's gone; promoted rows exempt. */
     @Query("DELETE FROM bg_infill WHERE ts >= :fromMs AND promotedAtMs IS NULL")
     suspend fun deleteFrom(fromMs: Long)
 
@@ -771,7 +808,7 @@ interface BgInfillDao {
     @Query("UPDATE bg_infill SET promotedAtMs = :atMs WHERE spanStartMs = :spanStartMs")
     suspend fun markPromoted(spanStartMs: Long, atMs: Long?)
 
-    /** Promoted guard in the statement, not caller; the one removal a finger can reach. */
+    /** Promoted guard is in the statement: the one removal reachable; demotion reads span here. */
     @Query("DELETE FROM bg_infill WHERE spanStartMs = :spanStartMs AND promotedAtMs IS NULL")
     suspend fun deleteSpanIfUnpromoted(spanStartMs: Long): Int
 
@@ -786,7 +823,7 @@ interface BgInfillDao {
     @Query("SELECT * FROM bg_infill WHERE promotedAtMs IS NOT NULL ORDER BY ts")
     suspend fun allPromoted(): List<BgInfillEntity>
 
-    /** Each span's FIRST SURVIVING row; the head can be deleted by a landing measurement. */
+    /** Each span's first surviving row: the head can be deleted by a landing measurement. */
     @Query(
         "SELECT * FROM bg_infill AS h WHERE ts = " +
             "(SELECT MIN(ts) FROM bg_infill AS b WHERE b.spanStartMs = h.spanStartMs) " +
@@ -840,7 +877,7 @@ interface LoraDao {
         atMs: Long,
     )
 
-    /** fittedAtMs>0 excludes imported/restored adapters; override can't clear the refusal. */
+    /** `fittedAtMs > 0` excludes an imported/restored adapter: never fitted on this phone. */
     @Query("UPDATE lora SET historyMutatedAtMs = :nowMs WHERE fittedAtMs > 0 AND fittedAtMs <= :nowMs")
     suspend fun markHistoryMutated(nowMs: Long)
 
@@ -898,7 +935,7 @@ interface ConformalDeltaDao {
     @Query("SELECT * FROM conformal_delta")
     suspend fun all(): List<ConformalDeltaEntity>
 
-    /** IGNORE not REPLACE: a correction fitted on this phone's forecasts must not be displaced. */
+    /** IGNORE not [upsert]'s REPLACE: a fit on this phone's matured forecasts beats an archive. */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertIgnoreAll(rows: List<ConformalDeltaEntity>): List<Long>
 }
@@ -942,7 +979,7 @@ interface LoggedExerciseDao {
 interface ExerciseSessionDao {
     @Insert suspend fun insert(row: ExerciseSessionEntity): Long
 
-    /** Column-scoped, not upsert (clientId/startMs/kind are identity); post-delete stop no-ops. */
+    /** Column-scoped: `clientId`/`startMs`/`kind` are the bout's identity; late stop is a no-op. */
     @Query(
         "UPDATE exercise_session SET endMs = :endMs, activeSec = :activeSec, distanceM = :distanceM, " +
             "kcal = :kcal, interrupted = :interrupted, updatedAt = :nowMs WHERE id = :id",
@@ -1002,7 +1039,7 @@ interface ExerciseFixDao {
     @Query("DELETE FROM exercise_fix")
     suspend fun deleteAll()
 
-    /** id rides in cursor (two fixes can share a ms); tsMs-only cursor would silently drop rows. */
+    /** `id` rides in cursor: two fixes may share a millisecond, `tsMs`-only would drop rows. */
     @Query(
         "SELECT * FROM exercise_fix WHERE sessionId = :sessionId AND " +
             "(tsMs > :afterTs OR (tsMs = :afterTs AND id > :afterId)) ORDER BY tsMs, id LIMIT :limit",

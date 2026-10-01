@@ -2,14 +2,14 @@ package com.t1dm.alerts
 
 import com.t1dm.core.model.CgmReading
 
-/** Loss-of-signal (§3.6-A): only an eligible MEASURED reading refreshes the clock, not gap-fill. */
+/** §3.6-A. Only a MEASURED reading refreshes the clock; gap-fill does not. */
 class LossOfSignalAlarm(private var config: AlarmConfig) {
 
     private var lastMeasured: CgmReading? = null
 
     private var armedAtMs: Long? = null
 
-    /** Restarts staleness clock at [nowMs]; lastMeasured kept, it is the escalation basis. */
+    /** [lastMeasured] stays: clearing it would raise nothing on a dead new sensor. */
     fun onSourceChanged(nowMs: Long) {
         armedAtMs = nowMs
     }

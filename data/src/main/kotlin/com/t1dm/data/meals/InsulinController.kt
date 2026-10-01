@@ -18,7 +18,7 @@ import java.util.TimeZone
 import kotlin.math.abs
 import kotlin.math.max
 
-/** Logged dose carries its resolved PK curve in customCurve, reconstructs later preset changes. */
+/** Logged dose carries resolved PK curve in customCurve; reconstructs exact if presets change. */
 class InsulinController(
     private val repository: T1dmRepository,
     private val engine: CurveEngine,
@@ -66,7 +66,7 @@ class InsulinController(
 
     suspend fun logDose(type: InsulinType, units: Double, tsMs: Long = now()): LoggedDoseEntity =
         withContext(dispatchers.io) {
-            // Round-to-nearest, not floor, lands in the SAME slot as CGM/snapToGrid writers.
+            // Round-to-nearest, not floor: matches CGM/dose slot, else channel misaligns vs BG.
             val gridTs = Math.floorDiv(tsMs + CurveEngine.STEP_MS / 2, CurveEngine.STEP_MS) * CurveEngine.STEP_MS
             val curve = pkCurveOf(engine, type, units)
             require(encodesDose(curve, units)) { "${type.name} encodes no $units U curve." }
@@ -90,7 +90,7 @@ class InsulinController(
             )
         }
 
-    /** Row stores resolved PK curve, not the type; type null leaves fields, hand-drawn too. */
+    /** Row stores resolved PK curve, not its type; retype rewrites PK+note. Null type=as stored. */
     suspend fun editDose(
         row: LoggedDoseEntity,
         type: InsulinType?,

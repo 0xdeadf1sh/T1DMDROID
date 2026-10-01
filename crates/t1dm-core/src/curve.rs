@@ -1,4 +1,4 @@
-//! Curve/PK (SPEC/invariants.md §5): carbs=Ra, insulin=PK; basal+bolus → `insulin_combined`.
+//! Curve/PK engine (SPEC/invariants.md §5); carbs are Ra rate, insulin is PK action, not IOB.
 
 use crate::CoreError;
 
@@ -7,7 +7,7 @@ pub const DT_MINUTES: f64 = 5.0;
 /// Milliseconds per curve/grid step. `values[]` are amount-per-this-step.
 pub const STEP_MS: i64 = 300_000;
 
-/// ~2.85y of steps; bounds [`bucketize`]'s alloc so a hostile size returns `Err`, not an abort.
+/// ~2.85y of steps; bounds [`bucketize`]'s allocation so a hostile size returns `Err`, not abort.
 const MAX_GRID_STEPS: i32 = 300_000;
 
 // SPEC/invariants.md §5; every value is `T1DMSIM/simulator.py`'s, pinned by curve_golden.json.
@@ -58,7 +58,7 @@ pub struct BasalDoseSpec {
     pub ke_per_hour: f64,
 }
 
-/// SPEC/invariants.md §2, §5: `tz_offset_min` sets the local midnight `time_of_day_min` is from.
+/// SPEC/invariants.md §2, §5; `tz_offset_min` sets the local midnight `time_of_day_min` is from.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct BasalSchedule {
     pub tz_offset_min: i32,
@@ -277,7 +277,7 @@ pub fn preset_curve(units: f64, spec: InsulinPresetSpec) -> Vec<f64> {
     }
 }
 
-/// Sums `kind`-events onto `[grid_start_ms,+n_steps·STEP_MS)`; a pre-grid event's tail counts.
+/// Sums matching events onto `[grid_start_ms, +n_steps·STEP_MS)`, aligned by rounded offset.
 #[uniffi::export]
 pub fn bucketize(
     events: Vec<CurveEvent>,
@@ -323,7 +323,7 @@ pub(crate) fn bucketize_into(
     }
 }
 
-/// Remaining tail at `at_ms`: sum of not-yet-started `values[j]`; total before onset, 0 after DIA.
+/// Tail area at `at_ms`: `total` before onset, 0 after DIA; in-progress step counts as delivered.
 #[uniffi::export]
 pub fn on_board(events: Vec<CurveEvent>, at_ms: i64, kind: CurveKind) -> f64 {
     let mut acc = 0.0f64;
@@ -344,7 +344,7 @@ pub fn on_board(events: Vec<CurveEvent>, at_ms: i64, kind: CurveKind) -> f64 {
 const DAY_MS: i64 = 86_400_000;
 const MIN_MS: i64 = 60_000;
 
-/// Expands [`BasalSchedule`] to Bateman events overlapping `[from_ms,to_ms)`, sorted by `start_ms`.
+/// Bateman events whose `[start, start+DIA)` intersects `[from_ms, to_ms)`; sorted by `start_ms`.
 #[uniffi::export]
 pub fn extend_basal(
     schedule: BasalSchedule,

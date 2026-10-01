@@ -2,19 +2,19 @@ package com.t1dm.ui.game
 
 import com.t1dm.core.model.UnitSpace
 
-/** Metres of track/minute, frozen per run; must be int: 3m/min=15m/5min, a multiple of DX_M. */
+/** Metres of track per minute, frozen per run; integer, exact multiple of TERRAIN_DX_M. */
 const val METRES_PER_MINUTE = 3f
 
-/** Play area vertical extent; 100 from airtime sweep (~45=none, 140=76% flying); physics-only. */
+/** Vertical extent of play area, tuned from an airtime sweep; physics only, drawing unaffected. */
 const val WORLD_HEIGHT_M = 100f
 
-/** Heightfield spacing (m); divides the 5-min grid exactly, exact per reading, linear between. */
+/** Heightfield sample spacing, metres; divides the 5-min grid, terrain exact at each reading. */
 const val TERRAIN_DX_M = 1f
 
 /** Transcribed from `t1dm-core::game`, which remains the authority that enforces it. */
 internal const val MAX_TERRAIN_SAMPLES = 200_000
 
-/** Derived once from frame-GLOBAL extremes (GlucoseGraph re-fits per window); no tick rounding. */
+/** Derived once at build from frame-GLOBAL extremes, unlike GlucoseGraph's per-window fit. */
 class WorldMap internal constructor(
     /** Absolute epoch-ms at world x = 0. */
     val t0Ms: Long,
@@ -34,16 +34,16 @@ class WorldMap internal constructor(
 
     fun tsMsAt(worldX: Float): Long = t0Ms + Math.round(worldX.toDouble() / metresPerMs)
 
-    /** Value in the trace's unit; unclamped — a reading past the axis is a hill above ceiling. */
+    /** Value in the trace's unit; unclamped, a reading past the axis is a hill past the ceiling. */
     fun worldYOf(value: Float): Float = (value - valueLo) * heightPerValue
 
     fun valueAt(worldY: Float): Float = valueLo + worldY / heightPerValue
 
-    /** yFrac=0 at plot TOP, inverts to y-up world; outside [0,1] stays out; no axis fit stored. */
+    /** yFrac is 0 at plot TOP, inverting onto y-up; paint_stroke ignores axis growth after fit. */
     fun worldYOfFrac(yFrac: Float): Float = worldHeight * (1f - yFrac)
 }
 
-/** Configured axis range, grown for data; [kovatchevF] must match the trace's build transform. */
+/** Configured axis range, grown to cover data past it. kovatchevF must match the trace's build. */
 fun worldValueSpan(
     dataMin: Float,
     dataMax: Float,
@@ -66,7 +66,7 @@ fun worldValueSpan(
     }
     val min = minValueSpan(unit)
     if (hi - lo < min) {
-        // A ~0 span turns noise into cliffs; widen about the midpoint, flat trace stays centred.
+        // A ~0 span turns noise into cliffs; widen about midpoint so a flat trace stays centred.
         val mid = (hi + lo) / 2f
         lo = mid - min / 2f
         hi = mid + min / 2f

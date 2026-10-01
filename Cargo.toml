@@ -3,7 +3,7 @@
 # release profile the plan mandates is declared here and inherited by every member.
 [workspace]
 resolver = "2"
-members = ["crates/t1dm-core", "crates/t1dm-watch"]
+members = ["crates/t1dm-core", "crates/libre3-core", "crates/t1dm-watch"]
 
 [profile.release]
 opt-level = 3

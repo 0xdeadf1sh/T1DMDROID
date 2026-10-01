@@ -17,7 +17,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 import com.t1dm.core.model.DkaTimeline
 
-/** Landmarks sit EVENLY, one leg apiece, not by time; [journeyProgress] warps; display-only. */
+/** Landmarks sit EVENLY, one leg per landmark, not on a time axis; journeyProgress warps time. */
 
 private fun Color.blend(other: Color, t: Float): Color = lerp(this, other, t)
 
@@ -31,7 +31,7 @@ data class JourneyMarks(val dka: Float, val coma: Float, val death: Float) {
 /** One leg of road per landmark. */
 private const val LEG = 1f / 3f
 
-/** Clamped [0,1]; [anchorMs]=IOB-zero, PAST or FUTURE; piecewise, 1/3 road/leg, hours uneven. */
+/** Clamped [0,1]; anchorMs is projected IOB-zero instant, PAST or FUTURE; per-leg piecewise. */
 fun journeyProgress(nowMs: Long, anchorMs: Long, tl: DkaTimeline): Float {
     val legs = doubleArrayOf(
         tl.iobZeroToDkaHours.coerceAtLeast(0.0),
@@ -55,7 +55,7 @@ fun journeyProgress(nowMs: Long, anchorMs: Long, tl: DkaTimeline): Float {
     return frac.coerceIn(0f, 1f)
 }
 
-/** [progress] read inside draw scope; a ticker repaints the road without recomposing the panel. */
+/** progress reads inside the draw scope, so a ticker repaints the road without recomposing. */
 @Composable
 fun JourneyPath(
     progress: () -> Float,

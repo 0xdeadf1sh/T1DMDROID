@@ -17,17 +17,17 @@ import com.t1dm.core.design.drawThemeBackground
 import kotlin.math.max
 import kotlin.math.roundToInt
 
-/** Glance has no Canvas: motif rasterises offscreen, proportional, capped, FillBounds-rescaled. */
+/** Glance has no Canvas so the motif rasterises offscreen; painters proportional, cap-and-scale. */
 private const val MAX_DIM = 480
 
-// Keyed on palette hash, not p.id: every custom theme shares id "custom" (else stale backdrop).
+// Keyed on the palette's full hash not p.id: custom themes share id, so a key served stale art.
 private data class BackdropKey(val paletteHash: Int, val w: Int, val h: Int, val alphaPct: Int)
 
 /** Process-wide: theme, size and alpha rarely change, but Glance re-composes on every push. */
 private val cache = LinkedHashMap<BackdropKey, Bitmap>()
 private const val CACHE_CAP = 6
 
-/** Opaque; null when motif is off (`alphaPct<=0`), size is degenerate, or rasterising fails. */
+/** Opaque; null when the motif is off, size is degenerate, or rasterising fails. */
 internal fun widgetBackdropBitmap(p: T1dmPalette, widthPx: Int, heightPx: Int, alphaPct: Int): Bitmap? {
     val a = (alphaPct / 100f)
     if (a <= 0f || widthPx <= 0 || heightPx <= 0) return null

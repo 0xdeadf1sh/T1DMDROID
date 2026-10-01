@@ -14,12 +14,12 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
-/** Order load-bearing: before verticalScroll (viewport-sized draw), after verticalScrollbar. */
+/** Order matters: BEFORE verticalScroll (viewport coords), after [verticalScrollbar] (thumb). */
 
 /** Public: a panel that scrolls a row INTO view has to clear this. */
 val FADE_EDGE_DEPTH = 40.dp
 
-// DstIn reads only alpha (colour arbitrary); band scaled onto edge, not inset (avoids reshader).
+// DstIn reads only source alpha; band squeezed onto its edge by SCALING, not drawRect size/inset.
 private val ERASE_DOWNWARD = Brush.verticalGradient(listOf(Color.Transparent, Color.Black))
 private val ERASE_UPWARD = Brush.verticalGradient(listOf(Color.Black, Color.Transparent))
 

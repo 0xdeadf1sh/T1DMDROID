@@ -48,7 +48,7 @@ class BgHeatmapTest {
     }
 
     @Test fun theScaleIsFixedAndIndependentOfTheTargetRange() {
-        // Bounds coincide with the 70-180 band, but no setting feeds them; same on every phone.
+        // Bounds coincide with the usual 70-180 band; no setting feeds them, fixed per phone.
         assertEquals(HEAT_IN, c(HEAT_MID_MGDL))
         assertNotEquals(HEAT_IN, c(105.0))
         assertNotEquals(HEAT_IN, c(140.0))

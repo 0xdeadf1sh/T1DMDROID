@@ -28,7 +28,7 @@ interface NightscoutClient {
     /** Never throws: the string IS the result. */
     suspend fun probe(): String
 
-    /** Before a retry only: no idempotency key, a lost ack commits twice. Narrows, not closes. */
+    /** Consulted ONLY before a retry: no idempotency key, so a lost ack would double-post. */
     suspend fun alreadyPosted(request: SyncRequest): Boolean
 }
 
@@ -44,7 +44,7 @@ class OkHttpNightscoutClient(
         .connectTimeout(5_000, TimeUnit.MILLISECONDS)
         .readTimeout(8_000, TimeUnit.MILLISECONDS)
         .writeTimeout(8_000, TimeUnit.MILLISECONDS)
-        // OkHttp strips only `Authorization` cross-host; a 30x would forward this secret elsewhere.
+        // OkHttp strips Authorization cross-host only; a 30x could leak this credential elsewhere.
         .followRedirects(false)
         .followSslRedirects(false)
         .build(),
@@ -74,7 +74,7 @@ class OkHttpNightscoutClient(
         }
     }.getOrElse { if (it is NightscoutDisabledException) "off — set a URL and secret" else "unreachable" }
 
-    /** Two recognition modes: client_id in notes, else (type, ts, amount). Re-filtered locally. */
+    /** Two ways to recognise a treatment: client_id in notes, else (type, timestamp, amount). */
     override suspend fun alreadyPosted(request: SyncRequest): Boolean {
         if (!request.path.startsWith("/api/v1/treatments")) return false
         val body = request.body ?: return false
@@ -88,7 +88,7 @@ class OkHttpNightscoutClient(
         val to = stamps.max().plus(MATCH_WINDOW)
 
         val existing = runCatching { fetchTreatments(from, to) }.getOrNull() ?: return false
-        // Tests for a note SHAPED like client_id, not just non-empty: hosts compose their own text.
+        // Tested by note SHAPE not non-emptiness: this host composes its own note text too.
         val markersSurvive = existing.any { clientIdMarker(it.notes)?.let(::looksLikeClientId) == true }
         return mine.all { m -> existing.any { it.matches(m, requireMarker = markersSurvive) } }
     }
@@ -119,7 +119,7 @@ class OkHttpNightscoutClient(
         }
 }
 
-/** [requireMarker]: with notes kept, client_id is the only sound test; the triple cant separate. */
+/** requireMarker: with notes kept client_id is the sound test; with notes dropped, ambiguous. */
 internal fun NsTreatmentDto.matches(other: NsTreatmentDto, requireMarker: Boolean = false): Boolean {
     val marker = clientIdMarker(other.notes)
     if (marker != null && notes?.contains(marker) == true) return true
@@ -130,21 +130,21 @@ internal fun NsTreatmentDto.matches(other: NsTreatmentDto, requireMarker: Boolea
         sameAmount(insulin, other.insulin)
 }
 
-/** Absent is zero: a host may materialise a field unasked; null vs 0.0 calls an echo new. */
+/** Absent is zero: a host may materialise a field it wasn't given; null vs 0.0 must not differ. */
 internal fun sameAmount(a: Double?, b: Double?): Boolean = (a ?: 0.0) == (b ?: 0.0)
 
 /** The ids are UUIDs; nothing a host composes for a human resembles one. */
 internal fun looksLikeClientId(s: String): Boolean =
     s.length == 36 && s.matches(Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"))
 
-/** Parsed instants, NOT strings: +03:00 reads back as +00:00, so string compare misses replays. */
+/** Parsed instants not strings: this host re-renders offsets, string compare would miss replays. */
 internal fun sameInstant(a: String, b: String): Boolean {
     val x = parseIso(a)
     val y = parseIso(b)
     return if (x != null && y != null) x.isEqual(y) else a == b
 }
 
-/** Either shape written: bracketed at the notes end, or alone, then the string IS the id. */
+/** Either shape noteWithClientId writes: bracketed at note's end, or the whole string IS the id. */
 internal fun clientIdMarker(notes: String?): String? {
     val n = notes?.trim()?.takeIf { it.isNotBlank() } ?: return null
     if (!n.endsWith("]")) return n

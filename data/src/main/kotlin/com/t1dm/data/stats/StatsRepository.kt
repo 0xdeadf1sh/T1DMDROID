@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 
-/** :data below :sync; runs on default dispatcher; sparse window yields EMPTY. */
+/** Union is upstream. Default dispatcher; sparse window -> EMPTY, never throws. */
 class StatsRepository(
     private val repository: T1dmRepository,
     private val native: NativeCore,
@@ -43,19 +43,19 @@ class StatsRepository(
         repository.putKv(KV_UNIT_SPACE, space.name, clock())
     }
 
-    /** [AdvancedStats] over trailing [now−window,now]; [agpBins] divides 1440; memoized/window. */
+    /** AdvancedStats over [now-window,now]. agpBins divides 1440. Memoized, force recomputes. */
     suspend fun localStats(
         window: StatsWindow,
         agpBins: Int = DEFAULT_AGP_BINS,
         force: Boolean = false,
     ): AdvancedStats {
         val target = currentTargetRange()
-        // Snap upper edge DOWN to grid: else the interval slides each call, memo unsound.
+        // Snap upper edge down to grid, else interval slides every call and the memo is unsound.
         val to = clock() / T1dmRepository.GRID_MS * T1dmRepository.GRID_MS
         val from = to - window.millis
         val key = CacheKey(window, target, to, agpBins)
 
-        // One lock across read-compute-store: callers can't race; the second gets first's answer.
+        // One lock across read-compute-store; second caller waits, gets the first's answer.
         return cacheLock.withLock {
             val fingerprint = repository.sampleWindowFingerprint(from, to)
             if (!force) {
@@ -69,7 +69,7 @@ class StatsRepository(
         }
     }
 
-    /** Everything the reduction is a function of; equal this+fingerprint means an equal answer. */
+    /** Everything the reduction is a function of; equal to this = equal SampleWindowFingerprint. */
     private data class CacheKey(
         val window: StatsWindow,
         val target: TargetRange,
@@ -83,11 +83,11 @@ class StatsRepository(
         val stats: AdvancedStats,
     )
 
-    /** One memo per [StatsWindow]: push loop asks all three, screen one; a slot evicts others. */
+    /** One memo per StatsWindow: push loop asks all three, screen one; single slot would evict. */
     private val statsCache = mutableMapOf<StatsWindow, CacheEntry>()
     private val cacheLock = Mutex()
 
-    /** Process-preserving wipe: PATIENT data on an app-lifetime object; residency needs it. */
+    /** Process-preserving wipe: derived PATIENT data, app-lifetime. Residency, not correctness. */
     suspend fun invalidateCache() = cacheLock.withLock { statsCache.clear() }
 
     private companion object {
@@ -107,10 +107,10 @@ internal fun parseTargetRange(raw: String?): TargetRange {
 internal fun parseUnitSpace(raw: String?): UnitSpace =
     raw?.let { runCatching { UnitSpace.valueOf(it) }.getOrNull() } ?: UnitSpace.MgDl
 
-/** Null or unmeasured BG maps to 0.0, excluded from metrics (§1); carbs/bolus/basal null here. */
+/** Null or unmeasured BG=0.0, excluded from metrics (SPEC/invariants.md §1); curve events null. */
 internal fun SampleEntity.toStatSample(): StatSample = StatSample(
     tsMs = ts,
-    // The offset stamped on the ROW, never phone's now: a 90-day window may cross DST or a flight.
+    // Offset stamped on the row, never phone's now: a 90-day window may straddle DST or a flight.
     tzOffsetMin = tzOffsetMin,
     bgMgdl = bgMgdl?.takeIf { bgProvenance !in NOT_MEASURED }?.toDouble() ?: 0.0,
     carbsG = null,

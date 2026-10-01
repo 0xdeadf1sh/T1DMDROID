@@ -10,11 +10,11 @@ import com.t1dm.data.exercise.ExerciseController
 import java.util.TimeZone
 
 interface ExerciseSampleWriter {
-    /** Replaces prior bout record; duration not bucket — §5 makes magnitude fn of whole bout. */
+    /** Replaces everything for the bout; a duration, not a bucket, §5 makes it a bout function. */
     suspend fun record(startMs: Long, durationMin: Double)
 }
 
-/** Via [recordExerciseCurve], never SampleDao's bare upsert; rebuilds each call, idempotent. */
+/** Through T1dmRepository.recordExerciseCurve; recording the same duration twice writes nothing. */
 class RepositoryExerciseSampleWriter(
     private val repository: T1dmRepository,
     private val curves: CurveEngine,

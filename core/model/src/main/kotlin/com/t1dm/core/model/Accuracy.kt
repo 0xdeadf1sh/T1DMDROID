@@ -2,7 +2,7 @@ package com.t1dm.core.model
 
 /** Mirrors t1dm-core::accuracy; CG-EGA counts equal T1DMAI's (SPEC/invariants.md §6.3). */
 
-/** bandsMgdl: steps x nQuantiles row-major ascending τ; lastBg anchors CG-EGA's first rate. */
+/** bandsMgdl is steps x nQuantiles row-major, τ ascending; lastBg is BG at made_at (§6.3). */
 data class ForecastWindow(
     val bandsMgdl: List<Double>,
     val medianBg: List<Double>,
@@ -10,7 +10,7 @@ data class ForecastWindow(
     val lastBg: Double,
 )
 
-/** nIncomplete of nMatured dropped for a gap/mis-sized fan; nForeignSource never entered. */
+/** nIncomplete of nMatured dropped for a CGM gap or mis-sized fan; nForeignSource never entered. */
 data class ForecastWindowSet(
     val windows: List<ForecastWindow>,
     val nMatured: Int,
@@ -22,7 +22,7 @@ data class ForecastWindowSet(
     }
 }
 
-/** SPEC/invariants.md §6.1 fixes the band edge; excursionPrecisionToleranceMgdl forgives it. */
+/** §6.1 fixes the band edge detectors read, not what it's compared to; that's the tolerance. */
 data class MetricsConfig(
     val hypoThresholdMgdl: Double,
     val hyperThresholdMgdl: Double,
@@ -35,7 +35,7 @@ enum class ClarkeZone { A, B, C, D, E }
 /** Klonoff et al. 2024, J Diabetes Sci Technol 18(6):1346. Bands [ScoredPoint.dtsRisk]. */
 enum class DtsZone { A, B, C, D, E }
 
-/** Plot truth on the reference axis; neither grid is symmetric, a transposed scatter misleads. */
+/** Plot truth on the reference axis: neither grid is symmetric, a transposed scatter differs. */
 data class ScoredPoint(
     val pred: Double,
     val truth: Double,
@@ -45,7 +45,7 @@ data class ScoredPoint(
     val dtsRisk: Double,
 )
 
-/** §6.2: clarkeAb is A∪B; never combine dtsA with dtsB, paper reports pZA alone. */
+/** §6.2: clarkeAb is A∪B; skillPoint null if persistence was perfect; points EMPTY on band. */
 data class PointBlock(
     val rmsePoint: Double,
     val maePoint: Double,
@@ -66,7 +66,7 @@ data class PointBlock(
     val points: List<ScoredPoint>,
 )
 
-/** Truth-major 5x5: cell (t,p) at t*TREND_BINS+p; categoryPct empty not zeroed when unscored. */
+/** Truth-major 5x5: cell (t,p) at t*TREND_BINS+p; categoryPct empty, not zero, if unscored. */
 data class TrendMatrix(
     val counts: List<Int>,
     val categoryN: List<Int>,
@@ -96,11 +96,11 @@ data class ExcursionAccuracy(
     val nPred: Int,
 )
 
-/** What a display compares realized coverage against; no descriptor ships these (SPEC §6.1). */
+/** What a display compares realized coverage against; §6.1 leaves this to each consumer's copy. */
 const val BAND_COV50_TARGET: Double = 0.50
 const val BAND_COV90_TARGET: Double = 0.90
 
-/** band is the headline (§6.2); never show it without bandCov50/bandWidth50. */
+/** band is the headline (§6.2); never show a band figure without bandCov50 and bandWidth50. */
 data class HorizonMetrics(
     val horizonMin: Int,
     val n: Int,
@@ -154,9 +154,9 @@ data class MetricsSuite(
 class ZoneLattice private constructor(
     val axisMaxMgdl: Double,
     val cells: Int,
-    /** One past the largest ordinal present; derived from cells, never taken from the caller. */
+    /** One past the largest ordinal present, derived from the cells, never from the caller. */
     val zoneCount: Int,
-    // Identity equality deliberate: process-wide singleton, keyed remember skips 25 600 cells.
+    // Identity equality is deliberate: process-wide singleton, remember must not walk 25600 cells.
     private val ordinals: ByteArray,
 ) {
     val isEmpty: Boolean get() = cells <= 0 || ordinals.size != cells * cells
@@ -179,7 +179,7 @@ class ZoneLattice private constructor(
         /** Cells per side — 2.5 mg/dL, under two pixels on any plot this app draws. */
         const val CELLS: Int = 160
 
-        /** classify is a core *_zone_grid export; fails closed to EMPTY on a bad result. */
+        /** classify is a core *_zone_grid export; fails closed to EMPTY on a short result. */
         fun <Z : Enum<Z>> build(classify: (List<Double>, List<Double>) -> List<Z>): ZoneLattice {
             val axis = List(CELLS) { (it + 0.5) * AXIS_MAX_MGDL / CELLS }
             val zones = classify(axis, axis)
@@ -198,7 +198,7 @@ class ZoneLattice private constructor(
             return if (direct == sampled) grid else EMPTY
         }
 
-        /** Refused whole unless it fills the square: a partial lattice paints wrong, not absent. */
+        /** Refused whole unless it fills the square: a partial lattice paints wrong regions. */
         fun <Z : Enum<Z>> of(axisMaxMgdl: Double, cells: Int, zones: List<Z>): ZoneLattice {
             if (cells <= 0 || zones.size != cells * cells) return EMPTY
             val ordinals = ByteArray(zones.size) { zones[it].ordinal.toByte() }

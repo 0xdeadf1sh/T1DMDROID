@@ -1,0 +1,30 @@
+[package]
+name = "libre3-core"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Correctness core for the Libre 3 family (pairing, data-plane crypto, NFC codec)."
+
+[lib]
+name = "libre3_core"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+# Not `uniffi-bindgen`: two same-named bins in one workspace collide on the output filename.
+[[bin]]
+name = "libre3-uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[dependencies]
+# `cli` pulls in `uniffi::uniffi_bindgen_main`, used by the bindgen binary above to
+# emit the Kotlin bindings in library mode. thiserror drives Libre3Error.
+uniffi = { version = "0.29", features = ["cli"] }
+thiserror = "2"
+# Standard AES-128 block primitive for the ccm tests and the session-key paths.
+aes = "0.8"
+# Sensor-cert ECDSA-P256/SHA-256 verification and first-pair ECDH (§5.3).
+p256 = { version = "0.13", features = ["arithmetic", "ecdsa", "ecdh"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+# Spec-verified P-256 cross-check for the hand-rolled first-pair multiplier (§5.3).
+p256 = { version = "0.13", features = ["arithmetic", "ecdh"] }

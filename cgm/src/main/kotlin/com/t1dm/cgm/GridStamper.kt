@@ -6,7 +6,7 @@ import com.t1dm.core.model.DecodedAdvert
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 
-/** Snaps to the 5-min grid, linear-fills gaps (§3.1); INTERPOLATED never suppresses an alarm. */
+/** Snaps to the 5-min grid, back-fills BG linearly (§3.1, §3.6-A); one stamper per source. */
 class GridStamper(private val gridMs: Long = CgmConstants.GRID_MS) {
 
     private var lastMeasuredTs: Long? = null
@@ -34,7 +34,7 @@ class GridStamper(private val gridMs: Long = CgmConstants.GRID_MS) {
         rssi = rssi,
     )
 
-    /** stamp over plain values; bgMgdl NULLABLE, a zero would wrongly band URGENT_LOW. */
+    /** stamp over plain values; bgMgdl NULLABLE, absent isn't zero (would band URGENT_LOW). */
     fun stamp(
         sourceId: CgmSourceId,
         bgMgdl: Int?,
@@ -85,7 +85,7 @@ class GridStamper(private val gridMs: Long = CgmConstants.GRID_MS) {
             tzOffsetMin = tzOffsetMin,
             rxWallMs = rxWallMs,
             rssi = rssi,
-            // Passive: the sensor broadcasts its current value, so receipt is the best clock.
+            // The caller's instant: receipt, or the sensor's clock where the record carries one.
             measuredAtMs = rxWallMs,
         )
 

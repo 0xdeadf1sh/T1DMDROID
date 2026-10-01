@@ -11,7 +11,7 @@ import androidx.work.WorkerParameters
 import timber.log.Timber
 import java.util.concurrent.TimeUnit
 
-/** Backstop for a reaped FGS (provider has no periodic update); re-pushes at WM's 15-min floor. */
+/** Re-pushes at WorkManager's 15-min floor; a reaped FGS freezes the tile, Doze defers too. */
 class WidgetRefreshWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         runCatching { GlucoseWidget().updateAll(applicationContext) }
@@ -23,7 +23,7 @@ class WidgetRefreshWorker(context: Context, params: WorkerParameters) : Coroutin
         private const val TAG = "GlucoseWidget"
         private const val NAME = "t1dm.widget.refresh"
 
-        /** KEEP: a later shape change needs UPDATE to reach installs already holding one. */
+        /** KEEP means a later request-shape change needs UPDATE to reach installs holding one. */
         fun enqueue(context: Context) {
             val request = PeriodicWorkRequestBuilder<WidgetRefreshWorker>(15, TimeUnit.MINUTES)
                 .setConstraints(Constraints.NONE)

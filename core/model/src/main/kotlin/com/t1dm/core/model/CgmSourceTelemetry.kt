@@ -1,6 +1,6 @@
 package com.t1dm.core.model
 
-/** Channels beside the glucose value, latest record; display only, not persisted; null≠0. */
+/** One CGM source's channels beside the glucose value, last record; display only, not persisted. */
 data class CgmSourceTelemetry(
     /** The same clock and the same instant as the [CgmReading.rxWallMs] beside it. */
     val sampledAtMs: Long,
@@ -14,9 +14,9 @@ data class CgmSourceTelemetry(
     val ibX100: Int? = null,
     /** Electrode potentials in mV, in the family's own order. */
     val electrodesMv: List<Int>? = null,
-    /** Vendor error code verbatim; `0` = REPORTED no-error; non-zero withholds the reading. */
+    /** Vendor error code, verbatim; 0 is REPORTED no error, non-zero means reading withheld. */
     val errorCode: Int? = null,
-    /** A small enum, not a rate; rate is [CgmReading.trendTenthsPerMin], never from this. */
+    /** A small enum, not a rate; rate is CgmReading.trendTenthsPerMin, never derived from this. */
     val trendCode: Int? = null,
     /** The sensor's own arrow at [sampledAtMs]; null = this family sends none. */
     val arrow: SensorArrow? = null,

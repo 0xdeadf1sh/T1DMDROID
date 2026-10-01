@@ -3,7 +3,7 @@ package com.t1dm.app.notify
 import com.t1dm.core.common.KovatchevScale
 import com.t1dm.core.model.UnitSpace
 
-/** Via [KovatchevScale] (INFERENCE.md §5): Widget snapshot persists field-by-field, no lambda. */
+/** Kovatchev goes through KovatchevScale (§5), not native f: headless surfaces carry no lambda. */
 object BgFormat {
 
     fun value(bgMgdl: Int?, unit: UnitSpace): String {
@@ -11,7 +11,7 @@ object BgFormat {
         return when (unit) {
             UnitSpace.MgDl -> bgMgdl.toString()
             UnitSpace.MmolL -> String.format("%.1f", bgMgdl / 18.0182)
-            // Symmetrised about ~112.5 mg/dL: sign carries meaning; 2 dp matches the axis.
+            // Symmetrised about ~112.5 mg/dL, sign carries the meaning; 2 dp matches the axis.
             UnitSpace.Kovatchev -> String.format("%+.2f", KovatchevScale.f(bgMgdl.toDouble()))
         }
     }

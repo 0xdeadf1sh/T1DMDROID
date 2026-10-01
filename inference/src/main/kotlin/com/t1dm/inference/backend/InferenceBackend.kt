@@ -10,7 +10,7 @@ data class BackendCaps(
     val maskIsExternalStruct: Boolean = true,
 )
 
-/** Direct buffers at 0: patches(1,T,PATCH_DIM) z-space, mask(T,T) additive, slotSel(M,T) 1-hot. */
+/** Direct buffers at 0: `patches (1,T,PATCH_DIM)` z-space, additive `mask`, one-hot `slotSel`. */
 class GraphTensors(
     val patches: FloatBuffer,
     val mask: FloatBuffer,
@@ -20,7 +20,7 @@ class GraphTensors(
     val mSlots: Int,
 )
 
-/** headRaw flat M*S*7 risk-space, C-contig (slot,step,level); timeLogits/hidden null if unset. */
+/** [headRaw] flat `M·S·7` `(slot,step,level)`; [timeLogits] `(M,nBins)`; [hidden] `(T,DIM)`. */
 class GraphOutput(
     val headRaw: FloatArray,
     val timeLogits: FloatArray? = null,

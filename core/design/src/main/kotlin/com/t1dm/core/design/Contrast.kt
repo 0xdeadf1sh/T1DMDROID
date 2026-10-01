@@ -10,7 +10,7 @@ import kotlin.math.roundToInt
 /** WCAG AA for body text. */
 const val CONTRAST_AA: Float = 4.5f
 
-/** WCAG relative luminance of an OPAQUE argb, 0f..1f; composite with compositeArgb first. */
+/** WCAG luminance of OPAQUE argb, 0f..1f; alpha ignored, composite [compositeArgb] first. */
 fun relativeLuminanceArgb(argb: Int): Float {
     fun channel(shift: Int): Float {
         val s = ((argb ushr shift) and 0xFF) / 255f
@@ -45,7 +45,7 @@ fun contrastRatio(a: Color, b: Color): Float = contrastRatioArgb(a.toArgb(), b.t
 fun Color.compositeOn(background: Color): Color =
     Color(compositeArgb(toArgb(), background.toArgb()))
 
-/** Black or white, whichever contrasts more; curves cross at L≈0.179, clears AA over any colour. */
+/** Black or white, whichever contrasts more; curves cross at L≈0.179 (4.58), always clears AA. */
 fun maxContrastInk(background: Color): Color {
     val bg = background.toArgb()
     val black = Color.Black.toArgb()
@@ -53,11 +53,11 @@ fun maxContrastInk(background: Color): Color {
     return if (contrastRatioArgb(black, bg) >= contrastRatioArgb(white, bg)) Color.Black else Color.White
 }
 
-/** preferred where it clears floor on on, else maxContrastInk; both must be OPAQUE. */
+/** [preferred] if it clears [floor], else [maxContrastInk]; OPAQUE, alpha use [legibleInkOver]. */
 fun legibleInkOn(on: Color, preferred: Color, floor: Float = CONTRAST_AA): Color =
     legibleInkOver(on, on, preferred, floor)
 
-/** legibleInkOn for ALPHA roles: composited for the ratio, preferred returned unmodified. */
+/** [legibleInkOn] for ALPHA: composite onto [backing] first; [preferred] returned unmodified. */
 fun legibleInkOver(backing: Color, on: Color, preferred: Color, floor: Float = CONTRAST_AA): Color {
     val painted = on.compositeOn(backing)
     return if (contrastRatio(preferred.compositeOn(painted), painted) >= floor) preferred

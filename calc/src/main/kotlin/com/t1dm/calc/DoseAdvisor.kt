@@ -16,7 +16,7 @@ class DoseAdvisor(
     private val anchorSource: AnchorInfoSource,
     private val iobSource: IobSource,
     private val backendSource: BackendInfoSource,
-    /** Read once, pinned onto every roll; a throw degrades to default (disclosed, not a gate). */
+    /** Read once per recommendation, pinned onto every roll; disclosed provenance, not a gate. */
     private val smoothingWindowSource: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
 ) {
 
@@ -44,7 +44,7 @@ class DoseAdvisor(
             )
         }
 
-        // Resolved here, not at card time (a mid-search edit would split last_bg across fans).
+        // Resolved here, not at construction: a mid-search Settings edit could split last_bg.
         val smoothing = InferenceControllerDefaults.nearestSmoothingStop(
             runCatching { smoothingWindowSource() }.getOrNull() ?: InferenceControllerDefaults.SAVGOL_WINDOW,
         )
@@ -109,7 +109,7 @@ class DoseAdvisor(
 
     private fun inHypoTerritory(anchor: AnchorInfo?, baseline: PredFan, config: CalcConfig): Boolean {
         val nowLow = anchor?.currentBgMgdl?.let { it < config.hypoNowThresholdMgdl } ?: false
-        // Off the median, like every dose-path read: a band edge nearly always dips into rescue.
+        // Off the median, like every dose-path read — band edges kept diverting to carb rescue.
         val nearLow = baseline.eligible && baseline.validatedWindow()
             .any { it.medianBg < config.hypoNowThresholdMgdl }
         return nowLow || nearLow

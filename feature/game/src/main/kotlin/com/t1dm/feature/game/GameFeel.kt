@@ -61,7 +61,7 @@ internal class FeelTracker {
             return out
         }
 
-        // Terminal first, exclusively: a crash IS a landing, both would double an Impact in Shock.
+        // Terminal first, exclusively: a crash IS a landing, both put an Impact in Shock's window.
         if (s.run != run) {
             val was = run
             run = s.run
@@ -88,7 +88,7 @@ internal class FeelTracker {
             val hit = impactIntensity(s.impactImpulse)
             out.cue = HapticCue.Impact
             out.cueIntensity = hit
-            // Touchdown only: a wheels-down bump re-arms several times a sec, reads as tapping.
+            // Touchdown only: a wheels-down bump re-arms several times a second, reads as tapping.
             if (landed) {
                 out.sfx = GameSfx.Landing
                 out.sfxIntensity = hit
@@ -98,7 +98,7 @@ internal class FeelTracker {
     }
 
     internal companion object {
-        /** REACHABLE rev range, so rev spans [0,1] over the car, not the solver's 9000 rail. */
+        /** REACHABLE rev range: rev spans [0,1] over what the car can do, not the tuning rail. */
         const val IDLE_RPM = 800f
         const val MAX_RPM = TOP_RPM
 
@@ -109,7 +109,7 @@ internal class FeelTracker {
         const val ENGINE_FULL_BED = 0.52f
         const val TERRAIN_BED = 0.55f
 
-        /** Newton-seconds above car's weight; impactImpulse under 5 at rest, 100+ on landing. */
+        /** Newton-seconds above the car's own weight; peaks past 100 on a 10 m/s landing. */
         const val BUMP_IMPULSE = 45f
 
         /** Half-intensity impulse for the saturating curve. */
@@ -118,7 +118,7 @@ internal class FeelTracker {
         /** Even the gentlest touchdown is felt; only its scale varies. */
         const val IMPACT_FLOOR = 0.28f
 
-        /** Impulse to cue amplitude, saturating; a hyperbola, interesting range spans a decade. */
+        /** Impulse -> cue amplitude, saturating; a hyperbola, decade-wide interesting range. */
         fun impactIntensity(impulse: Float): Float {
             if (!impulse.isFinite() || impulse <= 0f) return IMPACT_FLOOR
             val k = impulse / (impulse + IMPACT_HALF)
@@ -127,7 +127,7 @@ internal class FeelTracker {
     }
 }
 
-/** Narrower than GameFeel on purpose: lifecycle verbs like release belong to the composition. */
+/** Narrower than GameFeel on purpose: lifecycle verbs (release) belong to the composition. */
 internal interface FeelSink {
     fun frame(s: CarState)
 
@@ -141,7 +141,7 @@ internal interface FeelSink {
     }
 }
 
-/** release is the alarm interlock: alarm takes BOTH surfaces, vibrator handed back not off. */
+/** release is the alarm interlock: BOTH surfaces at once, vibrator handed back, not lowered. */
 internal class GameFeel(
     private val audio: GameAudio?,
     private val haptics: HapticMixer,

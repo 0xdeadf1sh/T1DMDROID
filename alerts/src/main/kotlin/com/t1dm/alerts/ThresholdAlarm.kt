@@ -3,7 +3,7 @@ package com.t1dm.alerts
 import com.t1dm.core.model.AlertBand
 import com.t1dm.core.model.CgmReading
 
-/** Threshold alarm (§3.6-A); only an eligible MEASURED reading changes [breach], nothing else. */
+/** Threshold alarm (§3.6-A). Only eligible MEASURED reading changes [breach]; nothing else can. */
 class ThresholdAlarm(private var config: AlarmConfig) {
 
     var breach: ThresholdBreach? = null

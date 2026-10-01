@@ -36,7 +36,7 @@ import java.util.zip.GZIPInputStream
 /** Not this format at all; the caller falls back to the older settings-and-drawings reader. */
 class NotAnArchiveException(message: String) : IllegalArgumentException(message)
 
-/** duplicates counts already-held records, expected on re-import; truncated means no end record. */
+/** duplicates: already-held rows, not a fault. truncated: no `end`; restore still continues. */
 class ArchiveResult(
     val configJson: String?,
     val applied: ArchiveCounts,
@@ -47,7 +47,7 @@ class ArchiveResult(
     val createdAtMs: Long?,
 )
 
-/** Merges: local row always wins, re-import is a no-op; NOT one transaction, restore resumes. */
+/** Local row wins; re-import is a no-op. Batches commit alone; interrupted restore resumes. */
 class ArchiveReader(private val db: AppDatabase) {
 
     suspend fun read(input: InputStream): ArchiveResult {
@@ -64,7 +64,7 @@ class ArchiveReader(private val db: AppDatabase) {
 
         val state = MergeState()
         var truncated = true
-        // Cut-short gzip raises EOFException, not clean EOF; caught so the read prefix flushes.
+        // Truncated gzip throws EOFException on readLine; caught so the read prefix still flushes.
         var line: String? = null
         try {
             line = reader.readLine()
@@ -114,7 +114,7 @@ class ArchiveReader(private val db: AppDatabase) {
         }
     }
 
-    /** Decode sits inside runCatching; flush does NOT, or it swallows a user-cancelled restore. */
+    /** Decode is in runCatching; flush isn't, or catch eats the user's CancellationException. */
     private suspend fun consume(o: JsonObject, s: MergeState) {
         when (o.tag()) {
             Archive.T_READING -> {
@@ -137,11 +137,11 @@ class ArchiveReader(private val db: AppDatabase) {
                 s.meals.add(r)
                 if (s.meals.size >= Archive.BATCH) flushMeals(s)
             }
-            // Immediate, not batched: a tombstone must be on record first; re-applied after too.
+            // Immediate: predates its event; order unguaranteed, so flushStreamed reapplies it.
             Archive.T_TOMBSTONE -> {
                 val r = runCatching { Archive.readTombstone(o) }.getOrNull() ?: return s.skip()
                 s.tombstones.add(r)
-                // Forward only: an updatedAt walk-back would let a later restore resurrect a row.
+                // Forward only: moving updatedAt back would let a later restore resurrect a row.
                 val ix = deletions(s)
                 if ((ix[r.clientId] ?: Long.MIN_VALUE) < r.updatedAt) {
                     tx { db.eventTombstoneDao().upsert(r) }
@@ -176,7 +176,7 @@ class ArchiveReader(private val db: AppDatabase) {
                 s.exerciseFixes.add(r)
                 if (s.exerciseFixes.size >= Archive.BATCH) flushExerciseFixes(s)
             }
-            // Buffered whole: saved meals/basal schedules merge only once the full set is known.
+            // Buffered whole: saved meals/basal schedules merge once the full set is known.
             Archive.T_BASAL -> {
                 val r = runCatching { Archive.readBasal(o) }.getOrNull()
                 if (r == null) s.skip() else s.basal.add(r)
@@ -225,7 +225,7 @@ class ArchiveReader(private val db: AppDatabase) {
         return mix to SavedMealItemEntity(
             // Placeholder; resolved in `applyBounded` once the parent meal has a local id.
             mealId = 0L,
-            // Dropped, not carried: a device id names an unrelated food; nutrition snapshotted.
+            // Dropped: per-device foodId would misname; nutrition snapshotted at save time.
             foodId = null,
             name = o.str("nm") ?: throw IllegalArgumentException("savedItem record has no nm"),
             grams = o.dbl("g") ?: throw IllegalArgumentException("savedItem record has no g"),
@@ -247,7 +247,7 @@ class ArchiveReader(private val db: AppDatabase) {
         flushLoggedExercise(s)
     }
 
-    /** clientId->stamp; mark is a MAX, never rewinds. */
+    /** clientId -> stamp. Mark is a MAX, never rewinds. */
     private suspend fun deletions(s: MergeState): HashMap<String, Long> =
         s.deletions ?: HashMap<String, Long>().also { m ->
             for (t in db.eventTombstoneDao().all()) m[t.clientId] = t.updatedAt
@@ -257,7 +257,7 @@ class ArchiveReader(private val db: AppDatabase) {
     private suspend fun deleted(s: MergeState, clientId: String, updatedAt: Long): Boolean =
         (deletions(s)[clientId] ?: Long.MIN_VALUE) >= updatedAt
 
-    /** Guard is on the LIVE ROW, not tombstones: that would compare a deletion against itself. */
+    /** Guard is on the live row, not the tombstone table — that already stored this deletion. */
     private suspend fun applyTombstones(s: MergeState) {
         if (s.tombstones.isEmpty()) return
         tx {
@@ -370,7 +370,7 @@ class ArchiveReader(private val db: AppDatabase) {
         s.duplicates += rows.size - added
     }
 
-    /** Merges on clientId, drops locally-deleted rows; else a curve can land in no slot. */
+    /** Merges on clientId; drops phone-deleted rows, else replay orphans the exercise curve. */
     private suspend fun flushLoggedExercise(s: MergeState) {
         if (s.loggedExercise.isEmpty()) return
         val all = s.loggedExercise.toList()
@@ -383,7 +383,7 @@ class ArchiveReader(private val db: AppDatabase) {
         s.duplicates += rows.size - added
     }
 
-    /** A fix applies only when its bout was inserted by THIS restore; else it's a duplicate. */
+    /** Fix applies only if its bout was inserted this restore; else phone already has it. */
     private suspend fun flushExerciseFixes(s: MergeState) {
         flushExerciseSessions(s)
         if (s.exerciseFixes.isEmpty()) return
@@ -398,7 +398,7 @@ class ArchiveReader(private val db: AppDatabase) {
     }
 
     private suspend fun applyBounded(s: MergeState) = tx {
-        // Whole-schedule merge: no per-row identity, so per-injection could interleave schedules.
+        // Whole-schedule merge: rows lack per-row id, risking interleave. Always inactive.
         if (s.basal.isNotEmpty()) {
             val present = db.basalScheduleDao().scheduleIds().toHashSet()
             val fresh = s.basal.filter { present.add(it.scheduleId) }.map { it.copy(active = false) }
@@ -442,7 +442,7 @@ class ArchiveReader(private val db: AppDatabase) {
             s.duplicates += (s.savedMeals.size - mealsAdded) + (s.savedItems.size - items.size)
         }
 
-        // Exactly-one: a restore never takes authoritative from a local row; active has no rule.
+        // Exactly-one: restored row claims authoritative only if table's empty; active as-is.
         if (s.sources.isNotEmpty()) {
             val free = db.cgmSourceDao().authoritativeCount() == 0
             val rows = renumber(
@@ -452,7 +452,7 @@ class ArchiveReader(private val db: AppDatabase) {
             )
             val added = db.cgmSourceDao().insertIgnoreAll(rows).count { it != -1L }
             if (free) {
-                // Archive's own flag first, else most recent; never the first row (oldest-first).
+                // Archive's flag first, else most recent; never first row (oldest-first export).
                 val claimed = s.sources.firstOrNull { it.bool("ac") == true }?.str("sid")
                 val target = claimed?.takeIf { id -> rows.any { it.sourceId == id } }
                     ?: rows.maxByOrNull { it.lastSeenMs ?: Long.MIN_VALUE }?.sourceId
@@ -470,7 +470,7 @@ class ArchiveReader(private val db: AppDatabase) {
         }
 
         if (s.loras.isNotEmpty()) {
-            // Restored DETACHED, never re-attached; deduped on (model,weights), no IGNORE clash.
+            // Restored DETACHED, not re-attached. Deduped on (model,weights): rowid defeats IGNORE.
             val have = db.loraDao().all()
             val fresh = s.loras.filterNot { row ->
                 have.any { it.modelId == row.modelId && it.blob.contentEquals(row.blob) }
@@ -484,11 +484,11 @@ class ArchiveReader(private val db: AppDatabase) {
     private suspend fun <R> tx(body: suspend () -> R): R =
         db.useWriterConnection { transactor -> transactor.immediateTransaction { body() } }
 
-    /** Runs inside applyBounded's write transaction: no ordinal mints between read and insert. */
+    /** Inside applyBounded's write tx: no ordinal can be minted between the read and the insert. */
     private suspend fun renumber(rows: List<CgmSourceEntity>): List<CgmSourceEntity> =
         if (rows.isEmpty()) rows else renumbered(db.cgmSourceDao().all(), rows)
 
-    /** Local rows per key, spent as matched; no unique index, N vs M insert max(0,N-M). */
+    /** Local rows per key, spent as matched. name/brand aren't unique; insert max(0,N-M). */
     private class Multiset<K>(present: Collection<K>) {
         private val counts = HashMap<K, Int>()
 
@@ -518,7 +518,7 @@ class ArchiveReader(private val db: AppDatabase) {
         val loggedExercise = ArrayList<LoggedExerciseEntity>(Archive.BATCH)
         val exerciseFixes = ArrayList<Pair<String, ExerciseFixEntity>>(Archive.BATCH)
 
-        /** Archived bout clientId -> minted rowid; only bouts this restore actually inserted. */
+        /** Archived bout clientId -> minted rowid. Only bouts this restore inserted. */
         val exerciseSessionIds = HashMap<String, Long>()
 
         val basal = ArrayList<BasalScheduleEntity>()
@@ -557,7 +557,7 @@ class ArchiveReader(private val db: AppDatabase) {
             updatedAt = maxOf(updatedAt, cutAtMs),
         )
 
-        /** ordinal is per-phone, not verbatim; kept where free, stored rows never renumbered. */
+        /** ordinal: not copied verbatim — sensor's slot on this phone; kept where free. */
         fun renumbered(
             stored: List<CgmSourceEntity>,
             incoming: List<CgmSourceEntity>,
@@ -568,7 +568,7 @@ class ArchiveReader(private val db: AppDatabase) {
             return incoming.map { row ->
                 if (!known.add(row.sourceId)) return@map row
                 if (row.ordinal >= 0 && taken.add(row.ordinal)) return@map row
-                // Pre-column files land here as the sentinel; numbered so it isn't off-screen.
+                // Pre-column file rows land as sentinel; numbering keeps them from vanishing.
                 while (!taken.add(next)) next++
                 row.copy(ordinal = next)
             }

@@ -8,7 +8,7 @@ enum class ReadingProvenance {
     /** A gap-fill value (linear interpolation across a dropout); never clears an alarm. */
     INTERPOLATED,
 
-    /** Reconstructed, deliberate action (§1,`bg_reconstructed`); never alarm, measured, or stat. */
+    /** Model-reconstructed, patient-promoted (SPEC/invariants.md §1); never alarm/context/stat. */
     RECONSTRUCTED,
 }
 
@@ -17,14 +17,14 @@ enum class ReadingFlag {
     /** Passed the validity gate; eligible for inference and alarm evaluation. */
     NORMAL,
 
-    /** minFromStart<WARMUP_WINDOW_MIN; suppressed from inference/alarm, shown distinct on graph. */
+    /** In warm-up window (minFromStart < WARMUP_WINDOW_MIN); suppressed, shown distinctly. */
     WARMUP,
 
     /** Failed the validity gate (bad valid-bit / status / range); not persisted as a value. */
     INVALID,
 }
 
-/** 5-min sample (§3.1): tsMs=measuredAtMs snapped (%300_000==0); rxWallMs never sensor clock. */
+/** §3.1: tsMs is measuredAtMs snapped to grid. */
 data class CgmReading(
     val sourceId: CgmSourceId,
     val tsMs: Long,                    // ts % 300_000 == 0
@@ -35,12 +35,13 @@ data class CgmReading(
     val provenance: ReadingProvenance,
     val flag: ReadingFlag,
     val tzOffsetMin: Int,
-    val rxWallMs: Long,                // receipt; a gap-fill's or reconstruction's slot instant
+    // Pre-snap: receipt, or the record's own sample clock; a gap-fill's or reconstruction's slot.
+    val rxWallMs: Long,
     val rssi: Int?,
     // Unsnapped instant tsMs came from: receipt passively, the sensor's own clock when connected.
     val measuredAtMs: Long? = null,
 )
 
-/** Excludes `bgMgdl != null` deliberately; presence is asked separately where both are needed. */
+/** Excludes bgMgdl != null on purpose; presence is a separate question asked at call sites. */
 fun isRealMeasurement(provenance: ReadingProvenance, flag: ReadingFlag): Boolean =
     provenance == ReadingProvenance.MEASURED && flag == ReadingFlag.NORMAL

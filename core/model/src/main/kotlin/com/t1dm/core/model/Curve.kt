@@ -1,10 +1,10 @@
 package com.t1dm.core.model
 
-/** Carbs=Ra appearance g/5min; insulin=PK action, not IOB; exercise=positive disposal rate. */
+/** Carbs feed as Ra rate summing to total; insulin PK ACTION, not IOB; exercise carb-EQUIVALENT. */
 
 enum class CurveKind { CARB, INSULIN, EXERCISE }
 
-/** [values] sum to [total] (Ra g for carbs, PK units for insulin); [stepMs] is 5-min cadence. */
+/** values sum to total over the event: Ra grams for carbs, PK action-units for insulin. */
 data class CurveEvent(
     val startMs: Long,
     val stepMs: Long,

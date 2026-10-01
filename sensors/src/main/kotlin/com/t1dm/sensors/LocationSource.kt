@@ -8,7 +8,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 
-/** GPS_PROVIDER alone: no Play Services. Coarse grant ⇒ ~2km fuzz, past the 50m ceiling. */
+/** GPS_PROVIDER only (no Play Services); needs ACCESS_FINE_LOCATION, coarse exceeds 50m ceiling. */
 class LocationSource(
     private val locationManager: LocationManager,
     private val precise: () -> Boolean,
@@ -20,11 +20,11 @@ class LocationSource(
     /** Asked live, so a grant changed under a running bout is read as it stands. */
     fun isPrecise(): Boolean = runCatching { precise() }.getOrDefault(false)
 
-    /** Off is a live, reversible state, not a missing capability — separate from [isAvailable]. */
+    /** Off is a live, reversible state, not a missing capability, unlike [isAvailable]. */
     fun isEnabled(): Boolean =
         runCatching { locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) }.getOrDefault(false)
 
-    /** Dedicated [HandlerThread], never main. No permission throws, closing the flow empty. */
+    /** Callbacks arrive on a dedicated [HandlerThread]; missing permission closes the flow. */
     @SuppressLint("MissingPermission")
     fun fixes(minTimeMs: Long = MIN_TIME_MS, minDistanceM: Float = MIN_DISTANCE_M): Flow<ExerciseFix> =
         callbackFlow {

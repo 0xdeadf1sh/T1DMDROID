@@ -336,7 +336,7 @@ class UniffiNativeCore : NativeCore {
     override fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus =
         uniffiForecastDegeneracyCheck(desc.toUniffi(), forecast.toUniffi()).toModel()
 
-    /** Fail-open null: malformed time output must not crash a cycle; BG path unaffected. */
+    /** Fail-open `null`: a malformed time output must not crash a cycle; BG path unaffected. */
     override fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime? =
         try {
             uniffiDecodeTime(timeLogits, nBins, binHours).toModel()
@@ -416,7 +416,7 @@ class UniffiNativeCore : NativeCore {
             MetricsSuite.EMPTY
         }
 
-    /** No lattice at all, not partial — a partial one paints regions wrong instead of absent. */
+    /** No lattice at all rather than a partial one, which would paint regions wrong, not absent. */
     override fun clarkeZoneGrid(
         truthAxisMgdl: List<Double>,
         predAxisMgdl: List<Double>,
@@ -475,7 +475,7 @@ class UniffiNativeCore : NativeCore {
             null
         }
 
-    /** Like [applyQuantileConformal], batched; core refuses rather than partially correct. */
+    /** As [applyQuantileConformal], for the whole batch: core refuses rather than correct part. */
     override fun applyQuantileConformalBatch(
         fansMgdl: List<Double>,
         delta: List<Double>,
@@ -488,7 +488,7 @@ class UniffiNativeCore : NativeCore {
 
     override fun defaultCarTuning(): CarTuning = uniffiDefaultCarTuning().toModel()
 
-    /** NOT swallowed (unlike above): rejects degenerate terrain/tuning; a stub would hide bug. */
+    /** NOT swallowed: constructor rejects degenerate terrain/tuning; a stub would hide that bug. */
     override fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning, obstacles: List<Obstacle>): GameWorld =
         UniffiGameWorld(
             UniffiGameWorldObject.withObstacles(terrain.toUniffi(), tuning.toUniffi(), obstacles.map { it.toUniffi() }),
@@ -503,7 +503,7 @@ class UniffiNativeCore : NativeCore {
         )
 }
 
-/** Holds trackLength locally; a per-frame FFI round trip for a constant is what Rust avoids. */
+/** Holds `trackLength` locally: a per-frame FFI round trip is the cost the Rust solver avoids. */
 private class UniffiGameWorld(private val rust: UniffiGameWorldObject) : GameWorld {
     override val trackLength: Float = rust.trackLength()
 
@@ -868,7 +868,7 @@ private fun UniffiInsulinFamily.toModel(): InsulinFamily = when (this) {
     else -> throw IllegalStateException("Unexpected UniffiInsulinFamily: $this")
 }
 
-// Rust preset enum not projected: keys on stable [InsulinPresetSpec.label], not uniffi names.
+// `preset` enum not projected: keys on stable [InsulinPresetSpec.label], not variant names.
 private fun UniffiInsulinPresetSpec.toModel(): InsulinPresetSpec = InsulinPresetSpec(
     family = family.toModel(),
     label = label,

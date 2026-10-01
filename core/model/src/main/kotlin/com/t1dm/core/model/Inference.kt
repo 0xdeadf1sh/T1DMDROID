@@ -18,15 +18,15 @@ data class HeadSpec(
     val dModel: Int,
     val hidden: Int,
     val outDim: Int,
-    /** Rule from `hidden` to head's per-step input; an unimplemented name refuses at parse. */
+    /** Rule taking hidden to the head's per-step input; unimplemented name refused at parse. */
     val decoder: String,
     val tensors: List<HeadTensorSpec>,
 )
 
-/** Non-null iff .pte emits time_logits (graph cut at head_raw ⇒ null); [outputIndex] its slot. */
+/** Non-null iff .pte emits time_logits; head_raw cut leaves null. [outputIndex]=slot. */
 data class TimeHead(val outputIndex: Int, val nBins: Int, val binHours: Double)
 
-/** Checkpoint risk scale, not constant (wrong scale ⇒ wrong mg/dL); ≠ kovatchevF. */
+/** Trained-in scale, not a runtime constant: wrong scale decodes plausible, finite, wrong mg/dL. */
 data class KovatchevParams(
     val scale: Double,
     val power: Double,
@@ -52,7 +52,7 @@ data class ModelDescriptor(
     val seqLen: Int,
     /** `M` — the head's slot count, and the cap on the masked set a caller may ask for. */
     val maxMaskedPatches: Int,
-    /** Max spans and max span length the training sampler drew; past either, model's unseen. */
+    /** Most/longest span the sampler ever drew; past either, the model has never seen it. */
     val maskMaxSpans: Int,
     val maskSpanMax: Int,
     /** Trunk width — the length of one patch's hidden state. */
@@ -61,21 +61,21 @@ data class ModelDescriptor(
     val archVersion: String,
     /** The risk transform THIS checkpoint was trained under; the sole decode authority. */
     val kovatchev: KovatchevParams,
-    /** Unread: no branch, no conformal_delta export; §8.4 recalibration ignores it too. */
+    /** Read by nothing: no branch consults it; export never emits conformal_delta. */
     val conformalEnabled: Boolean,
     /** The co-trained time-probe descriptor, or null when the graph is cut at `head_raw`. */
     val time: TimeHead? = null,
-    /** Null when export shipped none; absence costs no forecast but forbids every adapter. */
+    /** Null when the export shipped none: costs no forecast, but forbids every adapter. */
     val head: HeadSpec? = null,
 )
 
 /** [descriptor] null iff the parse refused, and then [reason] is the crate's own refusal text. */
 data class DescriptorParse(val descriptor: ModelDescriptor?, val reason: String?)
 
-/** CONTEXT-relative: patch 0 is the oldest context patch, whatever left-padding precedes it. */
+/** CONTEXT-relative: patch 0 is the oldest real context patch, ignoring left-padding. */
 data class MaskSpan(val startPatch: Int, val length: Int)
 
-/** [patches] T·PATCH_SIZE·N_FEAT step-major; [slotSel] M·T one-hot; only [nMasked] slots real. */
+/** [patches]=T·PATCH·N_FEAT, [attnMask]=T·T, [slotSel]=M·T; only first [nMasked] slots real. */
 data class GraphInput(
     val nCtx: Int,
     val t: Int,
@@ -101,13 +101,13 @@ data class GraphInput(
         (((nCtx * 31 + t) * 31 + nMasked) * 31 + patches.contentHashCode()) * 31 + slotPatch.hashCode()
 }
 
-/** Step-major, i=p·S+s: risk [medianRisk]/[qTauRisk], mg/dL [medianBg]/[bandsMgdl]. */
+/** Step-major P·S: risk in [medianRisk]/[qTauRisk], f_inv mg/dL in [medianBg]/[bandsMgdl]. */
 data class Forecast(
     val medianRisk: List<Double>,
     val qTauRisk: List<Double>,
     val medianBg: List<Double>,
     val bandsMgdl: List<Double>,
-    /** Absolute patch each slot came from; locates spans on chart, tells infill from forecast. */
+    /** Absolute patch each slot came from: locates a chart span, tells infill from forecast. */
     val slotPatch: List<Int> = emptyList(),
 )
 
@@ -127,7 +127,7 @@ data class LoraConfig(
 /** A freshly initialised adapter is exactly the identity. */
 data class LoraWeights(
     val config: LoraConfig,
-    /** Digest of the fitted head file; geometry alone can't identify a head, so this binds it. */
+    /** Digest of the head fitted on: geometry can't ID a head, so this binds adapter to model. */
     val headSha256: String,
     val dModel: Int,
     val hidden: Int,
@@ -141,7 +141,7 @@ data class LoraSample(
     val anchors: List<Double>,
     val targetBg: List<Double>,
     val nSlots: Int,
-    /** Same window, probe dose injected in masked span; empty if unpaired. */
+    /** Same window with a probe dose injected; empty if unpaired, else dose response nulls out. */
     val hiddenPert: List<Double> = emptyList(),
     /** Units injected into [hiddenPert]; the guard divides by it. */
     val probeDoseU: Double = 0.0,
@@ -166,11 +166,11 @@ data class LoraTrainOpts(
     val weightDecay: Double,
     val seed: Long,
     val objective: LoraObjective,
-    /** Pins adapted dose response to frozen model's; 0.0=off; multiple of frozen mean loss. */
+    /** Pin to frozen dose response, 0.0=off; a multiple of frozen mean loss, not a raw coeff. */
     val distillWeight: Double = 1.0,
 )
 
-/** DELIBERATELY UNDEFAULTED (bar lives in crate, no second copy); loraGuardOptsFit reads crate. */
+/** DELIBERATELY UNDEFAULTED: the bar lives in the crate; NativeCore.loraGuardOptsFit() reads it. */
 data class LoraGuardOpts(
     val maxWindows: Int,
     val minWindows: Int,
@@ -180,7 +180,7 @@ data class LoraGuardOpts(
     val minSignAgreement: Double,
 )
 
-/** [ABSENT]: storage-only; import/restore adapters lack a verdict and silence isn't a pass. */
+/** [ABSENT]=storage-only, no guard run produces it; silence isn't a pass, so refused at attach. */
 enum class LoraGuardVerdict { PASS, BLOCKED, INCONCLUSIVE, ABSENT }
 
 data class LoraGuardReport(

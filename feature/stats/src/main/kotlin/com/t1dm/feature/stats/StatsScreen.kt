@@ -198,7 +198,7 @@ fun StatsScreen(
                 }
             }
 
-            // In phase with diurnal card: keys on local day, per-sample tz_offset; see stats.rs.
+            // Keys on local day per sample's own tz_offset. See advanced_stats in stats.rs.
             if (local.heatmap.isNotEmpty() && cuts.isUsable) {
                 // Not hoisted: the core computes both in one pass, so this is a repaint.
                 var heatStat by remember { mutableStateOf(HeatStat.Median) }
@@ -299,7 +299,7 @@ private fun UnitSwitcher(current: UnitSpace, onSelect: (UnitSpace) -> Unit) {
     }
 }
 
-// Dimmed lines derive from LocalContentColor.current, never onSurface panelCardColors rejects.
+// Dimmed lines use LocalContentColor.current, not onSurface: only it's proven AA vs card.
 
 @Composable
 private fun SectionCard(title: String, content: @Composable () -> Unit) {

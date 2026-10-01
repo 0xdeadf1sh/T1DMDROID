@@ -16,7 +16,7 @@ import java.time.format.DateTimeFormatter
 
 class BackupRun(val file: StoredBackup, val counts: ArchiveCounts, val pruned: Int)
 
-/** Not the restore path: that stays in AppContainer, which owns the actuator policies. */
+/** Not the restore path: AppContainer owns the alarm/actuator policies a restore re-hydrates. */
 class BackupManager(
     private val appContext: Context,
     private val repository: T1dmRepository,
@@ -26,7 +26,7 @@ class BackupManager(
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
 
-    /** Null when no folder is granted; rebuilt per call since the grant can be revoked. */
+    /** Null when no folder granted; rebuilt per call, a grant can be revoked between runs. */
     suspend fun destination(): BackupDestination? {
         val uri = settings.currentBackupFolder() ?: return null
         // The URI-derived label is the fallback for a grant made before the label was stored.
@@ -44,7 +44,7 @@ class BackupManager(
                 written = repository.writeArchive(out, configJson, appVersion, now)
             }
             val counts = written
-            // Pruning happens only after a successful write, so nothing is spent for nothing.
+            // Only after a successful write: pruning first spends the oldest backup for nothing.
             val pruned = prune(dest)
             settings.recordBackupOk(now, file.sizeBytes, counts.total)
             settings.clearBackupError()
@@ -55,7 +55,7 @@ class BackupManager(
         }
     }
 
-    /** Failure is logged and swallowed: failing here would trigger a second archive write. */
+    /** Failure is logged, swallowed: backup succeeded, failing the run retries and duplicates. */
     private suspend fun prune(dest: BackupDestination): Int {
         val keep = settings.currentBackupKeep()
         return runCatching {

@@ -13,7 +13,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import java.util.concurrent.locks.LockSupport
 
-/** Blocking AudioTrack.write is the clock: no sleep/timer; game thread writes volatile only. */
+/** AudioTrack.write is the clock: no sleep/timer on this path; game thread writes volatile only. */
 class GameAudio private constructor(
     private val audioManager: AudioManager,
     private val track: AudioTrack,
@@ -62,7 +62,7 @@ class GameAudio private constructor(
         LockSupport.unpark(thread)
     }
 
-    /** Alarm interlock's audio half; fade is the synth's master ramp, silence lands ~30ms later. */
+    /** Alarm interlock's audio half: a ringtone must not arrive ducked under a game engine. */
     fun release() {
         if (!active) return
         active = false
@@ -70,7 +70,7 @@ class GameAudio private constructor(
         runCatching { audioManager.abandonAudioFocusRequest(focusRequest) }
     }
 
-    /** Generator thread releases itself one burst later, so nothing frees under a native write. */
+    /** Generator thread releases itself, a burst later, nothing frees under a write in flight. */
     fun close() {
         if (!running) return
         running = false
@@ -131,7 +131,7 @@ class GameAudio private constructor(
 
         private const val DRAIN_BURSTS = 12
 
-        /** A poll, not a pure park: a lost wake-up costs a fifth-second of silence, not engine. */
+        /** A poll, not a park: a lost wake-up costs a fifth-second of silence, not the engine. */
         private const val PARK_POLL_NS = 200_000_000L
 
         private fun gameAttributes(): AudioAttributes =
@@ -160,7 +160,7 @@ class GameAudio private constructor(
                 .setAudioAttributes(gameAttributes())
                 .setAudioFormat(
                     AudioFormat.Builder()
-                        // The mixer's own format: nothing converts per sample, overshoot clips.
+                        // The mixer's own format: nothing converts per sample, an overshoot clips.
                         .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
                         .setSampleRate(rate)
                         .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)

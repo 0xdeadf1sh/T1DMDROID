@@ -70,7 +70,7 @@ fun ModelDetailScreen(
     accuracy: ModelMetrics?,
     accuracyLoading: Boolean,
     onRecomputeAccuracy: () -> Unit,
-    /** Null while lattices are still classified off-main; empty when the core had none. */
+    /** Null while lattices still classified off-main; empty when the core had none. */
     lattices: ErrorGridLattices?,
     /** Empty on a stub core, which leaves the axes unlabelled. */
     trendBinEdges: List<Double> = emptyList(),
@@ -83,7 +83,7 @@ fun ModelDetailScreen(
     /** Null on a fresh open, so a reopen re-announces nothing already read. */
     bandCalibrationOutcome: BandCalibrationOutcome? = null,
     onFitBandCalibration: () -> Unit = {},
-    /** Manual: a swap-crossing correction measures the gap; only the user knows it swapped. */
+    /** Manual: a correction fitted across a sensor swap measures the gap between two sensors. */
     onDropBandCalibration: () -> Unit = {},
     /** Null until one is run for this model in this process. */
     backtest: ModelBacktest? = null,
@@ -94,10 +94,10 @@ fun ModelDetailScreen(
     val telemetry = state.telemetryOf(modelId)
     val running = state.runningOf(modelId)
     val haptics = rememberT1dmHaptics()
-    // Hoisted above LazyColumn: section is a lazy item, remembered state dies when scrolled out.
+    // Hoisted above LazyColumn: state in a lazy item dies on scroll-out, closing the dialog.
     var showDropCalibration by remember { mutableStateOf(false) }
 
-    // Hoisted for the same reason; saveable across rotation, fresh open starts at default.
+    // Hoisted for the same reason; saveable so rotation keeps it, keyed on model, stored nowhere.
     var gridHorizonMin by rememberSaveable(modelId) { mutableStateOf(CLARKE_GRID_DEFAULT_MIN) }
 
     val backtestDone = backtest as? ModelBacktest.Done
@@ -165,7 +165,7 @@ fun ModelDetailScreen(
             when {
                 scored.isNotEmpty() -> {
                     BandTable(scored)
-                    // §6.2: a band figure can't stand apart from coverage/width; table has both.
+                    // §6.2: band figure may not stand apart from coverage/width; table has both.
                     ErrorByHorizonFigure(scored)
                 }
                 shownLoading -> Note("Computing…")
@@ -187,7 +187,7 @@ fun ModelDetailScreen(
         }
 
         if (scored.isNotEmpty()) {
-            // §6.2 — realized coverage against what both bands claim.
+            // §6.2: realized coverage against what both bands claim.
             section("Calibration") { CalibrationFigure(scored) }
             section("Clarke zones — band τ.25–.75") { ClarkeFigure(scored) }
             // Five shares individually, never an A+B: the paper's panel declines to report one.
@@ -195,13 +195,13 @@ fun ModelDetailScreen(
                 DtsFigure(scored)
                 DtsTable(scored)
             }
-            // Per horizon: trend agreement decays with horizon, and pooling would hide that.
+            // Per horizon: trend agreement decays, pooling would hide that.
             section("Trend risk categories — median line") {
                 Note("1 no risk · 2 under · 3 over · 4/5 extreme")
                 TrendCategoryFigure(scored)
                 TrendTable(scored)
             }
-            // §6.2 — the same block on the median line, kept a table apart from the band figures.
+            // §6.2: the same block on the median line, kept a table apart from the band figures.
             section("Median line") { MedianTable(scored) }
             section("Outer band τ.05–.95 · persistence") { OuterTable(scored) }
             section("Excursions vs alarm bands") {
@@ -210,11 +210,11 @@ fun ModelDetailScreen(
             }
         }
 
-        // Outside scored gate: a declined figure must say why; horizons are the suite's own.
+        // Outside the scored gate deliberately: a figure that declines to draw must say why.
         val pick = clarkeGridPick(suite?.horizons.orEmpty(), gridHorizonMin)
         val gridRefusal = pick.refusal(shown?.minSamples ?: 0)
 
-        // One horizon behind all three: a 30-min Clarke share never reads against 120-min DTS.
+        // One horizon for all three: a 30-min Clarke share never reads against a 120-min DTS one.
         gridSection(
             "Clarke error grid — median line",
             "Band projection clips to the truth; its grid reads as coverage",
@@ -228,7 +228,7 @@ fun ModelDetailScreen(
             }
         }
 
-        // Beside Clarke: DTS zone A isn't Clarke's flat ±20%, reading high scores worse.
+        // Beside Clarke, not replacing: DTS zone A isn't Clarke's flat ±20%, edges are dts_risk's.
         gridSection(
             "DTS error grid — median line",
             "Klonoff 2024 · reading high scores worse than reading low",
@@ -242,7 +242,7 @@ fun ModelDetailScreen(
             }
         }
 
-        // §6.2: band projection equals truth where covered, so a rate off it sits on the diagonal.
+        // §6.2: band projection equals truth wherever covered; a rate off it sits on the diagonal.
         gridSection(
             "Trend accuracy — median line",
             "Rate over 15 min vs realized",
@@ -251,7 +251,7 @@ fun ModelDetailScreen(
             if (h.trend.isEmpty) Note("No scored pairs") else TrendMatrixFigure(h.trend, trendBinLabels(trendBinEdges))
         }
 
-        // §6.3 — whole window; the costly pass, so only on request.
+        // §6.3: whole window, the costly pass, so only on request.
         section("CG-EGA") {
             // A backtest walks it in the same pass; the live one only on request.
             val shownCgEga = if (showingBacktest) suite?.cgega else cgEga
@@ -274,7 +274,7 @@ fun ModelDetailScreen(
             if (bandCalibration == null) {
                 Note("Not fitted — raw bands")
             } else {
-                // Apply reads the same predicate; a lapsed correction's rows record what it bought.
+                // The apply reads the same predicate; a lapsed correction's rows are a past record.
                 if (bandCalibration.expiredAt(System.currentTimeMillis())) {
                     Note("Expired after ${bandCalibration.windowDays} d — raw bands")
                 }
@@ -290,7 +290,7 @@ fun ModelDetailScreen(
                 )
                 KeyVal("max shift", "${f1(bandCalibration.maxAbsDeltaMgdl)} mg/dL")
             }
-            // BandFitRefusal arms first: neither reached the walk, blames nobody's data.
+            // The two BandFitRefusal arms come first: neither reached the window walk.
             bandCalibrationOutcome?.let { o ->
                 val fit = o.fit
                 when {
@@ -350,7 +350,7 @@ private fun col(header: String, weight: Float) =
 
 private const val WIDE = 980
 
-/** §6.2: cov50/w50 share the row with band errors, so a swallowed band can't read flawless. */
+/** §6.2: cov50/w50 share the row, keeping a widened band from reading flawless in the errors. */
 @Composable
 private fun BandTable(hs: List<HorizonMetrics>) {
     com.t1dm.core.design.DataTable(
@@ -419,7 +419,7 @@ private fun ExcursionTable(hs: List<HorizonMetrics>) {
     )
 }
 
-/** No A+B: source panel declined one; cov50/w50 share row since clip(truth) scores zone A. */
+/** No A+B: the panel that published the grid declined to report one; cov50/w50 share the row. */
 @Composable
 private fun DtsTable(hs: List<HorizonMetrics>) {
     com.t1dm.core.design.DataTable(
@@ -440,7 +440,7 @@ private fun DtsTable(hs: List<HorizonMetrics>) {
     )
 }
 
-/** n is the matrix's own count, below the horizon's where the 15-min lookback didn't reach. */
+/** n is the matrix's own count, below the horizon's wherever the 15-min lookback did not reach. */
 @Composable
 private fun TrendTable(hs: List<HorizonMetrics>) {
     com.t1dm.core.design.DataTable(
@@ -493,10 +493,10 @@ private fun pct(v: Double): String = if (!v.isFinite()) "—" else "%.1f".format
 
 private fun skill(b: PointBlock): String = f2(b.skillPoint)
 
-/** Minutes; 60 separates model error from persistence, keeps scatter about the forecast. */
+/** Minutes; 60 separates model error from persistence but keeps the scatter about the forecast. */
 internal const val CLARKE_GRID_DEFAULT_MIN = 60
 
-/** options: every scored horizon ascending; selected is the record, caption/n/scatter agree. */
+/** options: every scored horizon, ascending; selected is the record itself, not an index. */
 internal data class ClarkeGridPick(
     val options: List<Int>,
     val selected: HorizonMetrics?,
@@ -506,7 +506,7 @@ internal data class ClarkeGridPick(
         selected?.takeUnless { it.sufficient }?.let { "${it.horizonMin} min: n=${it.n}, need $minSamples" }
 }
 
-/** wantedMin is minutes not an index; missing horizons resolve to nearest, ties go shorter. */
+/** wantedMin is minutes, not an index, so it survives a recompute that adds/drops a horizon. */
 internal fun clarkeGridPick(horizons: List<HorizonMetrics>, wantedMin: Int): ClarkeGridPick {
     val ordered = horizons.sortedBy { it.horizonMin }
     val chosen = ordered.firstOrNull { it.horizonMin == wantedMin }
@@ -613,7 +613,7 @@ private fun emptyWhy(m: ModelMetrics?): String {
     }
 }
 
-/** LazyListScope extension, not composable: body composes later inside the lazy item. */
+/** A LazyListScope extension, not composable: body composes later, inside the lazy item. */
 private inline fun androidx.compose.foundation.lazy.LazyListScope.gridSection(
     title: String,
     note: String,

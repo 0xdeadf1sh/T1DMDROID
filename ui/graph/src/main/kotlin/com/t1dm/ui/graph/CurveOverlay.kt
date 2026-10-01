@@ -8,7 +8,7 @@ import com.t1dm.core.model.ModelPrediction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Bucket i spans [gridStart+i*step,+step); grams/units incommensurable, own-peak scaled. */
+/** Bucket i spans [start+i*step, +step); each channel scales to its own peak, units differ. */
 class CurveOverlayFrame internal constructor(
     val gridStartMs: Long,
     val stepMs: Long,
@@ -16,10 +16,10 @@ class CurveOverlayFrame internal constructor(
     val insulin: FloatArray,    // units-per-step action, bolus + basal COMBINED
     val carbMax: Float,
     val insulinMax: Float,
-    // Rendering only: model consumes COMBINED insulin; basal ~1/300 of bolus peak, this scale.
+    // Rendering only: model uses COMBINED insulin. 24-42h basal ~1/300 of bolus peak, vanishes.
     val basal: FloatArray = FloatArray(0),
     val basalMax: Float = 0f,
-    /** Grams of carb EQUIVALENT per step; read from wide sample, what model was actually fed. */
+    /** Grams of carb EQUIVALENT disposed per step; read from the wide sample (bouts+replays). */
     val exercise: FloatArray = FloatArray(0),
     val exerciseMax: Float = 0f,
 ) {
@@ -33,7 +33,7 @@ class CurveOverlayFrame internal constructor(
     /** Absolute epoch-ms at the LEFT edge of bucket [i]. */
     fun tsAt(i: Int): Long = gridStartMs + i.toLong() * stepMs
 
-    /** Bucket containing ms, or -1 outside grid; floorDiv not /, panel scrubs left of grid. */
+    /** Bucket containing ms, or -1 outside; floorDiv not /, truncation misplaces pre-grid time. */
     fun indexAt(ms: Long): Int {
         if (size == 0) return -1
         val i = Math.floorDiv(ms - gridStartMs, stepMs).toInt()
@@ -66,7 +66,7 @@ class CurveOverlayFrame internal constructor(
     }
 }
 
-/** Per-step series, index-aligned to one grid window; carb/insulin rebuilt, exercise read raw. */
+/** Grid-aligned per-step series; exercise is READ from sample; not a value type, never compared. */
 class OverlayInput(
     val carb: DoubleArray,
     val insulin: DoubleArray,
@@ -120,7 +120,7 @@ const val INSULIN_EPS: Float = 1e-6f
 /** How far ahead the no-future-insulin advisory looks when no forecast bounds it. */
 const val NO_INSULIN_HORIZON_MS: Long = 3L * 3_600_000L
 
-/** No insulin to horizon? Keys on size, NOT isEmpty: flat-zero buckets are the case to warn. */
+/** Keys on size, NOT isEmpty: a channel with buckets but flat zero is the case to warn about. */
 fun noFutureInsulinOverForecast(
     frame: CurveOverlayFrame,
     predictions: List<ModelPrediction>,
@@ -147,7 +147,7 @@ data class CurveOverlayToggles(
     val any: Boolean get() = carbs || insulin || exercise
 }
 
-/** Fill and roof are one command stream; only fill's runs close. Host test reads geometry. */
+/** Fill and roof are one command stream; only fill's runs close. Test seam for geometry. */
 internal interface CurvePathSink {
     fun moveTo(x: Float, y: Float)
     fun lineTo(x: Float, y: Float)
@@ -165,7 +165,7 @@ internal class CurveChannelPaths : CurvePathSink {
     override fun endRun() { fill.close() }
 }
 
-/** values[i] plotted at its RIGHT edge; run opens from floor at event instant; lo,hi is a cull. */
+/** values[i] plots at [tsAt(i), +step)'s right edge; a lo-cull reopens the run at values[lo-1]. */
 internal fun emitCurveChannel(
     values: FloatArray,
     peak: Float,
@@ -200,7 +200,7 @@ internal fun emitCurveChannel(
         if (!open) {
             val xLeft = absToPx.of(tsAt(i)) // the event instant
             sink.moveTo(xLeft, floorY)
-            // Entering mid-run: rise to previous bucket's vertex, the segment a full scan draws.
+            // Entering mid-run: rise to the previous bucket's vertex, as a full scan would draw.
             if (i == first && i > 0 && values[i - 1] > 0f) sink.lineTo(xLeft, yOf(values[i - 1]))
             sink.lineTo(xRight, y)
             open = true
@@ -214,7 +214,7 @@ internal fun emitCurveChannel(
     }
 }
 
-/** absToPx maps epoch-ms to x; only strictly-positive buckets fill; paths is caller's scratch. */
+/** paths is caller-owned scratch reused per channel per frame, not fresh allocations each time. */
 internal fun DrawScope.drawCurveOverlay(
     frame: CurveOverlayFrame,
     toggles: CurveOverlayToggles,

@@ -7,7 +7,7 @@ import com.t1dm.core.model.CgmReading
 import com.t1dm.core.model.ReadingFlag
 import com.t1dm.core.model.ReadingProvenance
 
-/** §3.6-A: only a MEASURED, warmup-cleared reading may raise/clear an alarm; gapfill can't. */
+/** §3.6-A: only MEASURED, warm-up-cleared readings raise or clear an alarm; gap-fill never does. */
 internal fun CgmReading.isEligibleMeasured(): Boolean =
     isRealMeasurement(provenance, flag) && bgMgdl != null
 

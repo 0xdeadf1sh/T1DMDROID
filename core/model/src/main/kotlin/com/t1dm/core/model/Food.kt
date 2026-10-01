@@ -1,6 +1,6 @@
 package com.t1dm.core.model
 
-/** Per-100g facts; [giOrNull] 0..100, null=unknown→medium; [customCurve] per-5-min sums to 1.0 */
+/** Per-100g facts; giOrNull 0..100 falls back to medium; customCurve buckets sum to 1.0. */
 data class Food(
     val id: Long,
     val name: String,

@@ -38,7 +38,7 @@ class ExerciseBucketMergeTest {
 
     @Test
     fun `a stored value smaller than this bout's claim is not credited backwards`() {
-        // The slot can re-materialise under a running bout; subtracting past zero would undo that.
+        // Slot can be re-materialised under a running bout; subtracting past zero would undo that.
         assertEquals(1.0, merged(stored = 0.2, prior = 3.0, grams = 1.0), EPS)
         assertEquals(0.0, merged(stored = null, prior = 3.0, grams = 0.0), EPS)
     }

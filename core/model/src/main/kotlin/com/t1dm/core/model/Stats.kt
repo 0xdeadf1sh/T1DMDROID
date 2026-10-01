@@ -1,9 +1,9 @@
 package com.t1dm.core.model
 
-/** Non-finite/<=0 `bgMgdl` excludes BG-derived metrics; treatment/activity channels still count. */
+/** bgMgdl <= 0 or non-finite excluded from BG metrics; treatment/activity totals still count. */
 data class StatSample(
     val tsMs: Long,
-    /** MINUTES, east-positive, at [tsMs] (§2); never shifts [tsMs], which is UTC. */
+    /** MINUTES, east-positive, at tsMs (SPEC/invariants.md §2); never shifts tsMs, which is UTC. */
     val tzOffsetMin: Int,
     val bgMgdl: Double,
     val carbsG: Double?,
@@ -45,7 +45,7 @@ data class ClinicalCuts(val veryLowMgdl: Double, val veryHighMgdl: Double) {
     }
 }
 
-/** [dow] 0=Mon..6=Sun, [hour] 0..23, LOCAL; only POPULATED cells exist, absent stays absent. */
+/** dow 0=Mon..6=Sun, hour 0..23, LOCAL per sample's tzOffsetMin; only POPULATED cells exist. */
 data class HeatCell(val dow: Int, val hour: Int, val n: Int, val meanBg: Double, val medianBg: Double) {
     fun value(stat: HeatStat): Double = when (stat) {
         HeatStat.Median -> medianBg
@@ -128,7 +128,7 @@ data class AdvancedStats(
     val histogram: List<HistBin>,
     val hypoEpisodes: EpisodeSummary,
     val hyperEpisodes: EpisodeSummary,
-    /** LOCAL time, populated only, ascending by `(dow, hour)`; [agp]/[tod] share the clock. */
+    /** LOCAL time, populated cells only, ascending by (dow, hour); agp and tod share the clock. */
     val heatmap: List<HeatCell>,
 ) {
     val isEmpty: Boolean get() = nSamples == 0

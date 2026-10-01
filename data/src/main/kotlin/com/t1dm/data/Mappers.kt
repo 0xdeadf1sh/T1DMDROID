@@ -41,7 +41,7 @@ internal fun CgmReading.toEntity(): CgmReadingEntity = CgmReadingEntity(
     measuredAtMs = measuredAtMs,
 )
 
-/** No `provenance`: caller keeps gap-fills out, all MEASURED; no `tsMs`, snapToGrid's job. */
+/** No provenance: gap-fills excluded, every row MEASURED. No tsMs: snapToGrid's own answer. */
 internal fun CgmReading.toRawEntity(): CgmRawSampleEntity = CgmRawSampleEntity(
     sourceId = sourceId.value,
     rxWallMs = rxWallMs,

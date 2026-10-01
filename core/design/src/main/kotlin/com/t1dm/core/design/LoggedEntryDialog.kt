@@ -26,7 +26,7 @@ import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
-/** One vocabulary for every restating surface; missing reads [NOT_RECORDED]; free-text note. */
+/** Missing value reads [NOT_RECORDED], never default; `detail` is labelled a note, not insulin. */
 
 private const val NOT_RECORDED = "not recorded"
 
@@ -42,7 +42,7 @@ fun logAmountLabel(entry: LoggedEntry): String = when (entry.kind) {
         }
         "${fmtNum(entry.amount)} U$shape"
     }
-    // Minutes not grams: duration is the patient's choice, §5 scales it; kind rides as headline.
+    // Minutes, not the grams they resolve to via §5's disposal scale; kind rides here for replay.
     CurveKind.EXERCISE -> "${fmtNum(entry.amount)} min" + entry.detail?.let { " ${it.lowercase()}" }.orEmpty()
 }
 
@@ -52,7 +52,7 @@ fun exerciseKindLabel(kind: ExerciseKind): String = when (kind) {
     ExerciseKind.OTHER -> "Other"
 }
 
-/** Unknown names read as [ExerciseKind.OTHER]: raw TEXT so a later-build bout still labels. */
+/** Unknown names read [ExerciseKind.OTHER]; `kind` is raw TEXT, a later bout still labels. */
 fun exerciseKindLabel(kind: String): String =
     exerciseKindLabel(runCatching { ExerciseKind.valueOf(kind) }.getOrNull() ?: ExerciseKind.OTHER)
 
@@ -74,7 +74,7 @@ fun logDetailLabel(entry: LoggedEntry): String? = when (entry.kind) {
 
 private fun logNote(entry: LoggedEntry): String? = entry.detail?.takeIf { it.isNotBlank() }
 
-/** Amount excluded — it's the headline; index stated even absent; absent note is just left out. */
+/** Amount excluded, it's the block's headline; meal index shows even absent, note just omitted. */
 internal fun logEntryFields(entry: LoggedEntry): List<Pair<String, String>> = buildList {
     if (entry.kind == CurveKind.CARB) {
         add("Glycemic index" to (entry.gi?.let { fmtGi(it) } ?: NOT_RECORDED))
@@ -88,7 +88,7 @@ internal fun logEntryFields(entry: LoggedEntry): List<Pair<String, String>> = bu
 internal fun logEntriesTitle(entries: List<LoggedEntry>): String =
     if (entries.size == 1) logAmountLabel(entries.single()) else "${entries.size} logs"
 
-/** Null [onEdit]/[onDelete] omits affordance; entries go stale; lazy, M3 text has no scroll. */
+/** Null [onEdit]/[onDelete] omits it; [entries] stale from tap; lazy as M3 `text` won't scroll. */
 @Composable
 fun LoggedEntryDialog(
     entries: List<LoggedEntry>,

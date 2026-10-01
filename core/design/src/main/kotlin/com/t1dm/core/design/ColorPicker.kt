@@ -34,9 +34,9 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-/** HSV picker; hsvToArgb/argbToHsv Android-free, unit-tested. Hue undefined at zero sat. */
+/** HSV colour picker: hue undefined at zero saturation, and 360deg folds onto 0deg. */
 
-/** hue in degrees, folded into [0,360); sat/value/alpha clamped to [0,1]. */
+/** [hue] in degrees, folded into [0, 360); [sat]/[value]/[alpha] clamped to [0, 1]. */
 fun hsvToArgb(hue: Float, sat: Float, value: Float, alpha: Float = 1f): Int {
     val h = ((hue % 360f) + 360f) % 360f
     val s = sat.coerceIn(0f, 1f)
@@ -59,7 +59,7 @@ fun hsvToArgb(hue: Float, sat: Float, value: Float, alpha: Float = 1f): Int {
     return (a shl 24) or (chan(r1) shl 16) or (chan(g1) shl 8) or chan(b1)
 }
 
-/** [hue,sat,value]; alpha NOT returned (see argbAlpha). Hue undefined for grey reports 0. */
+/** [hue°, saturation, value]. Alpha NOT returned (see [argbAlpha]); grey hue is 0, never NaN. */
 fun argbToHsv(argb: Int): FloatArray {
     val r = ((argb shr 16) and 0xFF) / 255f
     val g = ((argb shr 8) and 0xFF) / 255f
@@ -84,7 +84,7 @@ fun argbWithAlpha(argb: Int, alpha: Float): Int {
     return (argb and 0x00FFFFFF) or (a shl 24)
 }
 
-/** Fully controlled; hue derives from colorArgb each frame, hueOverride pins it through grey. */
+/** Fully controlled, holds no colour. [hueOverride] pins hue lost when sat/value hit zero. */
 @Composable
 fun ColorPicker(
     colorArgb: Int,
@@ -117,7 +117,7 @@ fun ColorPicker(
             thumb(Offset(sat * size.width, (1f - value) * size.height))
         }
 
-        // Seven stops: sRGB hue ramp is piecewise linear in 60° sectors, last closes the wrap.
+        // Seven stops: sRGB hue ramp is piecewise linear in 60° sectors; last closes wrap to red.
         RampSlider(
             brush = Brush.horizontalGradient(List(7) { Color(hsvToArgb(it * 60f, 1f, 1f)) }),
             fraction = hue / 360f,
@@ -209,7 +209,7 @@ private fun DrawScope.checkerboard(cell: Float = 7f) {
     }
 }
 
-/** Every pointer position from touch-down, NO slop gate; rememberUpdatedState avoids restarts. */
+/** Every pointer pos from touch-down, no slop; via [rememberUpdatedState] so no dropped gesture. */
 @Composable
 private fun Modifier.trackPointer(onPos: (Offset, Size) -> Unit): Modifier {
     val current by rememberUpdatedState(onPos)
@@ -229,7 +229,7 @@ private fun Modifier.trackPointer(onPos: (Offset, Size) -> Unit): Modifier {
     }
 }
 
-/** From the ACTIVE theme: glucose-band semantics first, then Material accents; alpha stripped. */
+/** From the ACTIVE theme: glucose-band semantics first, then Material accents. Alpha stripped. */
 @Composable
 fun themeSwatches(): List<Int> {
     val p = LocalT1dmSemantics.current

@@ -8,7 +8,7 @@ pluginManagement {
 }
 
 plugins {
-    // Auto-provisions the JDK 21 toolchain when org.gradle.java.home is not already 21.
+    // Auto-provisions the JDK 21 toolchain.
     id("org.gradle.toolchains.foojay-resolver-convention") version "0.9.0"
 }
 
@@ -32,6 +32,7 @@ include(
     ":feature:insulin",
     ":feature:exercise",
     ":feature:security",
+    ":feature:cgm",
     ":feature:settings",
     ":feature:logs",
     ":feature:game",

@@ -18,19 +18,19 @@ import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import java.util.Base64
 
-/** Legacy envelope: [parse] restores old files, [wrap] builds fixtures; `config` ⇒ envelope. */
+/** Legacy envelope, nothing writes it now; a config OBJECT root marks it (else importJson). */
 object ConfigBackup {
 
     const val FORMAT = "t1dm.backup"
     const val VERSION = 1
 
-    /** Export size guard (nothing else prunes); past either cap, OLDEST drop, count reported. */
+    /** Export size guard: past either cap, OLDEST strokes drop and the count is reported. */
     const val MAX_PAINTINGS = 4_000
     const val MAX_POINTS = 250_000
 
     class Document(val json: String, val note: String?)
 
-    /** [configJson] null only for a no-settings file; caller skips [SettingsStore.importJson]. */
+    /** [configJson] null only for a no-settings backup, skip importJson instead of refusing. */
     class Parsed(
         val configJson: String?,
         val paintings: List<PaintStroke>,
@@ -42,7 +42,7 @@ object ConfigBackup {
             .getOrElse { throw IllegalArgumentException("Could not render the settings for export.") }
         val kept = capped(paintings)
         val omitted = paintings.size - kept.size
-        // `importJson` refuses empty `kv`; omitting `config` makes drawings-only reachable.
+        // importJson refuses empty kv; omitting config makes drawings-only [Parsed] reachable.
         val hasSettings = (config["kv"] as? JsonObject)?.isNotEmpty() == true
         val doc = buildJsonObject {
             put("format", FORMAT)
@@ -57,12 +57,12 @@ object ConfigBackup {
         return Document(json.encodeToString(JsonObject.serializer(), doc), note)
     }
 
-    /** A malformed painting is skipped and counted; one bad blob must not cost the settings. */
+    /** A malformed painting is skipped/counted; one unreadable blob won't cost the settings. */
     fun parse(text: String): Parsed {
         val root = runCatching { json.parseToJsonElement(text).jsonObject }
             .getOrElse { throw IllegalArgumentException("Not a valid backup file (could not parse JSON).") }
 
-        // Structure not version: `config` OBJECT ⇒ envelope, else raw; importJson refuses foreign.
+        // config OBJECT marks the envelope; else raw text — importJson refuses foreign, not no-op.
         val wrapped = root["config"] as? JsonObject
         val paintings = root["paintings"] as? JsonArray
         val configJson = when {
@@ -81,7 +81,7 @@ object ConfigBackup {
         return Parsed(configJson, strokes, skipped)
     }
 
-    /** Newest first: dropping an unreachable-window stroke is missed least. */
+    /** Newest first: a stroke past the user's pan window is the one missed least. */
     internal fun capped(paintings: List<PaintStroke>): List<PaintStroke> {
         val newestFirst = paintings.sortedByDescending { it.createdAtMs }
         val kept = ArrayList<PaintStroke>(minOf(paintings.size, MAX_PAINTINGS))
@@ -111,7 +111,7 @@ object ConfigBackup {
 
     private fun decodePainting(o: JsonObject): PaintStroke {
         val points = PaintStrokeBlob.decode(Base64.getDecoder().decode(o.str("points")))
-        // Zero-point blob decodes but `addPaintStroke` refuses it, aborting mid-import, stranding.
+        // Zero-point blob decodes clean but addPaintStroke refuses it, aborting import mid-array.
         if (points.tsMs.isEmpty()) throw IllegalArgumentException("painting carries no points")
         return PaintStroke(
             // id 0: the store mints a fresh row id.

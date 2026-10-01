@@ -13,14 +13,14 @@ import com.t1dm.inference.backend.GraphIo
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 
-/** Production [ForecastPort]: re-feeds median (§9), gated by degeneracy (§3.6-B); never throws. */
+/** Median re-feed (INFERENCE.md §9), gated by degeneracy guard (§3.6-B); never throws. */
 class RollingForecaster(
     private val native: NativeCore,
     private val dispatchers: T1dmDispatchers,
     private val channels: ChannelBuilder,
     private val history: BgHistoryProvider,
     private val selected: SelectedModelProvider,
-    /** Fresh only when no [ForecastRequest.smoothingWindow]; must track display window (§7.1). */
+    /** Must track the display cycle's window or the roll's last_bg drifts (INFERENCE.md §7.1). */
     private val smoothingWindowProvider: suspend () -> Int = { InferenceControllerDefaults.SAVGOL_WINDOW },
 ) : ForecastPort {
 
@@ -32,7 +32,7 @@ class RollingForecaster(
         }
     }
 
-    /** DISPLAY-ONLY: [RolledForecast] can't enter :calc; degeneracy keeps prefix; never throws. */
+    /** DISPLAY-ONLY: keeps valid prefix on degeneracy, .missing on no model. Never throws. */
     suspend fun rollForDisplay(nowMs: Long, requestedHours: Double): RolledForecast {
         val fullRollSteps = Math.round(requestedHours * HorizonPolicy.STEPS_PER_HOUR).toInt().coerceAtLeast(1)
         val request = ForecastRequest(
@@ -54,7 +54,7 @@ class RollingForecaster(
         val median = DoubleArray(n) { r.steps[it].medianBg }
         val lower = DoubleArray(n) { r.steps[it].lowerBg }
         val upper = DoubleArray(n) { r.steps[it].upperBg }
-        // Step-major, only if EVERY step has a fan; else steps draw as mixed 3-band/1-band.
+        // Step-major; only if every step has a fan, else ragged draws mixed band counts.
         val nq = r.steps.firstOrNull()?.bandsMgdl?.size ?: 0
         val bands = if (nq > 0 && r.steps.all { it.bandsMgdl.size == nq }) {
             DoubleArray(n * nq) { i -> r.steps[i / nq].bandsMgdl[i % nq] }
@@ -97,7 +97,7 @@ class RollingForecaster(
         val predSteps: Int,
     )
 
-    /** Single source of the rolling math (dose + display paths); stops at first degeneracy. */
+    /** Shared by dose and display paths; stops at first degeneracy, keeps the valid prefix. */
     private suspend fun rollInternal(request: ForecastRequest): Rolled {
         val model = selected.current()
             ?: return Rolled(null, emptyList(), ForecastStatus.OK, ForecastEligibility.MISSING, "no selected model", 0, 0)
@@ -117,7 +117,7 @@ class RollingForecaster(
             return Rolled(series.anchorTsMs, emptyList(), ForecastStatus.OK, ForecastEligibility.MISSING, "context length $nCtx not a valid multiple", 0, predSteps)
         }
 
-        // Re-anchors onto zone's first bucket; else bucketize rounds idx<0 (curve.rs) — fail-OPEN.
+        // Re-anchors on the pred-zone start, else bucketize rounds to idx<0 (curve.rs), fail-open.
         val predZoneStartMs = series.gridStartMs + nCtx.toLong() * STEP_MS
         val candShift = predZoneStartMs - request.rollStartMs
         val shiftedCandidate = request.candidate?.map { it.copy(startMs = it.startMs + candShift) }
@@ -132,7 +132,7 @@ class RollingForecaster(
         val outSteps = ArrayList<FanStep>(request.fullRollSteps)
         var carrySpread = emptyList<Double>()
         val nRolls = (request.fullRollSteps + predSteps - 1) / predSteps
-        // Fixed for the roll: differing smoothing per roll would discontinue the median filter.
+        // Fixed for the whole roll, else the re-fed median crosses a filter discontinuity.
         val smoothingWindow = InferenceControllerDefaults.nearestSmoothingStop(
             request.smoothingWindow
                 ?: runCatching { smoothingWindowProvider() }.getOrNull()
@@ -179,7 +179,7 @@ class RollingForecaster(
                 carb.addLast(predCarb.getOrElse(i) { 0.0 })
                 insulin.addLast(predInsulin.getOrElse(i) { 0.0 })
             }
-            // Fan already carries carrySpread; this REPLACES it (folding would double-count, §9).
+            // REPLACES carrySpread; folding would double-count the carry (SPEC/inference.md §9).
             carrySpread = terminalOffsets(forecast)
         }
 
@@ -206,7 +206,7 @@ class RollingForecaster(
         }
     }
 
-    /** Terminal spread per level, layout [up .75 .9 .95|dn .25 .1 .05] (SPEC/inference.md §9.4) */
+    /** Per-level terminal spread `[up .75 .9 .95 | dn .25 .1 .05]` (SPEC/inference.md §9.4). */
     private fun terminalOffsets(f: Forecast): List<Double> {
         val nq = 7
         val nSpreads = nq / 2

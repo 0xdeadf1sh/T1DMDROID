@@ -76,7 +76,7 @@ class LoggedExerciseMutationTest {
         assertNull(repo.loggedExerciseById(stored.id))
     }
 
-    /** §2: offset is the one the slot was authored at; a replay reads it from zone TODAY. */
+    /** §2: offset is what the slot was authored at; a replay must not use today's zone. */
     @Test
     fun aPastDatedReplayLeavesAnExistingSamplesOffsetAlone() = runTest {
         repo.recordSteps(nowMs, tzOffsetMin = 120, steps = 40, nowMs = nowMs)

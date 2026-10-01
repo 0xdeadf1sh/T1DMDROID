@@ -151,7 +151,7 @@ open class StubNativeCore : NativeCore {
     // Fails OPEN: the predicted hour is optional and never blocks the BG path.
     override fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime? = null
 
-    // Pure curve math: stub ports t1dm-core::curve; golden-checked against Rust and simulator.py.
+    // The curve math is pure, so the stub ports t1dm-core::curve; golden-checked against Rust/sim.
 
     override fun gamma(total: Double, k: Double, theta: Double, durMin: Double): List<Double> {
         val n = (durMin / DT_MIN).toInt()
@@ -291,10 +291,10 @@ open class StubNativeCore : NativeCore {
         agpBins: Int,
     ): AdvancedStats = AdvancedStats.EMPTY
 
-    // Refuses rather than repeat crate values; a caller with no scale anchor draws none.
+    // Refuses rather than repeat the crate's values; a caller that can't anchor a scale draws none.
     override fun clinicalCuts(): ClinicalCuts = ClinicalCuts.UNAVAILABLE
 
-    // Fail-closed empty: metrics pin bit-for-bit to T1DMAI; a Kotlin copy would drift.
+    // Fail-closed empty suite: metrics pinned bit-for-bit to T1DMAI's reference, no Kotlin copy.
     override fun forecastMetricsSuite(
         windows: List<ForecastWindow>,
         horizonsMin: List<Int>,

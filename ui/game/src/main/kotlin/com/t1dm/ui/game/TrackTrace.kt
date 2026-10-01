@@ -27,7 +27,7 @@ class TrackTrace internal constructor(
             0L, UnitSpace.MgDl, FloatArray(0), FloatArray(0), BooleanArray(0), 0f, 0f,
         )
 
-        /** maxPoints ABOVE reading count: decimation may emit max before min, a false cliff. */
+        /** Build frame with maxPoints above reading count: decimation risks a false cliff. */
         fun of(frame: GraphFrame): TrackTrace =
             if (frame.isEmpty) {
                 EMPTY

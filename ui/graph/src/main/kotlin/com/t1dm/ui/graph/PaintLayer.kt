@@ -13,7 +13,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
 
-/** Total width, dp, of the corridor the annotation layer masks around the BG trace. */
+/** Total width, in dp, of the corridor the annotation layer masks around the BG trace. */
 internal const val PAINT_CORRIDOR_DP = 7f
 
 internal fun corridorWidthPx(dpPx: Float): Float = PAINT_CORRIDOR_DP * dpPx
@@ -27,11 +27,11 @@ const val MIN_STROKE_PX = 1f
 internal fun paintXPx(tsMs: Long, viewStartMs: Double, ppm: Double, plotLeft: Float): Float =
     (plotLeft + (tsMs - viewStartMs) * ppm).toFloat()
 
-/** Anchored to the PLOT BOX, never value axis, so Y auto-fit can't move or distort the art. */
+/** Anchored to the PLOT BOX, never the value axis, so Y auto-fit cannot move or distort the art. */
 internal fun paintYPx(yFrac: Float, plotTop: Float, plotHeight: Float): Float =
     plotTop + yFrac * plotHeight
 
-/** Maximal unbroken runs over [iLo,iHi]; must cut where GlucoseGraph cuts, or a halo carves in. */
+/** The maximal unbroken runs over [iLo,iHi]; cuts where the polyline cuts, or a gap gets a halo. */
 inline fun forEachTraceRun(
     iLo: Int,
     iHi: Int,
@@ -49,7 +49,7 @@ inline fun forEachTraceRun(
     run(start, iHi)
 }
 
-/** Memoised corridor mask; rebuilt only when stale, else mutated in draw phase, no snapshot. */
+/** Memoised corridor mask: stroke-to-fill outline, rebuilt only on stale, rewound in place else. */
 internal class PaintCorridor {
     private val source = Path()
     private val outline = android.graphics.Path()
@@ -74,7 +74,7 @@ internal class PaintCorridor {
     private var kWidthPx = Float.NaN
     private var empty = true
 
-    /** Stale for this frame, RECORDING the key; answer true then call begin/append/commit only. */
+    /** Stale for this frame, RECORDING the key: follow with begin/append/commit only. */
     fun stale(
         traceId: Int,
         smoothed: Boolean,
@@ -138,13 +138,13 @@ internal class PaintCorridor {
     val mask: Path? get() = if (empty) null else composeOutline
 }
 
-/** The two dashed passes chalk draws as, raw pixels, indep of stroke; one pair per draw call. */
+/** The two dashed passes chalk draws as; built once per draw call, shared by every chalk stroke. */
 class ChalkPens(dpPx: Float) {
     val coarse: PathEffect = PathEffect.dashPathEffect(floatArrayOf(2.6f * dpPx, 1.5f * dpPx), 0f)
     val fine: PathEffect = PathEffect.dashPathEffect(floatArrayOf(1.2f * dpPx, 2.1f * dpPx), 1.3f * dpPx)
 }
 
-/** tool decides cap/join/texture only; width/alpha ride stroke, re-applying alpha multiplies. */
+/** tool decides cap/join/texture only; width/alpha ride the stroke, re-applying here doubles it. */
 fun DrawScope.strokeWithTool(
     path: Path,
     color: Color,
@@ -154,7 +154,7 @@ fun DrawScope.strokeWithTool(
 ) {
     when (tool) {
         PaintFrame.TOOL_HIGHLIGHTER ->
-            // Flat nib: a round cap would bulge past the ends of a band lined up with a threshold.
+            // Flat nib: a round cap would bulge past a band's ends aligned to a threshold.
             drawPath(path, color, style = Stroke(width = widthPx, cap = StrokeCap.Butt, join = StrokeJoin.Bevel))
 
         PaintFrame.TOOL_CHALK -> {
@@ -187,7 +187,7 @@ fun DrawScope.dotWithTool(at: Offset, color: Color, widthPx: Float, tool: Int) {
     }
 }
 
-/** Two culls: whole strokes O(1) on time bounds, then segments outside viewport +/- one span. */
+/** Two culls: whole strokes on time bounds, then segments outside viewport ± one span. */
 internal fun DrawScope.drawPaintFrame(
     paint: PaintFrame,
     viewStartMs: Double,
@@ -251,7 +251,7 @@ internal fun DrawScope.drawPaintFrame(
     }
 }
 
-/** count passed rather than read off capture: buffer is plain memory, redraw driven by snapshot. */
+/** count passed rather than read off capture: buffer is plain memory, redraw drives the count. */
 internal fun DrawScope.drawLiveStroke(
     capture: StrokeCapture,
     count: Int,

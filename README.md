@@ -1,6 +1,6 @@
 # T1DMDROID
 
-A personal Android app for Type 1 Diabetes that passively reads a Microtech/Ottai **AiDEX X / LinX** continuous glucose monitor over Bluetooth-LE advertisements and runs **on-device** glucose forecasting. It is advisory-only — it never actuates insulin delivery — and is built for a single arm64 device rather than for general distribution: it is sideloaded, not published to any app store.
+A personal Android app for Type 1 Diabetes that reads a continuous glucose monitor — Microtech/Ottai **AiDEX X / LinX**, **Anytime CT5** or **Libre 3** — over a held, paired Bluetooth-LE GATT session and runs **on-device** glucose forecasting. It is advisory-only — it never actuates insulin delivery — and is built for a single arm64 device rather than for general distribution: it is sideloaded, not published to any app store.
 
 Designed by a T1DM patient, informed by lived experience.
 
@@ -23,7 +23,7 @@ Designed by a T1DM patient, informed by lived experience.
 
 ## What it is
 
-The AiDEX X broadcasts its current reading roughly once per minute and the app listens passively — no pairing, no bond, no GATT connection. Activation, calibration and warmup stay with the sensor's official app on a separate phone. Each reading is stamped with the phone's receive time snapped to a 5-minute grid.
+The app pairs with the sensor, holds the GATT session open, and reads live values and the sensor's stored history over it. Each reading is stamped at the sensor's own sample time, snapped to a 5-minute grid. An AiDEX that reports no start time is activated on connect, which starts its warm-up; a Libre 3 is activated, or moved to this phone, by one NFC tap.
 
 A small transformer runs over that feed entirely on the device. It predicts any withheld stretch of glucose rather than only the next two hours, so one artifact fills a gap the sensor left as well as it forecasts, and a low-rank adapter can personalise it from the wearer's own matured forecasts while the exported weights stay frozen. Around it sit meal and insulin logs, advisory statistics, and a deterministic, model-free alarm path for out-of-range and loss-of-signal. Optional integrations add a one-way Nightscout bridge and an encrypted BLE link to watch peripherals.
 
@@ -81,9 +81,9 @@ Restore merges: a record already present is kept, so importing the same file twi
 ## Architecture
 
 - **UI:** Jetpack Compose, organized as a multi-module Gradle build so the CGM-source and model-backend seams stay pluggable.
-- **Rust core (`t1dm-core`, via JNI/NDK):** the correctness-critical, hot numerics — AiDEX frame decode and its CRCs, the model pre/post pipeline (causal Savitzky-Golay smoothing, normalize/denormalize, the Kovatchev risk transform, quantile assembly), glycemic statistics, and the watch AES-128-GCM. Kotlin keeps the UI, BLE plumbing, storage, and orchestration. `cargo test -p t1dm-core` tests the core bit-for-bit against golden vectors.
+- **Rust core (`t1dm-core`, via JNI/NDK):** the correctness-critical, hot numerics — AiDEX frame decode and its CRCs, session crypto, the model pre/post pipeline (causal Savitzky-Golay smoothing, normalize/denormalize, the Kovatchev risk transform, quantile assembly), glycemic statistics, and the watch AES-128-GCM. Kotlin keeps the UI, BLE plumbing, storage, and orchestration. `cargo test -p t1dm-core` tests the core bit-for-bit against golden vectors.
 - **On-device inference:** [ExecuTorch](https://pytorch.org/executorch/). One exported model on one backend, behind a seam that keeps it replaceable: the CPU XNNPACK fp32 delegate, which the stock runtime registers. It is the only path a dose is scored on; a model whose artifact will not load there falls back to a fixed-output stub and the dose calculator refuses.
-- **Storage & orchestration:** Room on the bundled SQLite driver; an always-on foreground service plus WorkManager run the passive scan, the 5-minute grid, inference, the Nightscout bridge, and the alarm path off the main thread.
+- **Storage & orchestration:** Room on the bundled SQLite driver; an always-on foreground service plus WorkManager run the sensor sessions, the 5-minute grid, inference, the Nightscout bridge, and the alarm path off the main thread.
 
 
 ## Module map
@@ -91,7 +91,7 @@ Restore merges: a record already present is kept, so importing the same file twi
 | Module | Responsibility |
 |---|---|
 | `:app` | Composition root, the always-on foreground service, notifications, widgets, navigation |
-| `:cgm` | Passive AiDEX X advertisement scan, recognition, and the CGM-source registry |
+| `:cgm` | Connected sessions for AiDEX X, CT5 and Libre 3, sensor discovery, and the CGM-source registry |
 | `:inference` | The forecasting cycle: context build, backend dispatch, decode, degeneracy gating |
 | `:sensors` | Step counter, GPS track recording, and other phone sensors |
 | `:calc` | Advisory bolus/basal calculators, dose rails and the dose advisor |
@@ -102,7 +102,7 @@ Restore merges: a record already present is kept, so importing the same file twi
 | `:core:common`, `:core:model`, `:core:design`, `:core:native` | Shared dispatchers, domain types, theming, and the Rust-core JNI bindings |
 | `:ui:graph` | The custom Compose blood-glucose graph |
 | `:ui:game`, `:feature:game` | Drive and Golf, the cosmetic minigames drawn on the glucose trace over a rapier2d solver in `t1dm-core` |
-| `:feature:*` | Screen features — dashboard, stats, models, meals, insulin, exercise, security, settings, logs, backup |
+| `:feature:*` | Screen features — dashboard, stats, models, meals, insulin, exercise, security, cgm, settings, logs, backup |
 
 
 ## Building
@@ -116,12 +116,14 @@ The app targets **arm64-v8a only**, `minSdk 34`, `targetSdk 36`.
 ./gradlew :app:assemblePersonalRelease
 ```
 
+`crates/libre3-core`'s table-backed tests need `LIBRE3_TABLES_DIR` set to a copy of the tables the app reads from `libre3/tables` in its external files dir on the phone. Without it `cargo test` fails; `LIBRE3_TABLES_SKIP=1` runs the table-free tests only.
+
 Two product flavors: `personal` (the daily build) and `public` (installs under a `.pub` application id). Release builds are R8-minified and resource-shrunk; without a `keystore.properties` they fall back to the debug signing key, so a fresh checkout still produces an installable APK.
 
 
 ## Running on Xiaomi HyperOS / MIUI
 
-HyperOS manages background apps far more aggressively than stock Android, and an always-on passive CGM reader is exactly the kind of app it curtails. The setup below is required for reliable operation, and a system update or reboot can silently reset parts of it.
+HyperOS manages background apps far more aggressively than stock Android, and an always-on CGM reader holding a Bluetooth session is exactly the kind of app it curtails. The setup below is required for reliable operation, and a system update or reboot can silently reset parts of it.
 
 ### Battery and autostart
 
@@ -132,13 +134,13 @@ In **Settings → Apps**, for T1DMDROID:
 - **Pause app activity if unused** off.
 - The standard Android **battery-optimization exemption** granted as well.
 
-Also set the **system Bluetooth app** to **Unrestricted** (Settings → Apps → show system apps → Bluetooth → battery usage) — easy to miss, and the scan depends on it. **Lock the app in Recents** (drag its card down until it shows a padlock) so "clear all" and the memory cleaner cannot evict it. **Performance** power mode helps as well.
+Also set the **system Bluetooth app** to **Unrestricted** (Settings → Apps → show system apps → Bluetooth → battery usage) — easy to miss, and the sensor sessions depend on it. **Lock the app in Recents** (drag its card down until it shows a padlock) so "clear all" and the memory cleaner cannot evict it. **Performance** power mode helps as well.
 
 ### Background collection while the screen is off
 
-On Android 14+, and especially on HyperOS, the system suspends a background app's Bluetooth-LE scan when the screen turns off. To keep collecting, the app uses **offloaded batch scanning**: the Bluetooth controller buffers the sensor's advertisements in hardware regardless of screen state, and HyperOS flushes those batches on roughly a **five-minute timer**.
+Readings arrive over the held GATT session, which a locked screen does not suspend. On Android 14+, and especially on HyperOS, the system does suspend a background app's unbatched Bluetooth-LE scan, and scans here only find sensors: none carries a reading. A paired AiDEX is redialled at its stored address without one. The CT5 and Libre 3 discovery scans run **batched** while the phone is locked: the controller buffers advertisements in hardware and HyperOS flushes them on roughly a **five-minute timer**.
 
-So while the phone is locked, new readings — and therefore any alarms — can lag by up to about **five minutes**. This is an OS-imposed floor for a passive-advertisement sensor, and does not apply while the screen is on. Each batched reading is timestamped at its true capture instant, so no 5-minute grid slot is lost.
+So after a dropped link on a locked phone, finding a CT5 or Libre 3 again can take up to about **five minutes**, and readings and any alarms wait on it. Each reading keeps the sensor's own sample time, and the gap is back-filled from the sensor's stored history once the session is back.
 
 ### Glucose on the lock screen
 

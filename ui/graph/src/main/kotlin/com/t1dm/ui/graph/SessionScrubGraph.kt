@@ -29,7 +29,7 @@ import com.t1dm.core.model.LogMarker
 import com.t1dm.core.model.UnitSpace
 import kotlin.math.abs
 
-/** Fixed-viewport chart over one bout's glucose; no pinch/pan/follow. */
+/** Fixed-viewport chart over one bout's glucose, no pinch/pan. */
 @Composable
 fun SessionScrubGraph(
     frame: GraphFrame,
@@ -42,7 +42,7 @@ fun SessionScrubGraph(
     unit: UnitSpace = UnitSpace.MgDl,
     kovatchevF: ((Double) -> Double)? = null,
     thresholds: AlertThresholds? = null,
-    /** Loaded over the review window, not live Logs (bounded 400 rows, empty for a month-old). */
+    /** Loaded over the review window, not the live Logs feed, which is bounded at 400 rows. */
     logMarkers: List<LogMarker> = emptyList(),
     /** Positions in logMarkers of every log behind the tapped mark, all lanes. */
     onMarkerTap: ((List<Int>) -> Unit)? = null,
@@ -56,7 +56,7 @@ fun SessionScrubGraph(
     val labels = remember { GraphLabelCache() }
     // Draw-phase scratch: the cursor moves at pointer rate.
     val tracePath = remember { Path() }
-    // Inks from SEMANTIC roles, not Material: a mark is always its curve channel's colour.
+    // Inks from SEMANTIC roles, not the Material projection: a mark is the colour of its channel.
     val dpPx = density.density
     val semantics = LocalT1dmSemantics.current
     val carbMarkPainter = rememberVectorPainter(logMarkerIcon(CurveKind.CARB))
@@ -116,7 +116,7 @@ fun SessionScrubGraph(
         val viewSpanMs = windowSpanMs.toDouble().coerceAtLeast(1.0)
         val ppm = plotWidth / viewSpanMs
 
-        // Over the WHOLE frame, not a slice: axis settles once, stays still as the thumb travels.
+        // Over the whole frame, not a slice: axis settles once, holds still as the thumb travels.
         var yMin = Float.POSITIVE_INFINITY
         var yMax = Float.NEGATIVE_INFINITY
         for (i in 0 until frame.size) {
@@ -161,7 +161,7 @@ fun SessionScrubGraph(
         )
 
         clipRect(left = plotLeft, top = plotTop, right = plotRight, bottom = plotBottom) {
-            // The bout, shaded: window reaches past both ends, nothing else marks the exercise.
+            // The bout itself, shaded: window past both ends, nothing else marks the stretch.
             val sx0 = absToPx(sessionStartMs.toDouble()).coerceIn(plotLeft, plotRight)
             val sx1 = absToPx(sessionEndMs.toDouble()).coerceIn(plotLeft, plotRight)
             if (sx1 - sx0 > 0.5f) {
@@ -172,7 +172,7 @@ fun SessionScrubGraph(
                 )
             }
 
-            // Inside clip, BEFORE the trace: a hypo excursion drops into the lane band otherwise.
+            // Inside the clip and BEFORE the trace: an icon must never sit atop the glucose line.
             if (logMarkers.isNotEmpty()) {
                 drawLogMarkers(
                     clusterLogMarkers(
@@ -227,7 +227,7 @@ fun SessionScrubGraph(
     }
 }
 
-/** HELD in the plot box, not dropped: wall-clock window overshoots the grid cursor by a slot. */
+/** HELD in the plot box, not dropped past its edge: window ends wall-clock, cursor snaps. */
 internal fun scrubCursorPx(
     cursorMs: Long,
     viewStartMs: Double,
@@ -237,7 +237,7 @@ internal fun scrubCursorPx(
 ): Float = (plotLeft + (cursorMs - viewStartMs) * ppm).toFloat()
     .coerceIn(plotLeft, plotRight.coerceAtLeast(plotLeft))
 
-/** Slider fraction → instant, snapped to [gridMs]; pass T1dmRepository.GRID_MS, not restated. */
+/** The instant a slider at fraction points at, snapped to the nearest multiple of gridMs. */
 fun scrubCursorOf(windowStartMs: Long, windowSpanMs: Long, fraction: Float, gridMs: Long): Long {
     if (gridMs <= 0L) return windowStartMs
     val f = fraction.coerceIn(0f, 1f).toDouble()

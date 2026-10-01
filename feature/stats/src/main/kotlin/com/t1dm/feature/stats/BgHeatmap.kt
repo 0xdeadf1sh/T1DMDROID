@@ -26,7 +26,7 @@ const val HEATMAP_HOURS = 24
 /** Index 0 = Monday, the ISO order `HeatCell.dow` is emitted in. */
 val DAY_LABELS = arrayOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
-/** 7x24 grid summarised by stat; both summaries come from one core pass, so stat is a repaint. */
+/** 7x24 summarised by stat, from one core pass so stat is a repaint; empty cell is outline only. */
 @Composable
 fun BgHeatmap(
     heatmap: List<HeatCell>,
@@ -140,7 +140,7 @@ private fun HeatLegend(
     }
 }
 
-/** Fixed, never from patient's target: a cell colour means the same glucose everywhere. */
+/** Fixed, never from the target setting: a cell colour means the same glucose on every phone. */
 const val HEAT_FLOOR_MGDL = 70.0
 const val HEAT_MID_MGDL = 125.0
 const val HEAT_CEIL_MGDL = 180.0
@@ -148,7 +148,7 @@ const val HEAT_CEIL_MGDL = 180.0
 private val HEAT_MID_STOP =
     ((HEAT_MID_MGDL - HEAT_FLOOR_MGDL) / (HEAT_CEIL_MGDL - HEAT_FLOOR_MGDL)).toFloat()
 
-/** mg/dL to colour: blue at HEAT_FLOOR_MGDL, green at HEAT_MID_MGDL, red at HEAT_CEIL_MGDL. */
+/** mg/dL to colour: blue at FLOOR, green at MID, red at CEIL, clamped outside; see the consts. */
 fun heatColor(mgdl: Double): Color = when {
     mgdl <= HEAT_FLOOR_MGDL -> HEAT_LOW
     mgdl <= HEAT_MID_MGDL ->
@@ -164,7 +164,7 @@ private fun fmtHeatAxis(v: Double, unit: UnitSpace): String = when (unit) {
     UnitSpace.Kovatchev -> String.format("%.1f", v)
 }
 
-// Fixed, not theme-linked; validated for protanopia (dE 9.1); narrow margin, never retune by eye.
+// Fixed, not theme-linked: worst ΔE 9.1 protanopia, 26.5 normal; two steps up collapses it to 4.0.
 val HEAT_LOW = Color(0xFF57ACEE)
 val HEAT_IN = Color(0xFF24794A)
 val HEAT_HIGH = Color(0xFFFF7062)

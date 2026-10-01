@@ -31,7 +31,7 @@ import com.t1dm.core.model.MealComponent
 import com.t1dm.core.model.ResolvedMealCurve
 import com.t1dm.core.model.SavedMeal
 
-/** [meal] seeds the draft ONCE, by id: the Flow re-emits per write and would discard the edit. */
+/** meal seeds the draft ONCE by id: the Flow re-emits per write, following it drops edits. */
 @Composable
 fun MealEditorScreen(
     meal: SavedMeal,

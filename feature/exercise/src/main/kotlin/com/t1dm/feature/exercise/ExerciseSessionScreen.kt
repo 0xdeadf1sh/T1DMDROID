@@ -42,7 +42,7 @@ import com.t1dm.ui.graph.SessionScrubGraph
 import com.t1dm.ui.graph.scrubCursorOf
 import com.t1dm.ui.graph.sessionScrubRows
 
-/** session null while loading. */
+/** session null = loading. */
 @Composable
 fun ExerciseSessionScreen(
     session: ExerciseSession?,
@@ -54,7 +54,7 @@ fun ExerciseSessionScreen(
     unit: UnitSpace = UnitSpace.MgDl,
     kovatchevF: ((Double) -> Double)? = null,
     thresholds: AlertThresholds? = null,
-    /** Loaded over exactly reviewWindow, not the live Logs feed, bounded at a few hundred rows. */
+    /** Loaded over exactly reviewWindow, not the live Logs feed (bounded at a few hundred rows). */
     logEntries: List<LoggedEntry> = emptyList(),
     insulins: List<InsulinChoice> = emptyList(),
     onEditLog: ((LoggedEntry, LogEdit) -> Unit)? = null,
@@ -166,7 +166,7 @@ fun reviewWindow(session: ExerciseSession, nowMs: Long): LongRange {
     return (session.startMs - pad / 2)..(end + (pad - pad / 2))
 }
 
-/** Stored flag says only "not the user": ran to EXERCISE_MAX_BOUT_MS, or cut short by death. */
+/** Flag means only 'not the user': hit EXERCISE_MAX_BOUT_MS, else cut short by process death. */
 internal fun interruptedNote(session: ExerciseSession): String? {
     if (!session.interrupted) return null
     val ranMs = (session.endMs ?: session.startMs) - session.startMs

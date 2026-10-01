@@ -1,6 +1,6 @@
 package com.t1dm.core.model
 
-/** Model window re-fed to 12h; DISPLAY-ONLY, never :calc/alerts; step i=anchor+(i+1)·stepMs. */
+/** Own forecast window re-fed N times to 12h. DISPLAY-ONLY: never in predictions, calc, alerts. */
 data class RolledForecast(
     val anchorTsMs: Long,
     val stepMs: Long,
@@ -10,9 +10,9 @@ data class RolledForecast(
     val lowerBg: DoubleArray,
     /** The τ=.95 upper band edge (mg/dL) per step. */
     val upperBg: DoubleArray,
-    /** Whole fan `steps×nQuantiles`, ascending τ (bandsMgdl layout); lower/upper its outer pair. */
+    /** Whole fan, steps x nQuantiles ascending tau, bandsMgdl layout; EMPTY if no fan. */
     val bandsMgdl: DoubleArray = DoubleArray(0),
-    /** The descriptor's VALIDATED window (0 = no model); past it, drawn distinct, unalerted. */
+    /** The descriptor's VALIDATED window (0 = no model); past it extrapolated, never alerted on. */
     val validatedSteps: Int,
     /** The user-requested roll horizon in hours (30 min…12 h). */
     val requestedHours: Double,

@@ -9,7 +9,7 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-/** On-disk: 12-byte GCM iv || ciphertext, raw into a BLOB; non-exportable, archives omit it. */
+/** Separate alias from the watch link's: a full erase must not burn this key while worn. */
 class CgmSensorKeyCipher {
 
     fun seal(plain: ByteArray): ByteArray {
@@ -23,7 +23,7 @@ class CgmSensorKeyCipher {
         return out
     }
 
-    /** Null, not a throw, on anything this key did not produce; the caller must rebind anyway. */
+    /** Null, not a throw, for a blob this key can't open: caller rebinds, a state it handles. */
     fun open(sealed: ByteArray): ByteArray? {
         if (sealed.size <= GCM_IV_BYTES) return null
         return runCatching {
@@ -66,7 +66,7 @@ class CgmSensorKeyCipher {
     private companion object {
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
 
-        /** NOT the watch alias, and never deleted: that would retire every sensor it protects. */
+        /** No deleteKey() here, unlike the watch side: deleting this retires every bound sensor. */
         const val KEY_ALIAS = "t1dm_cgm_sensor_key"
         const val TRANSFORM = "AES/GCM/NoPadding"
         const val GCM_TAG_BITS = 128

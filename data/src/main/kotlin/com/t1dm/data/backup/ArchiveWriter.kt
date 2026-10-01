@@ -38,10 +38,10 @@ data class ArchiveCounts(
             loras + exerciseSessions + loggedExercise + exerciseFixes + tombstones + infills
 }
 
-/** Excludes outbox/adverts/prediction/telemetry/cgm_sample_raw; has GPS, never auto-upload it. */
+/** Excludes retention-bounded cgm_sample_raw; carries exercise_fix GPS — never auto-upload. */
 class ArchiveWriter(private val db: AppDatabase) {
 
-    /** out is NOT closed here, caller owns it; one deferred read tx keeps a consistent snapshot. */
+    /** out not closed here (caller owns it); one deferred read txn keeps archive consistent. */
     suspend fun write(
         out: OutputStream,
         configJson: String?,
@@ -157,7 +157,7 @@ class ArchiveWriter(private val db: AppDatabase) {
         }
         counts = counts.copy(strokes = strokes)
 
-        // Parent before its fixes: a fix names its bout by clientId, so restore resolves streaming.
+        // Parent before fixes: fix names its bout by clientId; streaming restore needs no buffer.
         var exerciseSessions = 0
         var exerciseFixes = 0
         var sessionStart = Long.MIN_VALUE

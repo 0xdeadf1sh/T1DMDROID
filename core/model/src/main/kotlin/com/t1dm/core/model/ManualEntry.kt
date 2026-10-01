@@ -1,6 +1,6 @@
 package com.t1dm.core.model
 
-/** IOB/COB from LOGGED DOSES only, never a what-if (§3.6-F); iobZeroMs is display-only. */
+/** IOB/COB from LOGGED DOSES only, never announced (§3.6-F); iobZeroMs is display-only. */
 data class IobCobReadout(
     val atMs: Long,
     val iobU: Double,
@@ -10,7 +10,7 @@ data class IobCobReadout(
     val iobZeroMs: Long? = null,
 )
 
-/** Only GI-bearing meals qualify; multi-food builder meals carry a null GI, no round-trip. */
+/** Only GI-bearing logged meals qualify: multi-food builder meals carry a custom curve, null GI. */
 data class RecentMeal(val grams: Double, val gi: Double) {
     val label: String get() = "${grams.toInt()} g · GI ${gi.toInt()}"
 }

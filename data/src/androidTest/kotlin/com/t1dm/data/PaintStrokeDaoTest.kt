@@ -16,7 +16,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** Window predicate is intersection not containment, inclusive; minTsMs/maxTsMs scan all points. */
+/** Window predicate is intersection, inclusive both ends; same cases as PaintStrokeWindowTest. */
 @RunWith(AndroidJUnit4::class)
 class PaintStrokeDaoTest {
 

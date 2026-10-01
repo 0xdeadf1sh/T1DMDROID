@@ -4,7 +4,7 @@ import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.pow
 
-/** Kovatchev f/f_inv (§5/§11), Rust mirror for DISPLAY chrome; pinned by KovatchevScaleTest. */
+/** Kovatchev f/f_inv (§5,§11), mirrors Rust; for display chrome that can't reach JNI. */
 object KovatchevScale {
     const val SCALE = 1.509
     const val POWER = 1.084
@@ -20,13 +20,13 @@ object KovatchevScale {
     /** `f(500)` ≈ +2.8133. */
     val RISK_MAX: Double = f(BG_MAX)
 
-    /** mg/dL → risk; BG clamped [20,500] first (NaN = low bound); output NOT clamped. */
+    /** mg/dL to risk: BG clamped to [20,500] first, NaN reads as low bound; output not clamped. */
     fun f(mgdl: Double): Double {
         val g = if (mgdl.isNaN()) BG_MIN else mgdl.coerceIn(BG_MIN, BG_MAX)
         return SCALE * (ln(g).pow(POWER) - OFFSET)
     }
 
-    /** risk → mg/dL (§5 guards): non-finite replaced, risk and result both clamped to bounds. */
+    /** risk to mg/dL, §5 guards: non-finite replaced, risk clamped, result clamped to bounds. */
     fun fInv(risk: Double): Double {
         val r = when {
             risk.isNaN() || risk == Double.NEGATIVE_INFINITY -> RISK_MIN

@@ -1,6 +1,6 @@
 package com.t1dm.data.meals
 
-/** Carbs/100g from USDA FDC; GI from ITGI (Atkinson 2008) or dominant carb; null=unmeasured. */
+/** Carbs/100g: USDA FDC. GI: Atkinson et al 2008, Diabetes Care 31:2281. Null=unmeasured. */
 internal data class FoodSeedRow(
     val name: String,
     val brand: String?,

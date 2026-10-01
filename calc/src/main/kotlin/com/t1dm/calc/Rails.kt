@@ -1,6 +1,6 @@
 package com.t1dm.calc
 
-/** §3.6-C: enabled rail BLOCKS bad input; disabled is the only way bad input passes. */
+/** §3.6-C: an enabled rail BLOCKS on bad input; a disabled one no-ops, the only way it passes. */
 sealed interface RailVerdict {
     data object Pass : RailVerdict
 
@@ -14,7 +14,7 @@ sealed interface RailVerdict {
 
 object Rails {
 
-    /** §3.6-B/-C: gates the recommendation, never disableable — a degenerate fan is unscoreable. */
+    /** §3.6-B/-C: gates the whole recommendation, never disableable; degenerate is unscoreable. */
     fun baselineDegeneracy(baseline: PredFan): RailVerdict {
         val name = "degeneracy"
         return when (baseline.eligibility) {
@@ -28,7 +28,7 @@ object Rails {
         }
     }
 
-    /** §3.6-C: MEDIAN/VALIDATED window; τ=.05 monotone forced 0U at trip; hypo+gate still apply. */
+    /** §3.6-C: reads MEDIAN over VALIDATED window, less cautious; hypo term/gate remain. */
     fun predictedLowVeto(fan: PredFan, config: CalcConfig): RailVerdict {
         val name = "predicted-low"
         if (!config.rails.predictedLowVeto) return RailVerdict.Pass
@@ -48,7 +48,7 @@ object Rails {
         return RailVerdict.Pass
     }
 
-    /** §3.6-C: fail-closed; unknown IOB with nonzero dose blocks — a forgotten log under-counts. */
+    /** §3.6-C: fail-closed, unknown IOB with nonzero dose blocks, a forgotten log under-counts. */
     fun iobCeiling(iob: IobSnapshot?, candidateU: Double, config: CalcConfig): RailVerdict {
         val name = "iob-ceiling"
         if (!config.rails.iobCeiling) return RailVerdict.Pass

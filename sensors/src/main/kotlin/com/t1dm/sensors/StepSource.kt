@@ -10,7 +10,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 
-/** Stamped with phone wall time, like CGM; needs `ACTIVITY_RECOGNITION` perm from `:app`. */
+/** Stamped with phone wall time like the CGM path; needs ACTIVITY_RECOGNITION, declared by :app. */
 class StepSource(
     private val sensorManager: SensorManager,
     private val clock: () -> Long = System::currentTimeMillis,
@@ -18,7 +18,7 @@ class StepSource(
 ) {
     fun isAvailable(): Boolean = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER) != null
 
-    /** Fresh [StepBucketer] per subscription; callbacks off-main on [HandlerThread], not UI. */
+    /** Fresh StepBucketer per subscription; callbacks on a dedicated HandlerThread, not main. */
     fun buckets(): Flow<StepBucket> = callbackFlow {
         val sensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
         if (sensor == null) {

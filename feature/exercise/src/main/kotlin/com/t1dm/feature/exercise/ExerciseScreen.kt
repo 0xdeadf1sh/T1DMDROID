@@ -48,7 +48,7 @@ import com.t1dm.core.model.ExerciseKind
 import com.t1dm.core.model.ExerciseSession
 import kotlin.math.roundToInt
 
-/** [degraded] must render wherever set: a declined perm or quiet receiver looks like nowhere. */
+/** [degraded] must be rendered wherever set: it can leave a bout looking like it went nowhere. */
 @Composable
 fun ExerciseScreen(
     sessions: List<ExerciseSession> = emptyList(),
@@ -208,7 +208,7 @@ private fun BodyMassRow(bodyMassKg: Double?, onSet: (Double) -> Unit) {
     }
 }
 
-/** Shift is minutes from now, laying a bout ahead of the clock; §5 keys magnitude to duration. */
+/** Shift is minutes from now; only the START moves — §5 makes magnitude a function of duration. */
 @Composable
 private fun ReplayDialog(
     session: ExerciseSession,
@@ -290,7 +290,7 @@ private fun SessionRow(
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(durationLabel(session.activeSec), style = MaterialTheme.typography.bodyMedium)
-                // Not the recording bout: observeAll has no endMs filter; deleting orphans it.
+                // Not for the bout being recorded: observeAll has no endMs filter on the open row.
                 if (session.endMs != null) {
                     TextButton(onClick = { haptics.perform(HapticEvent.Tap); onReplayRequest() }) {
                         Text("Replay")

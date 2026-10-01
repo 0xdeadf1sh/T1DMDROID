@@ -1,6 +1,6 @@
 package com.t1dm.core.model
 
-/** Hours FROM THE PRIOR LANDMARK, not from now; display-only, never actuates or alarms. */
+/** Each field is hours FROM THE PRIOR LANDMARK, not now; display-only, never actuates/alarms. */
 data class DkaTimeline(
     val iobZeroToDkaHours: Double,
     val dkaToComaHours: Double,

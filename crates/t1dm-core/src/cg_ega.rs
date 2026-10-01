@@ -1,4 +1,4 @@
-//! CG-EGA, transcribed from T1DMAI/cg_ega.py; not Kovatchev's published grid (SPEC §6.3).
+//! CG-EGA uses dotXem's grid, not Kovatchev's (`SPEC/invariants.md` §6.3); kept for T1DMAI parity.
 
 /// `[A, B, C, D, E]`.
 const P_MARKS: usize = 5;
@@ -10,12 +10,12 @@ const LABEL_AP: u8 = 0;
 const LABEL_BE: u8 = 1;
 const LABEL_EP: u8 = 2;
 
-/// P-mark columns each region's filters carry; a cell in neither filter is EP.
+/// P-mark cols each region's filters carry; a cell whose P-mark isn't among them defaults to EP.
 const HYPO_P_COLS: [usize; 3] = [0, 3, 4];
 const EU_P_COLS: [usize; 3] = [0, 1, 2];
 const HYPER_P_COLS: [usize; 5] = [0, 1, 2, 3, 4];
 
-// Verbatim from the reference; rows are the 8 R-marks in order, columns the P-columns above.
+// Verbatim from the reference; rows are the 8 R-marks, columns the region's P-columns above.
 const FILTER_AP_HYPO: [[bool; 3]; R_MARKS] = [
     [true, false, false],
     [true, false, false],
@@ -165,7 +165,7 @@ fn p_ega_mark(y_true: f64, y_pred: f64, dy_true: f64) -> usize {
     first_true(&[a, b, c, d, e])
 }
 
-/// Index into [A,B,uC,lC,uD,lD,uE,lE]; all-false yields A, matching numpy's argmax.
+/// Index into `[A,B,uC,lC,uD,lD,uE,lE]`; all-false yields `A`, matching numpy's `argmax`.
 fn r_ega_mark(dy_true: f64, dy_pred: f64) -> usize {
     let a = ((dy_pred >= dy_true - 1.0) && (dy_pred <= dy_true + 1.0))
         || ((dy_pred <= dy_true / 2.0) && (dy_pred >= dy_true * 2.0))
@@ -193,7 +193,7 @@ fn first_true(flags: &[bool]) -> usize {
 /// `counts[region][verdict]` — `[hypo, eu, hyper] × [ap, be, ep]`.
 pub(crate) type CgEgaCounts = [[u32; 3]; 3];
 
-/// y_pred is band-projected (§6.2) mg/dL; scores every step, not one horizon; mismatch is a no-op.
+/// `y_pred` is band-projected mg/dL (§6.2), scored every step per §6.3. Mismatch: no-op.
 pub(crate) fn accumulate(
     counts: &mut CgEgaCounts,
     y_true: &[f64],

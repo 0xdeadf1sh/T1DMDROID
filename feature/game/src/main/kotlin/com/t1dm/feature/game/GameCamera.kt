@@ -11,19 +11,19 @@ const val VISIBLE_WIDTH_M = 10f
 /** Fraction of the viewport the car sits at when at rest. */
 private const val ANCHOR_X = 0.38f
 
-/** Vertical dead band, fraction of view height either side; a rescue, not a follow-cam. */
+/** Vertical dead band as a view-height fraction; a rescue not a follow-cam inside the band. */
 private const val V_DEAD_BAND = 0.18f
 
 /** Seconds of velocity the camera looks ahead by. */
 private const val LEAD_S = 0.45f
 
-/** Ceiling on the lead, fraction of visible span; proportional, else a fixed cap saturates. */
+/** Ceiling on the lead as a fraction of the visible span; proportional so it scales with speed. */
 private const val LEAD_MAX_FRAC = 0.12f
 
 /** Exponential rate, 1/s. ~6 settles in a couple of hundred ms. */
 private const val FOLLOW_HZ = 6.5f
 
-/** Slack past either end of heightfield, fraction of visible span; proportional to window. */
+/** Slack past either heightfield end, a fraction of the visible span: ~23m at 6h, ~93m at 24h. */
 private const val EDGE_SLACK_FRAC = 0.12f
 
 /** Ground kept below the bottom edge when the car is near the world floor. */
@@ -37,13 +37,13 @@ private const val REVEAL_S = 0.42f
 
 private const val REVEAL_DROP_M = 6f
 
-/** Extra view at the rev limiter, both axes so the car keeps shape; value axis over-shows BG. */
+/** Extra view at the rev limiter; both axes so the car keeps shape but shows more BG range. */
 private const val FOV_WIDEN = 0.6f
 
-/** Visible span, eased; starts at the chart's own, eases to true-scale, on the LOGARITHM. */
+/** Visible span, eased on the LOGARITHM: chart span to true-scale span, ends differ by 10x+. */
 class GameZoom(
     private val rateHz: Float = ZOOM_HZ,
-    /** Seconds the car takes to fall in once span arrives; injectable, so tests can skip it. */
+    /** Seconds for the car to fall in once span arrives. Injectable: test can pass revealS=0f. */
     private val revealS: Float = REVEAL_S,
     private val dropM: Float = REVEAL_DROP_M,
     /** Speed at which [fov] reaches full widening; each game's own ceiling, not the car's. */
@@ -53,7 +53,7 @@ class GameZoom(
     var spanM = 0f
         private set
 
-    /** Speed widening, eased, 1 at rest; caller must apply to BOTH axes or wheels squash. */
+    /** Speed widening, eased, 1 at rest. Caller must apply to BOTH axes or wheels squash. */
     var fov = 1f
         private set
 
@@ -64,7 +64,7 @@ class GameZoom(
     var reveal = 0f
         private set
 
-    /** Zoom then drop; a hold on the solver while true, latched once landed; seatAt clears it. */
+    /** Zoom then drop, a hold on the solver; latched via opened so throttle cannot re-arm it. */
     val opening: Boolean get() = !opened
 
     private var opened = false
@@ -72,7 +72,7 @@ class GameZoom(
     /** Drawn true-scale, a car at the chart's span is a few pixels wide and squashed. */
     val carShown: Boolean get() = reveal > 0f
 
-    /** How far above its settled pose the car is; quadratic, so it accelerates like a fall. */
+    /** How far above its settled pose the car still is; quadratic so it accelerates like a fall. */
     val liftM: Float get() = dropM * (1f - reveal) * (1f - reveal)
 
     fun seatAt(spanM: Float) {
@@ -83,7 +83,7 @@ class GameZoom(
         fov = 1f
     }
 
-    /** baseM is the true-scale span, speedMs widens it; two filters, fov eases then span eases. */
+    /** baseM is the settled span (true-scale); speedMs widens it via two eases in series. */
     fun step(baseM: Float, speedMs: Float, dtS: Float): Float {
         if (dtS <= 0f) return spanM
         val a = (1f - exp(-rateHz * dtS)).coerceIn(0f, 1f)
@@ -108,7 +108,7 @@ class GameZoom(
     }
 }
 
-/** Viewport's bottom-left, world metres; stepped on the game thread, not a Compose animation. */
+/** Viewport bottom-left, y-up world metres; smoothed 1-e^(-rate*dt) so a drop skips no distance. */
 class GameCamera(
     private val followHz: Float = FOLLOW_HZ,
     private val leadSeconds: Float = LEAD_S,

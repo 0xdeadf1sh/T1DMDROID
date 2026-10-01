@@ -35,21 +35,21 @@ import com.t1dm.core.model.StatSample
 import com.t1dm.core.model.Obstacle
 import com.t1dm.core.model.TerrainSpec
 
-/** Kotlin surface of Rust t1dm-core; depend on THIS, not the uniffi binding. Total on garbage. */
+/** Kotlin surface of t1dm-core; depend on this, never uniffi binding; total on garbage input. */
 interface NativeHead : AutoCloseable {
     /** Attach an adapter, or detach with `null`. The base weights are untouched. */
     fun setLora(w: LoraWeights?)
 
     fun hasLora(): Boolean
 
-    /** head_raw for nSlots of stepStates; no adapter attached reproduces the graph's own. */
+    /** head_raw for nSlots of stepStates, in assembleDecode's layout; no adapter = graph's own. */
     fun forward(stepStates: List<Double>, nSlots: Int): List<Double>
 }
 
 interface NativeCore {
     fun roundtrip(msg: String): String
 
-    /** Decode+CRC-validate a 20-byte LinX advert (CGM.md §3.1/§3.2); null on short/CRC-fail. */
+    /** Decode+CRC-validate a 20-byte advert payload (CGM.md §3.1/§3.2); null if short/CRC fails. */
     fun decodeAdvert(payload: ByteArray): DecodedAdvert?
 
     /** The advert CRC32 (CGM.md §3.2), as an unsigned value in the low 32 bits of the Long. */
@@ -73,7 +73,7 @@ interface NativeCore {
     fun parseDescriptorOrRefusal(json: String): DescriptorParse =
         DescriptorParse(parseDescriptor(json), null)
 
-    /** Causal SavGol smooth (INFERENCE.md §7.1), ODD window (1=pass-through); bad -> default. */
+    /** Causal one-sided SavGol smooth (§7.1); odd window, 1=pass-through; bad window degrades. */
     fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double>
 
     /** z-score a raw `[bg, carb, insulin]` sample (bg risk-z, the rest log1p-z). */
@@ -82,7 +82,7 @@ interface NativeCore {
     /** Inverse of [normalizeSample]; the 3-element `z` must carry all channels. */
     fun denormalizeSample(desc: ModelDescriptor, z: List<Double>): List<Double>
 
-    /** Fixed-shape graph input from per-step history (INFERENCE §§7.2-7.4); throws on bad shape. */
+    /** Fixed-shape graph input from per-step history (§7.2-7.4); throws on bad shape/window. */
     fun buildGraphInput(
         desc: ModelDescriptor,
         bg: List<Double>,
@@ -95,7 +95,7 @@ interface NativeCore {
         smoothingWindow: Int,
     ): GraphInput
 
-    /** head_raw (M*S*7 risk) -> quantile fan, mg/dL (§8); RAW, §8.4 applied downstream. */
+    /** head_raw (M·S·7, risk) -> quantile fan, mg/dL (§8); raw, §8.4 applied downstream. */
     fun assembleDecode(
         desc: ModelDescriptor,
         headRaw: List<Double>,
@@ -105,7 +105,7 @@ interface NativeCore {
         carrySpread: List<Double>,
     ): Forecast
 
-    /** Head's per-step input, splined from hidden over each span's nodes (INFERENCE.md §8.2). */
+    /** Head per-step input, splined from hidden over span nodes (§8.2); attnMask excludes pads. */
     fun stepStates(
         desc: ModelDescriptor,
         hidden: List<Float>,
@@ -116,17 +116,17 @@ interface NativeCore {
     /** The rows of [f] whose slot sits in `[fromPatch, toPatch)`, as a Forecast of its own. */
     fun forecastSlice(f: Forecast, fromPatch: Int, toPatch: Int): Forecast
 
-    /** Fan's line at arbitrary tau, mg/dL, in RISK space; never consumed to classify. */
+    /** Fan's line at arbitrary tau, mg/dL: risk-space interp, clamped outside published levels. */
     fun bandLine(desc: ModelDescriptor, f: Forecast, tau: Double): List<Double>
 
-    /** bandLine for a standalone fan; qTauRisk is steps x 7 risk-space values, ascending τ. */
+    /** bandLine for a standalone fan; qTauRisk is steps×7 risk values, ascending τ per step. */
     fun bandLineAt(desc: ModelDescriptor, qTauRisk: List<Double>, tau: Double): List<Double>
 
 
-    /** Digest checked against descriptor's head block; null means not from the same export. */
+    /** Digest checked against the descriptor's head block; null if head and graph disagree. */
     fun headOpen(bytes: ByteArray, spec: HeadSpec): NativeHead?
 
-    /** Attaches nothing, caller decides; progress called once per epoch, on the calling thread. */
+    /** Attaches nothing; caller decides. progress called once per epoch, on the calling thread. */
     fun loraTrain(
         head: NativeHead,
         desc: ModelDescriptor,
@@ -136,7 +136,7 @@ interface NativeCore {
         progress: LoraProgressSink? = null,
     ): LoraTrainResult
 
-    /** What an adapter did to insulin's marginal response, held-out; measures sign only. */
+    /** Preservation, not correctness of an adapter's marginal insulin response, held-out. */
     fun loraGuard(
         head: NativeHead,
         desc: ModelDescriptor,
@@ -148,7 +148,7 @@ interface NativeCore {
     /** The bar the fit's own guard pass measures against; a later probe must use the same one. */
     fun loraGuardOptsFit(): LoraGuardOpts
 
-    /** B=0: identity until trained; headSha256 binds it to the head it may attach to. */
+    /** B=0: identity until trained. headSha256 binds it to the head it may attach to. */
     fun loraNew(
         config: LoraConfig,
         headSha256: String,
@@ -164,10 +164,10 @@ interface NativeCore {
     /** `null` on a truncated, corrupted or foreign blob. */
     fun loraDeserialize(bytes: ByteArray): LoraWeights?
 
-    /** Safety guard every rail/alert gates on (§3.6-B); desc must match the decoded forecast. */
+    /** Safety guard every rail/alert gates on (§3.6-B); desc must match the forecast's decode. */
     fun forecastDegeneracyCheck(desc: ModelDescriptor, forecast: Forecast): ForecastStatus
 
-    /** timeLogits flat (P, nBins); null on bad shape, fail-OPEN, never blocks the BG forecast. */
+    /** timeLogits flat (P,nBins); null on bad shape/logit; fails open, never blocks forecast. */
     fun decodeTime(timeLogits: List<Double>, nBins: Int, binHours: Double): PredictedTime?
 
 
@@ -183,17 +183,17 @@ interface NativeCore {
     /** SPEC/invariants.md §5 insulin table. */
     fun insulinPresetCatalog(): List<com.t1dm.core.model.InsulinPresetSpec>
 
-    /** Sums matching events' curve onto the fixed grid; pre-grid tails carry forward. */
+    /** Sums every kind-matching event's curve onto the fixed grid; pre-grid tails carry forward. */
     fun bucketize(events: List<CurveEvent>, gridStartMs: Long, nSteps: Int, kind: CurveKind): List<Double>
 
     /** IOB/COB at [atMs] = the remaining tail area of every [kind]-matching event. */
     fun onBoard(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double
 
-    /** Bateman events of a daily-repeating schedule whose action overlaps [fromMs, toMs). */
+    /** The Bateman events of a daily-repeating schedule whose action overlaps [fromMs, toMs). */
     fun extendBasal(schedule: BasalSchedule, fromMs: Long, toMs: Long): List<CurveEvent>
 
 
-    /** targetLow/targetHigh mg/dL, agpBins divides 1440; bad input yields AdvancedStats.EMPTY. */
+    /** targetLow/High are mg/dL; agpBins must divide 1440. Fail-closed to AdvancedStats.EMPTY. */
     fun advancedStats(
         samples: List<StatSample>,
         targetLow: Int,
@@ -201,11 +201,11 @@ interface NativeCore {
         agpBins: Int,
     ): AdvancedStats
 
-    /** Fixed clinical level-2 cuts (mg/dL), read from the crate; fails closed to UNAVAILABLE. */
+    /** Fixed clinical level-2 cuts, read from crate, never restated here; fails to UNAVAILABLE. */
     fun clinicalCuts(): ClinicalCuts
 
 
-    /** Band projection (SPEC/invariants.md §6.2) plus CG-EGA (§6.3); bad argument yields EMPTY. */
+    /** Band projection §6.2 per horizon plus CG-EGA (§6.3); under minSamples, sufficient=false. */
     fun forecastMetricsSuite(
         windows: List<ForecastWindow>,
         horizonsMin: List<Int>,
@@ -213,35 +213,35 @@ interface NativeCore {
         includeCgEga: Boolean,
     ): MetricsSuite
 
-    /** TRUTH-MAJOR: cell (i,j) at index i*predAxisMgdl.size+j; fails closed to empty list. */
+    /** cell (i,j) is truthAxis[i] vs predAxis[j] at i*predAxis.size+j; fails closed to empty. */
     fun clarkeZoneGrid(truthAxisMgdl: List<Double>, predAxisMgdl: List<Double>): List<ClarkeZone>
 
-    /** DTS Error Grid (Klonoff 2024): same layout/contract as clarkeZoneGrid, not repeated. */
+    /** DTS Error Grid; same layout/fail-closed contract as clarkeZoneGrid; coeffs live in Rust. */
     fun dtsZoneGrid(truthAxisMgdl: List<Double>, predAxisMgdl: List<Double>): List<DtsZone>
 
-    /** Rate-bin edges, mg/dL/min, ascending, TREND_BINS-1 long; fails closed to empty list. */
+    /** Interior rate-bin edges, ascending, always TREND_BINS-1; read from crate, fails to empty. */
     fun trendBinEdges(): List<Double>
 
     /** Read from crate; null fails every predictive alarm closed. */
     fun alarmFanEdges(): AlarmFanEdges?
 
-    /** Smallest calibration count where no order statistic clamps (SPEC/invariants.md §6). */
+    /** Smallest calibration count with no clamped order stat (§6); floors caller's threshold. */
     fun conformalMinCalWindows(): Int
 
-    /** Per-(step,τ) band correction (§8.4); windows CHRONOLOGICAL, core error yields NONE. */
+    /** Per-(step,τ) correction (§8.4); windows chronological; floors to conformalMinCalWindows. */
     fun fitQuantileConformal(windows: List<ForecastWindow>, minCalWindows: Int): ConformalFit
 
-    /** §8.4: add, restore median exactly, clamp outward; fails closed to RAW fan, never partial. */
+    /** §8.4: add, restore median exactly, clamp outward; fails closed to raw fan, never partial. */
     fun applyQuantileConformal(bandsMgdl: List<Double>, delta: List<Double>): List<Double>?
 
-    /** applyQuantileConformal for many same-shape fans (§8.4); fails closed for the WHOLE batch. */
+    /** applyQuantileConformal for same-shape fans in one pass (§8.4); fails closed for batch. */
     fun applyQuantileConformalBatch(fansMgdl: List<Double>, delta: List<Double>): List<Double>?
 
 
     /** Rust owns these numbers; nothing on this side transcribes them. */
     fun defaultCarTuning(): CarTuning
 
-    /** Heightfield crosses FFI here; caller OWNS the result and must GameWorld.close it. */
+    /** Heightfield crosses the FFI here; caller owns the result, must GameWorld.close it. */
     fun createGameWorld(terrain: TerrainSpec, tuning: CarTuning, obstacles: List<Obstacle>): GameWorld
 
     /** Rust owns these numbers; nothing on this side transcribes them. */

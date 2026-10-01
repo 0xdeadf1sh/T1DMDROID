@@ -1,4 +1,4 @@
-//! The BG head, re-run on device from exported weights; trunk frozen, only the adapter trains.
+//! BG head + LoRA adapter, per-STEP (INFERENCE.md §8.2); adapter site == spline: linear mix.
 
 use std::sync::Mutex;
 
@@ -18,7 +18,7 @@ const N_QUANTILES: usize = 7;
 /// Cosine LR floor, as a fraction of `LoraTrainOpts::lr`.
 const LR_MIN_RATIO: f64 = 0.1;
 
-/// Reasoned not measured; wide band catches collapse/runaway, not a shift of a third.
+/// Reasoned not measured: wide on purpose. min_frozen_response=2 mg/dL/u: below it, decline.
 const GUARD_OPTS_FIT: LoraGuardOpts = LoraGuardOpts {
     max_windows: 64,
     min_windows: 8,
@@ -117,7 +117,7 @@ fn read_f32_le(buf: &[u8], off: usize, n: usize) -> Result<Vec<f64>, CoreError> 
 
 #[uniffi::export]
 impl HeadModel {
-    /// Digest is checked, not recorded: a wrong-paired head reproduces a plausible, wrong head_raw.
+    /// Digest is checked not just recorded: wrong pairing gives a plausible, finite, wrong result.
     #[uniffi::constructor]
     pub fn parse(bytes: Vec<u8>, spec: HeadSpec) -> Result<std::sync::Arc<Self>, CoreError> {
         if spec.activation != "silu" {
@@ -233,7 +233,7 @@ impl HeadModel {
         self.d_model as i32
     }
 
-    /// head_raw for n_slots step states, layout assemble_decode consumes; no adapter = graph own.
+    /// n_slots*PATCH_SIZE*d_model in, n_slots*PATCH_SIZE*N_QUANTILES out, assemble_decode layout.
     pub fn forward(&self, step_states: Vec<f64>, n_slots: i32) -> Result<Vec<f64>, CoreError> {
         let n = n_slots.max(0) as usize;
         let n_steps = n * PATCH_SIZE;
@@ -359,7 +359,7 @@ impl LoraConfig {
     }
 }
 
-/// params: flat concat of every site A then B, order hidden->l0->l1->l2, skipping off ones.
+/// params: flat concat of each site A then B, order hidden->l0->l1->l2, skipping off sites.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct LoraWeights {
     pub config: LoraConfig,
@@ -730,14 +730,14 @@ pub fn lora_deserialize(bytes: Vec<u8>) -> Result<LoraWeights, CoreError> {
     })
 }
 
-/// hidden: window's STEP STATES (n_slots*PATCH_SIZE*d_model); slots must be ONE contiguous span.
+/// hidden: n_slots*PATCH_SIZE*d_model states; anchors/target_bg mg/dL; span must be contiguous.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct LoraSample {
     pub hidden: Vec<f64>,
     pub anchors: Vec<f64>,
     pub target_bg: Vec<f64>,
     pub n_slots: i32,
-    /// Same window step states with a probe dose injected into the masked span; empty if unpaired.
+    /// SAME window with a probe dose injected into the masked dose channel; empty when unpaired.
     pub hidden_pert: Vec<f64>,
     /// Units injected into `hidden_pert`; the guard divides by it. Ignored when unpaired.
     pub probe_dose_u: f64,
@@ -767,7 +767,7 @@ pub struct LoraTrainOpts {
     pub holdout_frac: f64,
     pub weight_decay: f64,
     pub seed: i64,
-    /// Pins adapted marginal dose response to the frozen model's; a MULTIPLE of its training loss.
+    /// Pins dose response to frozen; MULTIPLE of frozen training loss; 0.0 disables the term.
     pub distill_weight: f64,
     pub objective: LoraObjective,
 }
@@ -966,7 +966,7 @@ pub fn lora_train(
         }
     };
 
-    // d0: frozen model's own median response to the probe; S is a GLOBAL mean, not per-sample.
+    // d0: FROZEN median response to the probe dose; S: GLOBAL mean, not per-sample divisor.
     let distill_on = opts.distill_weight > 0.0;
     let mut d0_train: Vec<Option<Vec<f64>>> = vec![None; train.len()];
     // Counted whatever the weight is: a property of the replay, not of the optimiser.
@@ -1032,7 +1032,7 @@ pub fn lora_train(
             let j = (rng.next_u64() % (i as u64 + 1)) as usize;
             order.swap(i, j);
         }
-        // Adam's step size doesn't decay; a long fit would random-walk at full amplitude.
+        // Adam step size does not decay alone; a long fit random-walks at full amplitude.
         let sched = if opts.epochs > 1 {
             let phase = std::f64::consts::PI * epoch as f64 / (opts.epochs - 1) as f64;
             LR_MIN_RATIO + (1.0 - LR_MIN_RATIO) * 0.5 * (1.0 + phase.cos())
@@ -1112,7 +1112,7 @@ pub fn lora_train(
         e => holdout_history[e as usize - 1],
     };
     let improved = n_holdout > 0 && best_epoch > 0;
-    // On the weights actually RETURNED, held-out only; the fit isn't refused, block is on ATTACH.
+    // On weights actually RETURNED, held-out only; never refuses the fit, blocks on ATTACH.
     let guard = if holdout.iter().any(|s| s.is_forecast && !s.hidden_pert.is_empty()) {
         let returned = Lora::from_weights(&w, d, head.hidden, out_dim)?;
         Some(guard_report(head, desc, holdout, &returned, &GUARD_OPTS_FIT))
@@ -1211,14 +1211,14 @@ pub struct LoraTrainResult {
     pub report: LoraTrainReport,
 }
 
-/// Median line of assemble_decode, RISK space: each step's own anchor plus the head's delta.
+/// Median line of assemble_decode, RISK space: each step anchor plus the head delta.
 fn span_median_risk(desc: &ModelDescriptor, head_raw: &[f64], anchors: &[f64], n: usize) -> Vec<f64> {
     (0..n * PATCH_SIZE)
         .map(|i| desc.kovatchev.f(anchors[i / PATCH_SIZE]) + head_raw[i * N_QUANTILES])
         .collect()
 }
 
-/// Measures PRESERVATION not correctness; r0/r1 risk-space responses, m0/m1 mg/dL, never ratioed.
+/// Measures PRESERVATION not correctness: r0/r1 RISK space (ratioed); m0/m1 mg/dL/u (gated only).
 fn guard_verdict(
     r0: &[f64],
     r1: &[f64],
@@ -1300,7 +1300,7 @@ fn guard_verdict(
     report
 }
 
-/// What an adapter did to insulin's marginal response, read at the span's TERMINAL step.
+/// Model response to one unit insulin at the TERMINAL step; anchor cancels exactly, head-only.
 #[uniffi::export]
 pub fn lora_guard(
     head: &HeadModel,
@@ -1310,10 +1310,10 @@ pub fn lora_guard(
     opts: LoraGuardOpts,
 ) -> Result<LoraGuardReport, CoreError> {
     let lora = Lora::from_weights(weights, head.d_model, head.hidden, N_QUANTILES)?;
-    // Ragged samples refused, not indexed: slicing panics would cross the FFI boundary.
+    // Ragged samples refused not indexed: branch_median_risk would panic across FFI.
     let want = |s: &LoraSample| (s.n_slots.max(0) as usize) * PATCH_SIZE * head.d_model;
     for s in &samples {
-        // Anchor read PER SLOT; a short list indexes out of bounds, and the crate aborts on panic.
+        // Anchor read PER SLOT; a short list indexes out of bounds, crate aborts on panic.
         if s.anchors.len() < s.n_slots.max(0) as usize {
             return Err(CoreError::Internal {
                 reason: format!(
@@ -1357,7 +1357,7 @@ fn guard_report(
     let take = (opts.max_windows.max(0) as usize).min(usable.len());
     let windows = &usable[usable.len() - take..];
 
-    // RETENTION is a ratio in RISK space, the loss space; f_inv convex, mg/dL is never ratioed.
+    // RETENTION is a ratio in RISK space; mg/dL pair is reported/gated but never ratioed.
     let mut r0 = Vec::with_capacity(windows.len());
     let mut r1 = Vec::with_capacity(windows.len());
     let mut m0 = Vec::with_capacity(windows.len());
@@ -1547,7 +1547,7 @@ fn sample_loss_and_grad(
         }
     };
 
-    // Second forward over perturbed state squared against d0, ASSEMBLED median; MEDIAN COLUMN ONLY.
+    // Second forward over the perturbed state, squared vs frozen d0, on ASSEMBLED RISK median only.
     let paired = distill.filter(|c| c.scale > 0.0 && !sample.hidden_pert.is_empty());
     let mut pert: Option<(Vec<Activations>, Vec<f64>, Vec<f64>)> = None;
     let mut err = vec![0.0f64; n_steps];
@@ -1588,7 +1588,7 @@ fn sample_loss_and_grad(
         Some(l) => l,
     };
 
-    // Median is anchor plus column 0, so dL/dm lands on column 0.
+    // Median is anchor plus column 0, so dL/dm lands there unchanged.
     let mut d_head_raw = vec![0.0f64; n_steps * N_QUANTILES];
     // Baseline median takes +c*e[i], perturbed -c*e[i]: e is their difference minus a constant.
     let c_distill = paired.map_or(0.0, |ctx| 2.0 * ctx.scale / n_steps as f64);
@@ -1965,7 +1965,7 @@ mod tests {
             sample_loss_and_grad(&head, &d, &s, Some(&lora), TrainLoss::Pinball,Some(&mut analytic), Some(&ctx), None)
                 .unwrap();
 
-        // Check differences the SAME function as the gradient; proves something to agree about.
+        // Differences the SAME function it takes the gradient from; ignoring ctx would still pass.
         let mut without = vec![0.0f64; w.params.len()];
         let no_term =
             sample_loss_and_grad(&head, &d, &s, Some(&lora), TrainLoss::Pinball,Some(&mut without), None, None)

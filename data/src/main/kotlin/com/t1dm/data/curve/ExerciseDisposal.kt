@@ -1,6 +1,6 @@
 package com.t1dm.data.curve
 
-/** Duration → disposal gamma (§5); channel is carb-EQUIVALENT g/5min, scales with duration. */
+/** Duration -> disposal gamma (SPEC §5); grams equiv/5min, scales with duration not intensity. */
 object ExerciseDisposal {
 
     /** §5's shape. Peak at `(k−1)·θ` = 30 min. */
@@ -24,7 +24,7 @@ object ExerciseDisposal {
         val durationMin: Double,
     )
 
-    /** Clamps not throws: a hand-edited kv row's NaN would otherwise reach the model input. */
+    /** Clamps rather than throws: a hand-edited kv row's NaN would otherwise reach the model. */
     fun paramsFor(
         durationMin: Double,
         carbEquivPerMin: Double = DEFAULT_CARB_EQUIV_PER_MIN,

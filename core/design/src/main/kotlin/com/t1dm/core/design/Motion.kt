@@ -21,7 +21,7 @@ import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 
-/** Every path reads [LocalAnimationsEnabled]: [motionSpec], nav enter/exit; loops don't start. */
+/** Every motion path reads [LocalAnimationsEnabled]; decorative/looping motion just stays off. */
 
 const val DEFAULT_MOTION_MS = 220
 
@@ -38,7 +38,7 @@ fun navEnter(enabled: Boolean): EnterTransition =
 fun navExit(enabled: Boolean): ExitTransition =
     if (enabled) fadeOut(tween(DEFAULT_MOTION_MS)) else ExitTransition.None
 
-/** Cross-dissolves contents on [key] change; recording must OWN draw commands, fades go OUTSIDE. */
+/** Cross-dissolves on [key] change; caller's fade must be a graphicsLayer OUTSIDE this modifier. */
 @Composable
 fun Modifier.crossfadeOnSwap(key: Any?): Modifier {
     if (!animationsOn()) return this
@@ -46,7 +46,7 @@ fun Modifier.crossfadeOnSwap(key: Any?): Modifier {
     val second = rememberGraphicsLayer()
     val progress = remember { Animatable(1f) }
     val swap = remember { SwapCrossfade() }
-    // Armed in COMPOSITION: first draw under a new key must already know not to overwrite outgoing.
+    // Armed in COMPOSITION: first draw under a new key must not overwrite the outgoing recording.
     remember(key) {
         if (swap.last != null && key != null) {
             swap.pending = true
@@ -62,7 +62,7 @@ fun Modifier.crossfadeOnSwap(key: Any?): Modifier {
     }
     return this
         .drawWithContent {
-            // Read UNCONDITIONALLY: branching around it unsubscribes the draw, freezes dissolve.
+            // Read UNCONDITIONALLY: branching around it unsubscribes the node, freezes dissolve.
             val p = progress.value
             val t = if (swap.pending) 0f else p
             val live = if (swap.flip) second else first
@@ -73,7 +73,7 @@ fun Modifier.crossfadeOnSwap(key: Any?): Modifier {
                 live.blendMode = BlendMode.SrcOver
                 drawLayer(live)
             } else {
-                // Both halves ONE offscreen, incoming ADDED: source-over loses coverage, flashes.
+                // Both halves in ONE offscreen, ADDED: source-over alone loses t(1-t), flashes.
                 held.alpha = 1f - t
                 held.blendMode = BlendMode.SrcOver
                 live.alpha = t
@@ -86,7 +86,7 @@ fun Modifier.crossfadeOnSwap(key: Any?): Modifier {
         }
 }
 
-/** Plain fields, not snapshot state: nothing may recompose; [Animatable] alone invalidates draw. */
+/** Plain fields, not snapshot state: nothing recomposes; [Animatable] alone invalidates draw. */
 private class SwapCrossfade {
     var last: Any? = null
     var pending = false

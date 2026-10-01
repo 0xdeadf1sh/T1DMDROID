@@ -1,11 +1,11 @@
 package com.t1dm.core.model
 
-/** XNNPACK_FP32 executes .pte (only dose-scoreable path); STUB fallback. */
+/** [EXECUTORCH_XNNPACK_FP32]=dose-scorable; [STUB]=fallback. */
 enum class BackendId {
     EXECUTORCH_XNNPACK_FP32,
     STUB,
 
-    /** Backend name this build lost; reads as unknown, not throw; never trusted for dosing. */
+    /** Backend this build lacks; lets an old row read back as unknown instead of throwing. */
     UNKNOWN,
 }
 
@@ -22,7 +22,7 @@ data class RunningModel(
     val selected: Boolean,
 )
 
-/** [diskBytes] null ⇒ StubBackend; [reference] is REFERENCE metrics, ≠ [MetricsSuite]. */
+/** [diskBytes]=stat'd size, null under StubBackend. [reference]=held-out REFERENCE only. */
 data class ModelMeta(
     val modelId: String,
     val paramCount: Long? = null,
@@ -41,7 +41,7 @@ data class ModelMeta(
     val bgClampMinMgdl: Double? = null,
 )
 
-/** Parsed (descriptor field) but rendered NOWHERE: another dataset's numbers, not patient's. */
+/** Parsed but rendered NOWHERE: another dataset's numbers, not a second opinion on this patient. */
 data class ReferenceMetrics(
     val horizonsMin: List<Int>,
     val rmseMgdl: List<Double?>,
@@ -71,12 +71,12 @@ data class ModelLatency(
     val lastMs: Double,
 )
 
-/** [medianBg]:P·S mg/dL; [bandsMgdl]:P·S·nQ, step-major asc-τ; non-OK/[stale] blocks rails. */
+/** [medianBg]=P·S mg/dL, [bandsMgdl]=fan, step-major, f_inv-decoded; non-OK/stale blocks rails. */
 data class ModelPrediction(
     val modelId: String,
     val cycleTsMs: Long,
     val anchorTsMs: Long,
-    /** CGM source conditioning this forecast; null=UNKNOWN never matches, so unstamped drops. */
+    /** CGM source conditioning this; null=UNKNOWN, never matches, so it's dropped not guessed. */
     val sourceId: String? = null,
     val stepMs: Long,
     val medianBg: List<Double>,
@@ -88,7 +88,7 @@ data class ModelPrediction(
     val selected: Boolean,
     val stale: Boolean,
     val latencyMs: Double?,
-    /** Null: no time section, no second output, or decode failed; fail-open, blocks nothing. */
+    /** Null if no time section, no second output, or decode failed; fails open, never blocks BG. */
     val predictedTime: PredictedTime? = null,
 ) {
     val eligible: Boolean get() = status == ForecastStatus.OK && !stale
@@ -99,7 +99,7 @@ data class ModelPrediction(
 /** §6.1 alarm levels as positions in a [ModelPrediction.bandsMgdl] row; the crate resolves them. */
 data class AlarmFanEdges(val hypoIdx: Int, val hyperIdx: Int)
 
-/** Current hour-of-day belief; [predictedHour]∈[0,24); [resultantR]∈[0,1], diffuse near 0. */
+/** Model's belief of hour-of-day NOW, not per-step. [resultantR]∈[0,1]; diffuse near 0. */
 data class PredictedTime(
     val probs: List<Double>,
     val predictedHour: Double,
@@ -108,10 +108,10 @@ data class PredictedTime(
     val binHours: Double,
 )
 
-/** [LOG_WRITE]: a logged meal/dose (or withdrawal) fired this, not cadence tick; same gates. */
+/** [LOG_WRITE]: a logged meal/dose fired this cycle, not the tick; same controller path/gates. */
 enum class InferenceCause { GRID_TICK, LOG_WRITE, MANUAL, SYNTHETIC, COLLECTING_CONTEXT, OVER_TEMPERATURE }
 
-/** BATTERY °C; [thresholdC] pause line, [warnMarginC] amber margin, [resumeMarginC] hysteresis. */
+/** BATTERY sensor °C, die temp unreadable. [thresholdC]=pause line, [resumeMarginC]=hysteresis. */
 data class ThermalStatus(
     val currentC: Double,
     val thresholdC: Double,
@@ -119,7 +119,7 @@ data class ThermalStatus(
     val resumeMarginC: Double,
 )
 
-/** TEMP-chip band (D1): NORMAL below margin, WARN within, CRITICAL at/above threshold. */
+/** TEMP-chip band (D1): NORMAL below warn margin, WARN within it, CRITICAL at/above threshold. */
 enum class ThermalLevel { NORMAL, WARN, CRITICAL }
 
 /** Celsius; null [thresholdC] ⇒ NORMAL, the gate being disabled. */
@@ -130,12 +130,12 @@ fun thermalLevel(celsius: Double, thresholdC: Double?, warnMarginC: Double): The
     else -> ThermalLevel.NORMAL
 }
 
-/** Hours of MEASURED BG in window; below [requiredHours] all predictions suppressed. */
+/** MEASURED BG hours in window; below [requiredHours] (floor 8h) all predictions suppress. */
 data class WarmupProgress(val measuredHours: Double, val requiredHours: Double) {
     val fraction: Double get() = if (requiredHours <= 0.0) 1.0 else (measuredHours / requiredHours).coerceIn(0.0, 1.0)
 }
 
-/** Immutable StateFlow snapshot; [predictions] selected-first, [note] states refusal reason. */
+/** Immutable UI snapshot. [predictions] is selected-first; [note] says why a refusal refused. */
 data class InferenceState(
     val running: List<RunningModel> = emptyList(),
     val predictions: List<ModelPrediction> = emptyList(),
@@ -145,17 +145,17 @@ data class InferenceState(
     val lastCycleTsMs: Long? = null,
     val lastCause: InferenceCause? = null,
     val lastCycleDurationMs: Long? = null,
-    /** false when selected model served by [BackendId.STUB] fallback (no real .pte). */
+    /** false when the selected model is served by [BackendId.STUB] fallback (no real .pte). */
     val realBackendAvailable: Boolean = true,
-    /** Non-null while WARMUP withholds forecasts (predictions cleared); null once met. */
+    /** Non-null while WARMUP gate withholds forecasts (predictions cleared); null once met. */
     val warmup: WarmupProgress? = null,
-    /** Published independent of BG forecast, surviving warmup; phase belief, not dosing signal. */
+    /** Survives warmup gate, independent of BG; phase belief, NOT glucose/dosing, no §3.6 gate. */
     val circadianTime: PredictedTime? = null,
-    /** Anchor (epoch-ms) [circadianTime] formed at; clock offset is measured from it. */
+    /** Anchor (epoch-ms) [circadianTime] was formed at; the clock offset is measured from it. */
     val circadianAnchorMs: Long? = null,
     /** True when [circadianTime] was formed during warmup on limited history. */
     val circadianLowContext: Boolean = false,
-    /** Distinguishes "no time section" from "decode failed"; defaults true until cycle sets it. */
+    /** Distinguishes no-time-section empty state from decode-failed; defaults true until set. */
     val selectedHasTimeSection: Boolean = true,
     val note: String? = null,
 ) {

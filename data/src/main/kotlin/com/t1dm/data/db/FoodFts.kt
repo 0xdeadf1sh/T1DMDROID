@@ -3,7 +3,7 @@ package com.t1dm.data.db
 import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.execSQL
 
-/** Room-invisible FTS5 over `food`; same DDL must run in [AppDatabase] onCreate and M4_5. */
+/** External-content FTS5 over food; Room-invisible, same DDL runs onCreate and MIGRATION_4_5. */
 internal object FoodFts {
 
     val DDL: List<String> = listOf(

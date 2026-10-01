@@ -45,7 +45,7 @@ import com.t1dm.core.model.MealComponent
 import com.t1dm.core.model.ResolvedMealCurve
 import com.t1dm.ui.graph.CurvePreview
 
-/** Re-gram draft is POSITIONAL — names a slot, not a component; a slot mutation closes it. */
+/** The re-gram draft is POSITIONAL, names a slot not a component; mutation closes it first. */
 @Stable
 internal class MealDraft(initial: List<MealComponent>) {
     val components: SnapshotStateList<MealComponent> =
@@ -85,7 +85,7 @@ internal class MealDraft(initial: List<MealComponent>) {
         regramText = decimalFieldText(text)
     }
 
-    /** Committed on the button, never per keystroke: re-resolve keys on the list by value. */
+    /** Committed on the button, never per keystroke: re-resolve keys on the list value. */
     fun commitRegram(): Boolean {
         val i = regramIndex ?: return false
         val grams = regramText.toDoubleOrNull()
@@ -101,7 +101,7 @@ internal class MealDraft(initial: List<MealComponent>) {
     }
 }
 
-/** Parallel Bundle-storable lists; Saveable since ✎ disposes composition. Re-gram unsaved. */
+/** Parallel Bundle-storable lists, one per component; a nav route disposes the composition. */
 internal val MealDraftSaver: Saver<MealDraft, Any> = listSaver(
     save = { draft ->
         val c = draft.snapshot()
@@ -168,7 +168,7 @@ internal fun resolvedCurve(
 internal fun ComponentRows(draft: MealDraft) {
     val haptics = rememberT1dmHaptics()
     draft.components.forEachIndexed { i, c ->
-        // Name is the elastic member: unweighted it claims intrinsic width, starving the actions.
+        // The name is the elastic member: unweighted it claims intrinsic width, starves the rest.
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -185,7 +185,7 @@ internal fun ComponentRows(draft: MealDraft) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // Ellipsis, not default Clip: clipped reads as a shorter word, not a truncated one.
+                // Ellipsis, not the default Clip: a clipped label reads as shorter, not truncated.
                 Text(
                     "${"%.0f".format(c.carbs)} g carb",
                     style = MaterialTheme.typography.bodyMedium,
@@ -233,7 +233,7 @@ internal fun ResolvedCurveSummary(resolved: ResolvedMealCurve) {
     CurvePreview(values = resolved.values)
 }
 
-/** Bounded height nests this in an outer vertical scroll without infinite-constraint conflict. */
+/** The bounded height lets this list nest inside an outer vertical scroll without conflict. */
 @Composable
 internal fun FoodSearch(
     onSearch: suspend (String) -> List<Food>,

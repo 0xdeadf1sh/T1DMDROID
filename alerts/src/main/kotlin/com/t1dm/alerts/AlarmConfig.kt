@@ -2,7 +2,7 @@ package com.t1dm.alerts
 
 import com.t1dm.core.model.AlertThresholds
 
-/** Defaults unbounded (§3.6-A). fallingTrendThresholdTenths: 0.1 mg/dL/min, negative falling. */
+/** Defaults only, unbounded (§3.6-A). fallingTrend 0.1mg/dL/min; overTempClear < overTempAlert. */
 data class AlarmConfig(
     val thresholds: AlertThresholds,
     val lossMin: Int = 20,

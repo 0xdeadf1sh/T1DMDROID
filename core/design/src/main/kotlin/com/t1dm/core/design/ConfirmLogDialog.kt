@@ -20,9 +20,9 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-/** Confirm-then-commit gate (§3.6-G); additive to §3.6-F, not substitute. DEATH auto-confirms. */
+/** The confirm-then-commit gate every log passes (§3.6-G); friction, additive to §3.6-F. */
 
-/** 5-min event grid, round-to-nearest (§4-#1); literal since :core:design can't reach :data. */
+/** The 5-min event grid, round-to-nearest (§4-#1); a literal, :core:design can't reach :data. */
 private const val GRID_MS = 300_000L
 
 /** Re-read the wall clock this often, so the restated time is still true when Log is pressed. */
@@ -32,7 +32,7 @@ private val HHMM: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 
 /** What a pending log will write, carried by value from the screen that raised the dialog. */
 sealed interface PendingLog {
-    /** [gi] null for multi-food meals. */
+    /** gi is null for a multi-food builder meal, whose Ra curve combines its components. */
     data class Meal(
         val grams: Double,
         val gi: Double?,
@@ -40,7 +40,7 @@ sealed interface PendingLog {
         val note: String? = null,
     ) : PendingLog
 
-    /** [typeLabel] must be the RESOLVED curve persisted, or dialog restates the wrong row. */
+    /** typeLabel must be the writer's RESOLVED curve, or the dialog restates it wrong. */
     data class Dose(
         val units: Double,
         val kind: InsulinKind,
@@ -56,7 +56,7 @@ internal fun confirmTitle(pending: PendingLog): String = when (pending) {
     }
 }
 
-/** Pure, unit-testable without composition; [nowMs] is ask's wall clock, grid rounds nearest. */
+/** Pure, so wording is unit-testable without a composition; nowMs is the wall clock at the ask. */
 internal fun confirmFields(pending: PendingLog, nowMs: Long, zone: ZoneId = ZoneId.systemDefault()): List<Pair<String, String>> {
     val slot = Math.floorDiv(nowMs + GRID_MS / 2, GRID_MS) * GRID_MS
     val time = "${hhmm(nowMs, zone)} · 5-min slot ${hhmm(slot, zone)}"
@@ -84,7 +84,7 @@ private fun hhmm(ms: Long, zone: ZoneId): String =
 internal fun fmtNum(v: Double): String =
     if (v == Math.rint(v) && !v.isInfinite()) v.toLong().toString() else "%.1f".format(v)
 
-/** [onConfirm] writes and clears the entry field; never clear before, or Cancel wipes input. */
+/** onConfirm writes and clears the entry field; clearing first lets Cancel wipe what's typed. */
 @Composable
 fun ConfirmLogDialog(
     pending: PendingLog,

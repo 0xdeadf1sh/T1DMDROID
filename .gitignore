@@ -43,6 +43,9 @@ models/*.bin
 # `crates/t1dm-core/src/testdata/`.
 models/
 
+# ── Extracted artifacts (pushed to the device by hand, never committed) ─────
+tables/
+
 # ── Claude Code ─────────────────────────────────────────────────────────────
 # Per-user Claude state stays local; share the project skills with contributors.
 .claude/*

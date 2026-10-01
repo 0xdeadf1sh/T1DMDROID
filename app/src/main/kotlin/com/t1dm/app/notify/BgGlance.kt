@@ -13,7 +13,7 @@ import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.SensorArrow
 import kotlin.math.roundToInt
 
-/** mg/dL and minutes throughout; crossing fields non-null only for a §3.6-eligible forecast. */
+/** mg/dL and minutes throughout; crossing fields non-null only for §3.6-eligible forecasts. */
 data class BgGlance(
     val bgMgdl: Int?,
     val trendTenths: Int?,
@@ -21,7 +21,7 @@ data class BgGlance(
     val band: AlertBand?,
     /** [directionOf]'s arrow, as the bottom bar and watch draw it; null = none or stale. */
     val trend: GlanceTrend?,
-    /** Forecast slope, drives the watch fc_trend; never drawn as an arrow. */
+    /** The selected forecast's own slope; drives the watch's fc_trend, not the drawn arrow. */
     val fcTrend: GlanceTrend,
     /** §3.6-eligible — OK status, fresh reading and anchor — and not in warmup. */
     val forecastEligible: Boolean,
@@ -136,7 +136,7 @@ sealed interface FanScan {
     data class Out(val kind: PredictiveCrossing.Kind, val step: Int, val edgeMgdl: Double) : FanScan
 }
 
-/** One value per call site: a promoted reconstruction must not appear as the lock-screen BG. */
+/** One value, no call site passes the same row twice; keeps reconstruction off the lock screen. */
 data class GlanceReadings private constructor(
     /** Newest row, whatever its provenance. */
     val latest: CgmReading?,

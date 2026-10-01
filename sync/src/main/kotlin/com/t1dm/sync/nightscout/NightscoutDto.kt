@@ -13,7 +13,7 @@ internal val NsJson: Json = Json {
     explicitNulls = false
 }
 
-/** sgv is mg/dL (SPEC/invariants.md §3); date is epoch-ms, the dedup/order key. */
+/** sgv is mg/dL both sides (SPEC/invariants.md §3); date is the dedup/order key, not dateString. */
 @Serializable
 data class NsEntryDto(
     val sgv: Int,
@@ -25,7 +25,7 @@ data class NsEntryDto(
     val utcOffset: Int = 0,
 )
 
-/** No CURVE on Nightscout, so this bridge is one-way; notes carries client_id for retry dedup. */
+/** No curve params on Nightscout (bridge is one-way); notes carries client_id so retries dedupe. */
 @Serializable
 data class NsTreatmentDto(
     val eventType: String,
@@ -37,7 +37,7 @@ data class NsTreatmentDto(
     val utcOffset: Int = 0,
 )
 
-/** A meal is carb with no insulin, a bolus is insulin with no carb; separate events here. */
+/** A meal is carbs with no insulin; a bolus is insulin with no carbs — separate events. */
 object NsEventType {
     const val CARBS = "Carb Correction"
     const val BOLUS = "Correction Bolus"

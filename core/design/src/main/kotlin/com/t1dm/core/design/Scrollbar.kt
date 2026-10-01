@@ -21,7 +21,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 
-/** Order load-bearing (ScrollState): before verticalScroll, else thumb scrolls with content. */
+/** Modifier order load-bearing: BEFORE verticalScroll, else draw node sizes to whole content. */
 
 private const val FADE_IN_MS = 120
 private const val FADE_OUT_MS = 380
@@ -43,7 +43,7 @@ fun Modifier.verticalScrollbar(
     endInset: Dp = DEFAULT_END_INSET,
 ): Modifier {
     val alpha = rememberThumbAlpha {
-        // Paired: a maxValue change alone (first measure, or content growth) also flashes.
+        // Paired, so a maxValue change alone (first measure, or content growing) also flashes.
         if (isUnscrollable(state.maxValue)) null else state.maxValue to state.value
     }
     return drawWithContent {
@@ -85,7 +85,7 @@ fun Modifier.verticalScrollbar(
     }
 }
 
-/** [position] null while content fits, SNAPS the thumb away; read in draw lambda, no recompose. */
+/** position returns null while content fits, SNAPS the thumb away; read from draw lambda only. */
 @Composable
 private fun rememberThumbAlpha(position: () -> Any?): State<Float> {
     val motion = animationsOn()
@@ -139,7 +139,7 @@ internal fun scrollThumb(
     )
 }
 
-/** Proportion over item COUNTS (lazy list has no pixel height); approximate if heights differ. */
+/** The proportion is taken over item COUNTS, a lazy list knows no pixel height; approximate. */
 internal fun lazyThumb(
     viewportPx: Float,
     totalItems: Int,

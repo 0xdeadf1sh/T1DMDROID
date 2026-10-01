@@ -90,10 +90,10 @@ import kotlin.math.roundToInt
 data class GraphScrub(
     val tsMs: Long,
     val tzOffsetMin: Int,
-    /** A past reading, the selected model's median in the pred zone, the display roll, or null. */
+    /** Past reading, prediction-zone median, or display-only roll past validity; else null. */
     val bgValue: Float?,
     val inPredZone: Boolean,
-    /** [bgValue] came from the roll past its validated prefix; kept out of every rail by type. */
+    /** bgValue from the roll past its validated prefix; unrendered, kept out of every rail. */
     val bgExtrapolated: Boolean,
     /** Grams per 5-min, or null with no overlay. */
     val carbRate: Float?,
@@ -101,17 +101,17 @@ data class GraphScrub(
     val insulinRate: Float?,
     /** Grams of carbohydrate EQUIVALENT disposed per 5-min, or null with no overlay. */
     val exerciseRate: Float?,
-    /** Null only with no pedometer. Unmeasured reads 0; [StepsFrame.stepsAt] tells them apart. */
+    /** Null only with no pedometer feed; an unmeasured bucket reads 0, keeping rows fixed. */
     val steps: Int?,
     /** Predicted hour in `[0,24)`, or null with no probe. */
     val modelHour: Double?,
     val unit: UnitSpace,
 )
 
-/** [predictedHour] is the hour-of-day at [anchorTsMs]; later t is +(t-anchor) hrs, mod 24. */
+/** predictedHour is hour at anchorTsMs; at later t: predictedHour + (t-anchor) hours, mod 24. */
 data class PredictedClock(val predictedHour: Double, val anchorTsMs: Long, val resultantR: Double)
 
-/** FIRST time an eligible forecast's median crosses a threshold; degenerate/stale produces none. */
+/** FIRST time a forecast median crosses a threshold; a stale or degenerate one yields none. */
 data class ExcursionMarker(
     val tsMs: Long,
     val hyper: Boolean,
@@ -121,7 +121,7 @@ data class ExcursionMarker(
     val levelMgdl: Int,
 )
 
-/** Null paintControls means paint off. [tool] is a key, not the enum ([PaintFrame.toolIdOf]). */
+/** Null paintControls means paint mode is off; tool is a PaintTool key, not the enum. */
 data class PaintControls(
     val tool: String,
     val colorArgb: Int,
@@ -131,16 +131,16 @@ data class PaintControls(
 
 private enum class PaintGesture { DRAW, ERASE, TRANSFORM }
 
-/** From the constant label/value template: depends on theme/density, nothing the cursor does. */
+/** Constant label set and value template: depends on theme/density, nothing the cursor does. */
 private class ScrubMetrics(val labelColW: Float, val valueColW: Float, val lineH: Float)
 
-/** Every paint coordinate anchors here, not the composable, whose top moves with the clock axis. */
+/** Every paint coord anchors here, never the composable, whose top moves with the clock axis. */
 private class PlotBox(val left: Float, val top: Float, val right: Float, val bottom: Float) {
     val width: Double get() = (right - left).toDouble().coerceAtLeast(1.0)
     val height: Float get() = (bottom - top).coerceAtLeast(1f)
 }
 
-/** Draws a pre-built [GraphFrame] only; decimation and unit transform happen off-thread upstream */
+/** Draws a pre-built GraphFrame only, never List<CgmReading>: transform happens upstream. */
 @Composable
 fun GlucoseGraph(
     frame: GraphFrame,
@@ -154,16 +154,16 @@ fun GlucoseGraph(
     stepsFrame: StepsFrame? = null,
     // One icon per logged event, one lane per log kind, low in the plot. No amount, no row id.
     logMarkers: List<LogMarker> = emptyList(),
-    /** Positions behind the mark in [logMarkers] — a cluster, all lanes. Logs can share a slot. */
+    /** Positions in logMarkers of every log behind the mark, all lanes; indices, not markers. */
     onMarkerTap: ((List<Int>) -> Unit)? = null,
-    /** DISPLAY ONLY: nothing drawn here is stored; the edit bar's Fill writes into the record. */
+    /** DISPLAY ONLY: nothing here is stored; a fill is written by the edit bar's Fill. */
     reconstructed: List<ReconstructedBg> = emptyList(),
-    /** mg/dL → Kovatchev risk, from the Rust core. Null on the risk axis draws no reconstruction */
+    /** mg/dL -> Kovatchev risk from Rust core; null on risk axis draws no reconstruction. */
     kovatchevF: ((Double) -> Double)? = null,
-    /** Non-null puts the panel in EDIT: 1 finger drags a stretch, 2+ pan/zoom. Press acts on it. */
+    /** Non-null puts the panel in EDIT mode: one finger drags a stretch, two+ pan/zoom the view. */
     maskControls: MaskControls? = null,
     editSelection: MaskSelection? = null,
-    /** A drag finished: the stretch selected, snapped and clamped, or null when it cleared it. */
+    /** A drag finished: the stretch it selected, snapped/clamped, or null when it cleared it. */
     onEditSelection: ((MaskSelection?) -> Unit)? = null,
     rangeMinMgdl: Int? = null,
     rangeMaxMgdl: Int? = null,
@@ -176,27 +176,27 @@ fun GlucoseGraph(
     rolled: RolledSeries? = null,
     // Extends the pannable right edge past now, without auto-following into that empty region.
     futureExtentMs: Long = 0L,
-    // Layout only: auto-follow edge when a forecast exists but isn't drawn. Null ⇒ content decides.
+    // Layout only: holds auto-follow edge when a forecast exists undrawn; null = content decides.
     reservedEndMs: Long? = null,
     // Stored forecasts read back and swept by the scrub. Display-only. Null ⇒ nothing is drawn.
     hindsight: HindsightFrame? = null,
-    // Freehand layer, built off-thread; clipped out of a corridor around the BG line.
+    // Freehand annotation layer, built off-thread; drawn under traces, clipped near the BG line.
     paint: PaintFrame? = null,
-    // Non-null ⇒ 1 finger draws/erases, 2+ pan/zoom. DECORATIVE: no calculator/rail reads a stroke.
+    // Non-null: one finger draws/erases, two+ pan/zoom. DECORATIVE: no rail ever reads a stroke.
     paintControls: PaintControls? = null,
     /** Fired once on lift-off; `id = 0`, the store mints the row id. */
     onPaintStroke: ((PaintStroke) -> Unit)? = null,
     /** Whole strokes only, so undo stays a stack. */
     onErasePaintStroke: ((Long) -> Unit)? = null,
     onScrub: ((GraphScrub?) -> Unit)? = null,
-    /** Start instant and span, ms. Hoisted for drive mode, which adopts this, not its own. */
+    /** Start instant and span, in ms; hoisted for drive mode, which adopts this viewport. */
     onViewportChange: ((startMs: Double, spanMs: Double) -> Unit)? = null,
-    /** RECORD begins, older than [frame]'s first if windowed, so history stays reachable. */
+    /** Where the RECORD begins, older than frame's first if the load was windowed; null = first. */
     domainFloorMs: Long? = null,
 ) {
     val cs = MaterialTheme.colorScheme
     val density = LocalDensity.current
-    // One pass measures ~25 strings, ~35 while scrubbing; the default cache holds eight.
+    // One pass measures ~25 distinct strings, ~35 while scrubbing; the default cache holds eight.
     val measurer = rememberTextMeasurer(cacheSize = 64)
     val haptics = LocalT1dmHaptics.current
 
@@ -212,7 +212,7 @@ fun GlucoseGraph(
     val corridorPx = corridorWidthPx(dpPx)
     val chalkPens = remember(dpPx) { ChalkPens(dpPx) }
 
-    // Hoisted so the draw phase, re-running at the display's refresh rate, allocates none of this.
+    // Hoisted so the draw phase, which re-runs at the display refresh rate, allocates none of this.
     val tracePath = remember { Path() }
     val overlayPaths = remember { CurveChannelPaths() }
     // One path for every visible bar: one `drawPath` a frame, not one `drawRect` a bucket.
@@ -232,7 +232,7 @@ fun GlucoseGraph(
     val labelCache = remember { GraphLabelCache() }
     // One style: exactly one legend is ever drawn, since "smoothed" is a swap, not an overlay.
     val traceLegendStyle = remember(cs.primary) { TextStyle(color = cs.primary, fontSize = 9.sp) }
-    // Where the fan ends is where the roll's hatch begins; only from a series whose fan is painted.
+    // Where the fan ends, the roll hatch begins, one uncertainty; only from a painted fan series.
     val rolledSeam = remember(predictions) {
         predictions.lastOrNull { it.selected && !it.degenerate && !it.isEmpty }?.let { p ->
             val last = p.size - 1
@@ -255,17 +255,17 @@ fun GlucoseGraph(
         )
     }
 
-    // Held unconditionally like the paint scratch; feed split/sorted ONCE, read as a monotone pass.
+    // Held unconditionally, like the paint scratch above; the feed is split/sorted ONCE here.
     val semantics = LocalT1dmSemantics.current
     val carbMarkPainter = rememberVectorPainter(logMarkerIcon(CurveKind.CARB))
     val insulinMarkPainter = rememberVectorPainter(logMarkerIcon(CurveKind.INSULIN))
     val exerciseMarkPainter = rememberVectorPainter(logMarkerIcon(CurveKind.EXERCISE))
-    // Curve overlay's own inks, so a mark matches its curve's colour: semantic roles, not Material.
+    // The curve overlay's own inks: a mark is the colour of the curve it stands for.
     val carbInk = semantics.secondary
     val insulinInk = semantics.inRange
     // The one remaining chrome role. Not a glucose band, for the reason [stepsInk] gives below.
     val exerciseInk = semantics.primary
-    // Deliberately not a semantic role: borrowing one would make a busy hour read as glucose.
+    // Deliberately not a semantic role: every role is spoken for; borrowing misreads as glucose.
     val stepsInk = remember(cs.onSurfaceVariant) { cs.onSurfaceVariant.copy(alpha = 0.38f) }
     val carbTint = remember(carbInk) { ColorFilter.tint(carbInk) }
     val insulinTint = remember(insulinInk) { ColorFilter.tint(insulinInk) }
@@ -276,7 +276,7 @@ fun GlucoseGraph(
     val markSepPx = logMarkerSeparationPx(dpPx)
     val markSizePx = LOG_MARKER_DP * dpPx
 
-    // Plain memory buffer; [liveCount] is snapshot state so a new sample invalidates DRAW only.
+    // The buffer is plain memory; liveCount is snapshot state, invalidating only the DRAW phase.
     val live = remember { StrokeCapture() }
     var liveCount by remember { mutableIntStateOf(0) }
     var liveHeld by remember { mutableStateOf(false) }
@@ -305,11 +305,11 @@ fun GlucoseGraph(
         return maxOf(fe, pe, re, se)
     }
 
-    // Furthest the viewport may pan, so dose curves in the empty future stay reachable.
+    // Furthest the viewport may be panned, so dose curves in the empty future are reachable.
     fun panEndMs(): Double =
         maxOf(followEndMs(), (System.currentTimeMillis() + futureExtentMs).toDouble())
 
-    /** Oldest instant the viewport may reach. [domainFloorMs] is older when windowed. */
+    /** Oldest instant the viewport may reach; falls back to the first reading when unwindowed. */
     fun domainStartMs(): Double {
         val firstHeld = frame.absMs(0)
         val floor = domainFloorMs?.toDouble() ?: return firstHeld
@@ -326,15 +326,19 @@ fun GlucoseGraph(
     fun clamp() {
         if (frame.isEmpty) return
         val (minSpan, maxSpan) = spanBounds()
-        viewSpanMs = viewSpanMs.coerceIn(minSpan, maxSpan)
-        val ds = domainStartMs()
-        val de = panEndMs()
-        val range = de - ds
-        viewStartMs = if (viewSpanMs >= range) ds - (viewSpanMs - range) / 2.0
-        else viewStartMs.coerceIn(ds, de - viewSpanMs)
+        val (start, span) = clampViewport(
+            startMs = viewStartMs,
+            spanMs = viewSpanMs,
+            domainStartMs = domainStartMs(),
+            panEndMs = panEndMs(),
+            minSpanMs = minSpan,
+            maxSpanMs = maxSpan,
+        )
+        viewStartMs = start
+        viewSpanMs = span
     }
 
-    // Keyed on paint mode ALONE: a re-key cancels a gesture in flight, truncating a freehand line.
+    // Keyed on paint mode ALONE: a re-key cancels an in-flight gesture mid freehand line.
     val paintOn = paintControls != null
     val maskOn = maskControls != null && !paintOn
     // Paint wins: it is the mode the user turned on most recently.
@@ -347,7 +351,7 @@ fun GlucoseGraph(
     val selNow by rememberUpdatedState(editSelection)
     val emitSel by rememberUpdatedState(onEditSelection)
 
-    // Selection and τ sweep both move by jumping; each interpolates from where the last reached.
+    // A selection snaps to whole patches, a tau sweep steps a ladder; both interpolate by jumping.
     var selTween by remember { mutableStateOf(SelectionTween(null, null)) }
     val selProgress = remember { Animatable(1f) }
     LaunchedEffect(editSelection) {
@@ -362,14 +366,14 @@ fun GlucoseGraph(
         selProgress.snapTo(0f)
         selProgress.animateTo(1f, tween(SELECTION_TWEEN_MS, easing = FastOutSlowInEasing))
     }
-    // Interpolations resolve in DRAW: `.value` is snapshot state, reading it in body subscribes it.
+    // Both interpolations resolve in DRAW: Animatable.value is snapshot state, read there only.
 
     var reconTween by remember { mutableStateOf(ReconTween(emptyList(), emptyList())) }
     val reconProgress = remember { Animatable(1f) }
     LaunchedEffect(reconstructed) {
         val target = reconstructed
         val drawnNow = lerpReconstruction(reconTween.from, reconTween.to, reconProgress.value)
-        // Only a move interpolates: sliding between slot sets would draw through slots unspoken of.
+        // Only a move is interpolated: crossing slot sets would draw through unspoken slots.
         if (!sameSlots(drawnNow, target)) {
             reconTween = ReconTween(target, target)
             reconProgress.snapTo(1f)
@@ -388,7 +392,7 @@ fun GlucoseGraph(
         PlotBox(leftPx, topPx, canvasSize.width - rightPx, canvasSize.height - bottomPx),
     )
 
-    // Rebuilt per PAN, not per frame; also what a tap hit-tests, so tap and screen never diverge.
+    // Rebuilt per PAN, not per frame; same reduction the tap hit-test uses, matching the screen.
     val plotRightPx = canvasSize.width - rightPx
     val insulinClusters = remember(insulinLane, viewStartMs, viewSpanMs, leftPx, plotRightPx, markSepPx) {
         if (viewStartMs.isNaN()) emptyList()
@@ -403,7 +407,7 @@ fun GlucoseGraph(
         else clusterLogMarkers(exerciseLane.marks, viewStartMs, viewSpanMs, leftPx, plotRightPx, markSepPx)
     }
 
-    // Via `rememberUpdatedState`, so the handler tests the current viewport, not the launch one.
+    // Read through rememberUpdatedState, so the handler tests against the current viewport.
     val markerTap by rememberUpdatedState(onMarkerTap)
     val hitMarkers by rememberUpdatedState<(Offset) -> List<Int>>({ pos ->
         hitTestLogMarkers(
@@ -412,7 +416,7 @@ fun GlucoseGraph(
         )
     })
 
-    // Edge-triggered, buzzes once. Plain holder, not snapshot: felt, never drawn, no invalidate.
+    // Edge-triggered so a held pan buzzes once; plain holder, not snapshot state (felt, not drawn).
     val atEdge = remember { booleanArrayOf(false) }
 
     /** The one implementation of the viewport math, shared by every mode. */
@@ -428,11 +432,11 @@ fun GlucoseGraph(
         }
         viewStartMs -= panX / ppm
         val de = followEndMs()
-        // What the gesture asked for: `clamp` rewrites both fields, nothing left to test a wall.
+        // What the gesture asked for: clamp rewrites both, leaving nothing to test a wall against.
         val wantedStart = viewStartMs
         val wantedSpan = viewSpanMs
         clamp()
-        // `isFinite` guards pre-seed: NaN compares unequal to itself, reading as no wall ever met.
+        // isFinite guards before viewStartMs is seeded: NaN != NaN reads as a wall never met.
         val pinned = wantedStart.isFinite() &&
             (viewStartMs != wantedStart || viewSpanMs != wantedSpan)
         if (pinned && !atEdge[0]) haptics.perform(HapticEvent.EdgeStop)
@@ -440,7 +444,7 @@ fun GlucoseGraph(
         followLatest = (viewStartMs + viewSpanMs) >= de - viewSpanMs * 0.02
     })
 
-    // Grain is the SAMPLE, not pixel: keyed on raw position the LRA saturates to a flat buzz.
+    // Grain is the SAMPLE not the pixel: raw position saturates the LRA; index ticks per reading.
     val scrubDetent = rememberHapticDetent(HapticEvent.ScrubTick)
 
     val scrubAt by rememberUpdatedState<(Float) -> Unit>({ x ->
@@ -460,7 +464,7 @@ fun GlucoseGraph(
         onScrub?.invoke(null)
     })
 
-    // Released when the containing layer arrives; no listener ⇒ no twin to wait for.
+    // Released when the layer containing it arrives; with no listener there is no twin to wait for.
     LaunchedEffect(paint) {
         if (liveHeld) {
             liveHeld = false
@@ -468,7 +472,7 @@ fun GlucoseGraph(
         }
     }
 
-    // Leaving paint drops an in-flight stroke; clear pixels too, or it lingers as an orphan ghost.
+    // Leaving paint mode drops an in-flight stroke; clear pixels too, or it lingers as a ghost.
     LaunchedEffect(paintOn) {
         if (!paintOn) {
             live.abandon()
@@ -485,7 +489,7 @@ fun GlucoseGraph(
         clamp()
     }
 
-    // When a roll lands, pan so its far edge is visible, with ~1 h of context before its anchor.
+    // When a roll lands, pan right so its far edge shows, with ~1h of context before its anchor.
     LaunchedEffect(rolled) {
         if (rolled == null || rolled.isEmpty || frame.isEmpty) return@LaunchedEffect
         val end = rolled.maxTsMs!!.toDouble()
@@ -514,11 +518,11 @@ fun GlucoseGraph(
         modifier
             .height(220.dp)
             .onSizeChanged { canvasSize = it }
-            // Load-bearing order: compose-ui 1.7.6 dispatches MAIN in REVERSE registration order.
+            // Registration order load-bearing: REVERSE dispatch (1.7.6) drops the first gesture.
             .pointerInput(gestureMode) {
-                // 1 finger drags a span, 2+ pan/zoom. Horizontal only: a mask is a stretch of TIME.
+                // One finger drags a span, two+ pan/zoom; horizontal only, a stretch of TIME.
                 if (gestureMode == GraphGesture.EDIT) {
-                    // Hand-written: drag detector consumes, aborting the transform detector.
+                    // Hand-written: drag detector consumes; transform aborts, edit stays pannable.
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         val c = maskCtl ?: return@awaitEachGesture
@@ -534,10 +538,10 @@ fun GlucoseGraph(
                         fun tsAt(x: Float): Long =
                             (viewStartMs + (x - box.left) / (box.width / viewSpanMs)).toLong()
 
-                        // An instant, not a pixel: viewport moves under a drag, stale pixels drift.
+                        // An instant, not a pixel: viewport moves, misplacing a stale pixel read.
                         val fromTs = tsAt(startX)
 
-                        // Opposite end anchors INCLUSIVELY: endMs exclusive, else left resize grows
+                        // Opposite end anchors INCLUSIVELY: selectionOf grows the left resize.
                         var anchorTs = Long.MIN_VALUE
                         selNow?.let { sel ->
                             val ppmNow = box.width / viewSpanMs
@@ -545,7 +549,7 @@ fun GlucoseGraph(
                             val x1 = ((sel.endMs - viewStartMs) * ppmNow + box.left).toFloat()
                             val dLeft = kotlin.math.abs(startX - x0)
                             val dRight = kotlin.math.abs(startX - x1)
-                            // Nearest handle wins: left-first if drawn narrower than grab radius.
+                            // Nearest handle wins: left-first wins under the grab radius.
                             if (dLeft <= grabPx || dRight <= grabPx) {
                                 anchorTs = if (dLeft <= dRight) sel.endMs - c.patchMs else sel.startMs
                                 haptics.perform(HapticEvent.Tap)
@@ -555,7 +559,7 @@ fun GlucoseGraph(
                         var mode = EditGesture.SELECT
                         var moved = anchorTs != Long.MIN_VALUE
                         var emitted: MaskSelection? = null
-                        // Latched pre-loop: selNow holds this gesture's emit, not the aborted draw.
+                        // Latched before the loop: selNow already holds what this gesture emitted.
                         val selAtStart = selNow
 
                         while (true) {
@@ -563,13 +567,13 @@ fun GlucoseGraph(
                             val pressed = event.changes.count { it.pressed }
                             if (pressed == 0) break
                             if (pressed >= 2 && mode != EditGesture.TRANSFORM) {
-                                // Put back what was selected, so a pan leaves no unaimed stretch.
+                                // Put back what was selected; a pan leaves no stray stretch.
                                 if (emitted != null) sink(selAtStart)
                                 mode = EditGesture.TRANSFORM
                             }
                             when (mode) {
                                 EditGesture.TRANSFORM -> {
-                                    // No slop gate: a pan would fight the resting finger.
+                                    // No slop gate: a pan fights the finger on the selection.
                                     val zoom = event.calculateZoom()
                                     val pan = event.calculatePan()
                                     val centroid = event.calculateCentroid(useCurrent = false)
@@ -580,14 +584,14 @@ fun GlucoseGraph(
                                 }
                                 EditGesture.SELECT -> {
                                     val ch = event.changes.firstOrNull { it.pressed } ?: break
-                                    // Shorter than slop is a touch, selects nothing; grab exempt.
+                                    // Shorter than slop is a touch: selects nothing, grab exempt.
                                     if (!moved && kotlin.math.abs(ch.position.x - startX) >= slopPx) {
                                         moved = true
                                     }
                                     if (moved) {
                                         val anchor = if (anchorTs != Long.MIN_VALUE) anchorTs else fromTs
                                         val next = selectionOf(anchor, tsAt(ch.position.x), c)
-                                        // Every move, not just lift: touch-up-only drags blind.
+                                        // Every move, not the lift: touch-up drags a handle blind.
                                         if (next != null && next != emitted) {
                                             emitted = next
                                             sink(next)
@@ -606,7 +610,7 @@ fun GlucoseGraph(
                 if (!paintOn) {
                     coroutineScope {
                         launch(start = CoroutineStart.UNDISPATCHED) {
-                            // Registered FIRST so dispatched LAST, consumes nothing; not feed-keyed
+                            // FIRST registered, LAST dispatched; empty feed misses at hit-test.
                             this@pointerInput.detectLogMarkerTaps { pos ->
                                 val sink = markerTap ?: return@detectLogMarkerTaps
                                 val hit = hitMarkers(pos)
@@ -621,7 +625,7 @@ fun GlucoseGraph(
                             }
                         }
                         launch(start = CoroutineStart.UNDISPATCHED) {
-                            // Detent resets first: landing seeds silent, ticks count crosses.
+                            // Detent resets first so the landing sample seeds silently.
                             this@pointerInput.detectDragGesturesAfterLongPress(
                                 onDragStart = { pos ->
                                     haptics.perform(HapticEvent.LongPress)
@@ -640,7 +644,7 @@ fun GlucoseGraph(
                 // A constant reach hoists; the decimation gate scales with the pen and cannot.
                 val erasePx = PAINT_ERASE_RADIUS_DP * dpPx
 
-                // Per sample, not pen-down: viewport/inset move under a stroke and shear it.
+                // Per sample, not pen-down: viewport/inset move mid-stroke, shearing a capture.
                 fun sampleTs(x: Float): Long {
                     val box = plotBox
                     return (viewStartMs + (x - box.left) / (box.width / viewSpanMs)).toLong()
@@ -652,7 +656,7 @@ fun GlucoseGraph(
 
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
-                    // After down, never before: re-entry on lift-off latches the LAST palette.
+                    // After down, never before: re-entry latches the last lift-off's palette.
                     val ctl = controls ?: return@awaitEachGesture
                     down.consume()
 
@@ -660,7 +664,7 @@ fun GlucoseGraph(
                     val minStepPx = paintMinStepPx(ctl.widthDp, dpPx)
 
                     var mode = if (ctl.eraser) PaintGesture.ERASE else PaintGesture.DRAW
-                    val erased = HashSet<Long>() // one callback per stroke, any finger duration
+                    val erased = HashSet<Long>() // one callback per stroke, however long it lingers
                     var lastPos = down.position
 
                     fun eraseAt(pos: Offset) {
@@ -700,7 +704,7 @@ fun GlucoseGraph(
                         }
                         when (mode) {
                             PaintGesture.TRANSFORM -> {
-                                // No slop gate: 2nd finger declared intent, a pan fights drawing.
+                                // No slop gate: second finger declared intent; pan fights drawing.
                                 val zoom = event.calculateZoom()
                                 val pan = event.calculatePan()
                                 val centroid = event.calculateCentroid(useCurrent = false)
@@ -726,7 +730,7 @@ fun GlucoseGraph(
                     }
 
                     if (mode == PaintGesture.DRAW) {
-                        // Stroke ends at the finger lift, not the last min-distance sample.
+                        // Stroke ends where finger left glass, not the last min-distance sample.
                         if (live.addFinal(lastPos.x, lastPos.y, sampleTs(lastPos.x), sampleY(lastPos.y))) {
                             liveCount = live.size
                         }
@@ -796,9 +800,9 @@ fun GlucoseGraph(
                     if (rs.hi[0][i] > yMax) yMax = rs.hi[0][i]
                 }
             }
-            // HINDSIGHT fan deliberately NOT folded in: a bad sweep would flatten the truth axis.
+            // HINDSIGHT fan NOT folded in: a bad forecast would rescale the axis to a flat truth.
             if (!yMin.isFinite() || !yMax.isFinite()) { yMin = 0f; yMax = 1f }
-            // Covers the configured range, grows past it, never clips; on the risk axis through f.
+            // Always covers the configured range and grows past it, on the risk axis through f.
             val fixed = if (rangeMinMgdl != null && rangeMaxMgdl != null) {
                 val (railLo, railHi) = axisRailsMgdl(frame.unit, rangeMinMgdl, rangeMaxMgdl, thresholds)
                 fixedYRange(yMin, yMax, frame.unit, railLo, railHi, kovatchevF)
@@ -847,8 +851,8 @@ fun GlucoseGraph(
 
             // Data is clipped to the plot; grid, axes and margin captions stay outside it.
             clipRect(left = plotLeft, top = plotTop, right = plotRight, bottom = plotBottom) {
-                // First inside clip so marginalia never hides data; paint clips the trace corridor.
-                val livePoints = liveCount // DRAW-phase read: new sample redraws, never recomposes
+                // First inside the clip: paint masks out a corridor around whichever trace draws.
+                val livePoints = liveCount // DRAW snapshot: a sample redraws, never recomposes
                 val committed = paint != null && !paint.isEmpty
                 if (committed || livePoints > 0) {
                     fun strokes() {
@@ -876,7 +880,7 @@ fun GlucoseGraph(
                         corridor.begin()
                         if (swapToSmoothed) {
                             val sm = smoothed!!
-                            // Trace loop culls to ±1 span; the corridor masks only whats on screen.
+                            // Trace loop culls to one span; corridor masks only what is on screen.
                             var sLo = lowerBoundLong(sm.tsMs, viewStartMs.toLong()) - 1
                             var sHi = lowerBoundLong(sm.tsMs, (viewStartMs + viewSpanMs).toLong())
                             if (sLo < 0) sLo = 0
@@ -898,7 +902,7 @@ fun GlucoseGraph(
                     if (mask == null) strokes() else clipPath(mask, ClipOp.Difference) { strokes() }
                 }
 
-                // Steps first of 3 layers: bar is opaque measured context, under the curves.
+                // Steps first of three layers: bars are context, under the curves.
                 if (stepsFrame != null && curveToggles.exercise && !stepsFrame.isEmpty) {
                     fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
                     drawStepsBars(
@@ -917,13 +921,13 @@ fun GlucoseGraph(
                     drawCurveOverlay(
                         curveOverlay, curveToggles, AbsToPx(::absToPx), bandTop, plotBottom,
                         carbColor = carbInk, insulinColor = insulinInk, exerciseColor = exerciseInk,
-                        // The viewport, so the draw bounds itself: channels span ~14 days.
+                        // Viewport bounds the draw itself: the channels span ~14 days of buckets.
                         viewStartMs = viewStartMs, viewSpanMs = viewSpanMs,
                         paths = overlayPaths,
                     )
                 }
 
-                // Inside clip: lanes pan with data, anchored plotBottom, after overlay, before BG.
+                // Inside the clip so lanes pan with data, BEFORE the BG trace.
                 drawLogMarkers(
                     insulinClusters,
                     painter = insulinMarkPainter,
@@ -968,7 +972,7 @@ fun GlucoseGraph(
                         }
                     }
                 }
-                // Kovatchev is a RISK axis; no core transform, a reconstruction lands off-plot.
+                // Kovatchev is a RISK axis: without the transform, a reconstruction lands off-plot.
                 val recon = lerpReconstruction(reconTween.from, reconTween.to, reconProgress.value)
                 val reconToAxis = mgdlToAxis(frame.unit, kovatchevF)
                 if (recon.isNotEmpty() && reconToAxis != null) {
@@ -982,12 +986,12 @@ fun GlucoseGraph(
                         fanColor = cs.tertiary,
                         plotLeft = plotLeft,
                         plotRight = plotRight,
-                        // Drawn trace at bracket slot, px; null where nothing draws (fill end).
+                        // Bracketing slot in px; null where nothing draws (a fill's far end).
                         anchorPxAt = { ts ->
                             val i = frame.nearestIndex(ts.toDouble())
                             when {
                                 i < 0 || kotlin.math.abs(frame.absMs(i) - ts) > GRID_HALF_MS -> null
-                                // Never onto another recon: pinching there says two guesses meet.
+                                // Never onto another recon: pinching implies a known meeting point.
                                 frame.flags[i] == GraphFrame.FLAG_RECONSTRUCTED -> null
                                 else -> yToPx(frame.ys[i])
                             }
@@ -1001,10 +1005,10 @@ fun GlucoseGraph(
                     if (frame.breakAfter[i]) continue
                     val fa = frame.flags[i]
                     val fb = frame.flags[i + 1]
-                    // Not a Pair: destructuring boxed a Color once per segment, every frame.
+                    // Two selections, not a Pair: destructuring boxed Color per segment each frame.
                     val warm = fa == GraphFrame.FLAG_WARMUP || fb == GraphFrame.FLAG_WARMUP
                     val interp = fa == GraphFrame.FLAG_INTERPOLATED || fb == GraphFrame.FLAG_INTERPOLATED
-                    // Markers suppressed at ≥6h; recon falling to lineColor reads as measured.
+                    // Markers suppress at 6h+; unflagged recon draws as an unbroken measured trace.
                     val recon = fa == GraphFrame.FLAG_RECONSTRUCTED || fb == GraphFrame.FLAG_RECONSTRUCTED
                     val col = when {
                         warm -> warmupColor
@@ -1037,7 +1041,7 @@ fun GlucoseGraph(
                     }
                 }
 
-                // Causal Savitzky-Golay, mg/dL pre-risk-transform. Replaces raw; breaks honoured.
+                // Causal Savitzky-Golay, mg/dL pre-risk; replaces raw trace, breaks honoured.
                 if (swapToSmoothed) {
                     val sm = smoothed!!
                     val smColor = lineColor // it stands in for the raw trace
@@ -1060,7 +1064,7 @@ fun GlucoseGraph(
                     drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotTop + 2f))
                 }
 
-                // Drawn BEFORE the live overlay; 2nd accent since the two read together here.
+                // Drawn BEFORE live overlay: in-force forecast on top, second accent, distinct hue.
                 hindsight?.let { hf ->
                     if (!scrubMs.isNaN() && !hf.isEmpty) {
                         val c = hf.cycleAt(scrubMs)
@@ -1087,7 +1091,7 @@ fun GlucoseGraph(
                     }
                 }
 
-                // Own hand; display-only by TYPE: `:calc` cannot accept a RolledForecast.
+                // Display-only by TYPE: calc rejects RolledForecast; the cycle's forecast re-fed.
                 rolled?.let { rs ->
                     fun absToPx(ms: Double): Float = (plotLeft + (ms - viewStartMs) * ppm).toFloat()
                     drawRolledSeries(
@@ -1096,14 +1100,14 @@ fun GlucoseGraph(
                     )
                 }
 
-                // Read-out box PINNED at right-middle, not by thumb, so a finger occludes none.
+                // Read-out box PINNED at right-middle, not floating by the thumb; never occluded.
                 if (!scrubMs.isNaN()) {
                     val cx = (plotLeft + (scrubMs - viewStartMs) * ppm).toFloat()
                     if (cx in plotLeft..plotRight) {
                         val sc = buildScrub(frame, predictions, curveOverlay, stepsFrame, predictedClock, rolled, scrubMs)
                         drawLine(cs.onSurface.copy(alpha = 0.5f), Offset(cx, plotTop), Offset(cx, plotBottom), 1f)
                         sc.bgValue?.let { drawCircle(cs.onSurface, 4f, Offset(cx, yToPx(it)), style = scrubDotStroke) }
-                        // Columns sized from fixed widest templates, not live: box holds size.
+                        // Columns size from fixed templates; box size holds as the thumb moves.
                         val rows = scrubRows(sc)
                         val padH = 9f; val padV = 8f; val colGap = 14f; val rowGap = 5f
                         val labelColW = scrubMetrics.labelColW
@@ -1112,7 +1116,7 @@ fun GlucoseGraph(
                         val boxW = padH + labelColW + colGap + valueColW + padH
                         val boxH = padV * 2f + lineH * rows.size + rowGap * (rows.size - 1)
                         val bx = (plotRight - boxW - 6f).coerceAtLeast(plotLeft)
-                        // coerceIn THROWS if max<min: plotBottom-boxH < plotTop once box taller.
+                        // coerceIn THROWS if max<min; a too-tall box pushes bottom below plotTop.
                         val by = ((plotTop + plotBottom) / 2f - boxH / 2f)
                             .coerceIn(plotTop, (plotBottom - boxH).coerceAtLeast(plotTop))
                         drawRoundRect(
@@ -1136,7 +1140,7 @@ fun GlucoseGraph(
     }
 }
 
-/** BG from past readings, selected model's median in pred zone, roll where nothing validated. */
+/** BG: past readings, model median in the prediction zone, or the roll past validated forecast. */
 internal fun buildScrub(
     frame: GraphFrame,
     predictions: List<PredSeries>,
@@ -1148,7 +1152,7 @@ internal fun buildScrub(
 ): GraphScrub {
     val lastFrameMs = if (frame.isEmpty) Long.MIN_VALUE else frame.absMs(frame.size - 1).toLong()
     val inPred = ms > lastFrameMs
-    // One cascade so provenance travels with the number; roll-valid-prefix steps stay unmarked.
+    // One cascade so provenance travels with the number; validated-roll steps are unmarked, plain.
     var bg: Float? = null
     var extrapolated = false
     if (!inPred && !frame.isEmpty) {
@@ -1177,14 +1181,14 @@ internal fun buildScrub(
         carbRate = carb,
         insulinRate = insulin,
         exerciseRate = exercise,
-        // Read regardless of DRAWN: chip governs painting, not knowledge; feed always yields a row.
+        // Read regardless of DRAWN state; unmeasured bucket reads 0, keeping the box a fixed shape.
         steps = stepsFrame?.let { it.stepsAt(ms.toLong()) ?: 0 },
         modelHour = modelHour,
         unit = frame.unit,
     )
 }
 
-/** Null if no eligible forecast reaches [ms]. Bounded by [nearestWithinHalfStep], as the roll. */
+/** Null past validated horizon (bounded by nearestWithinHalfStep, like the rolled lookup). */
 private fun selectedMedianAt(predictions: List<PredSeries>, ms: Double): Float? {
     val s = predictions.firstOrNull { it.selected && !it.degenerate && !it.stale } ?: return null
     val i = nearestWithinHalfStep(s.tsMs, ms)
@@ -1205,16 +1209,16 @@ private fun predictedClockLabel(ms: Long, clock: PredictedClock): String {
     return "%02d:%02d".format(hh % 24, mm)
 }
 
-/** Label column is sized from the widest of these, so the box never resizes under the cursor. */
+/** Label column sizes from the widest of these, so the box never resizes under the cursor. */
 private val SCRUB_LABELS = listOf("BG", "Carb", "Ins", "Exr", "Steps", "Local", "Model")
 
-/** Widest value the right column can hold: a carb/insulin rate beats any BG/clock value. */
+/** Widest value the right column can hold: a carb/insulin rate beats any BG or clock value. */
 private const val SCRUB_VALUE_TEMPLATE = "199.9 g"
 
 /** (label, value) pairs; only the rows that exist are emitted. Values carry their unit. */
 internal fun scrubRows(sc: GraphScrub): List<Pair<String, String>> {
     val out = ArrayList<Pair<String, String>>(5)
-    // "*" marks pred zone; a rolled step isnt distinguished — `:calc` rejects its type regardless.
+    // "*" marks prediction zone; a rolled step isn't distinguished, calc can't accept its type.
     val mark = if (sc.inPredZone) "*" else ""
     val bgStr = sc.bgValue?.let { formatValue(it, sc.unit) + mark } ?: "--"
     out.add("BG" to bgStr)
@@ -1252,7 +1256,7 @@ internal fun axisRailsMgdl(
     return lo to maxOf(lo + 1, minOf(rangeMaxMgdl, thresholds.urgentHighMgdl))
 }
 
-/** Covers [rangeMinMgdl]..[rangeMaxMgdl] in [unit], grows for data beyond, rounds to a tick. */
+/** Covers rangeMinMgdl..rangeMaxMgdl in unit, grows for data beyond, rounds to a tick. */
 internal fun fixedYRange(
     dataYMin: Float,
     dataYMax: Float,
@@ -1314,13 +1318,13 @@ internal fun lowerBoundLong(xs: LongArray, target: Long): Int {
     return lo
 }
 
-/** Nearest [tsMs] entry to [ms], or -1 beyond half a step. THE one rule every overlay uses. */
+/** Nearest entry to ms, or -1 past half a step out; THE nearest-step rule for scrub overlays. */
 internal fun nearestWithinHalfStep(tsMs: LongArray, ms: Double): Int {
     val n = tsMs.size
     if (n == 0) return -1
     val half = if (n >= 2) kotlin.math.abs(tsMs[1] - tsMs[0]) / 2.0 else 0.0
     if (ms < tsMs[0] - half || ms > tsMs[n - 1] + half) return -1
-    // Two candidates straddling `ms` (`ceil` so the upper one is never below it), then the nearer.
+    // The two straddling candidates (ceil keeps the upper one at/above ms), then the nearer.
     val hi = lowerBoundLong(tsMs, kotlin.math.ceil(ms).toLong()).coerceIn(0, n - 1)
     val lo = (hi - 1).coerceAtLeast(0)
     return if (kotlin.math.abs(tsMs[lo] - ms) <= kotlin.math.abs(tsMs[hi] - ms)) lo else hi
@@ -1448,7 +1452,7 @@ private fun syntheticReadings(): List<CgmReading> {
     return out
 }
 
-/** Everything framing the plot, not data. Extracted so hill-climb mode draws the same frame. */
+/** Everything that frames the plot, not data; hill-climb mode reuses this same frame. */
 fun DrawScope.drawGraphFurniture(
     unit: UnitSpace,
     /** mg/dL -> Kovatchev risk; null on the risk axis draws no threshold band. */
@@ -1495,7 +1499,7 @@ fun DrawScope.drawGraphFurniture(
             vy += vStep
         }
 
-        // TOP axis carries the model's predicted clock when present, else "model time n/a".
+        // TOP axis carries the predicted clock if present, else "model time n/a", never fabricated.
         val tStepMs = niceTimeStepMs(viewSpanMs)
         val tzMs = tzOffsetMin * 60_000L
         var tick = floor((viewStartMs + tzMs) / tStepMs) * tStepMs - tzMs
@@ -1503,7 +1507,7 @@ fun DrawScope.drawGraphFurniture(
         val endMs = viewStartMs + viewSpanMs
         val modelLabelColor = cs.tertiary.copy(alpha = 0.8f)
         val modelStyle = TextStyle(color = modelLabelColor, fontSize = 10.sp)
-        // Labels sp-scaled, reservation isnt: past ~1.15 scale a label climbs out of the panel.
+        // Labels are sp-scaled, reservation isn't; past ~1.15 scale a label outgrows its strip.
         val modelTopPx = plotTop - GraphInsets.ModelAxis.toPx()
         while (tick <= endMs) {
             val px = (plotLeft + (tick - viewStartMs) * ppm).toFloat()
@@ -1522,11 +1526,11 @@ fun DrawScope.drawGraphFurniture(
             }
             tick += tStepMs
         }
-        // One label per day, centred, drawn only where the span fits it whole, no collisions.
+        // One label per day, drawn only where its span fits it; suppressed once ticks are dates.
         if (tStepMs < 720L * 60_000L) {
             val dateStyle = TextStyle(color = labelColor, fontSize = 9.sp)
             val dateTop = plotBottom + 3f + measurer.measure("00:00", labelStyle).size.height + 1f
-            // Strip is dp, labels sp: past ~1.4 scale pin row to strip floor, not off-panel.
+            // Strip is dp, labels are sp; past ~1.4 font scale pin the row to the strip's floor.
             val stripFloor = plotBottom + GraphInsets.Bottom.toPx()
             val dayMs = 86_400_000L
             var dayStart = floor((viewStartMs + tzMs) / dayMs) * dayMs - tzMs
@@ -1561,7 +1565,7 @@ fun DrawScope.drawGraphFurniture(
 
 }
 
-// A drag shorter than this selects nothing; else stray contact on an armed panel selects a patch.
+// A drag shorter than this selects nothing; a stray contact used to select and reconstruct a patch.
 private const val EDIT_DRAG_SLOP_DP = 16f
 
 /** How far either side of a selection edge counts as grabbing that handle. */
@@ -1570,7 +1574,7 @@ private const val EDIT_HANDLE_GRAB_DP = 20f
 /** Narrower than its grab target: the bar marks the edge, the target is what the thumb hits. */
 private const val EDIT_HANDLE_W_DP = 3f
 
-/** Short enough that a drag reads as the edge pushed, long enough to smooth a patch-sized jump. */
+/** Short enough that a drag reads as the edge pushed, long enough to smooth a patch jump. */
 private const val SELECTION_TWEEN_MS = 130
 
 /** The τ ladder has 17 stops, so a sweep across it is a run of these rather than one. */

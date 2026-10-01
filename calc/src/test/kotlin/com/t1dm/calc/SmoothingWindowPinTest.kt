@@ -5,7 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** §3.6-F, filter is INFERENCE.md §7.1: one recommendation pins the window across every roll. */
+/** §3.6-F / INFERENCE.md §7.1: resolves the window once, pins it onto every roll. */
 class SmoothingWindowPinTest {
 
     private class RecordingPort(private val inner: ForecastPort) : ForecastPort {

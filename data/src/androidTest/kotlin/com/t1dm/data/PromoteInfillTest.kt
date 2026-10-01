@@ -121,7 +121,7 @@ class PromoteInfillTest {
         assertTrue(db.bgInfillDao().span(spanStart).all { it.promotedAtMs != null })
     }
 
-    /** A span with nothing measured before it has one anchor: draw is fine, storing is not. */
+    /** A span with nothing before it has one anchor: drawing is fine, storing it is not. */
     @Test
     fun a_backcast_span_is_refused() = runTest {
         repo.upsertSource(descriptor(), authoritative = true, nowMs = t0)
@@ -134,7 +134,7 @@ class PromoteInfillTest {
         assertNull(db.cgmReadingDao().byTs(src.value, spanStart))
     }
 
-    /** It would become the newest `cgm_reading` row, every glance surface reads as current BG. */
+    /** It would become the newest cgm_reading row, which every glance reads as current BG. */
     @Test
     fun a_forecast_span_is_refused() = runTest {
         repo.upsertSource(descriptor(), authoritative = true, nowMs = t0)

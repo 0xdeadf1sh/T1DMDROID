@@ -1,13 +1,13 @@
 package com.t1dm.core.model
 
-/** Crate's own site order: hidden→l0→l1→l2, matching how [LoraWeights.params] concatenates. */
+/** Bit order matches the crate's site order and [LoraWeights.params] concat: hidden, l0, l1, l2. */
 object LoraSites {
     const val HIDDEN = 1 shl 0
     const val L0 = 1 shl 1
     const val L1 = 1 shl 2
     const val L2 = 1 shl 3
 
-    /** Hidden/l0 off (bottleneck a rank-1 map could null); l1/l2 are late enough to be safe. */
+    /** Skips hidden/l0: rank-1 there could null dose direction; l1/l2 are late enough not to. */
     const val DEFAULT = L1 or L2
 
     fun labelOf(bits: Int): String = buildList {

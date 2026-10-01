@@ -15,7 +15,7 @@ object NotificationIcons {
     /** For `:alerts`, which cannot reach `:app`'s `R`. */
     fun icon(context: Context): Icon = Icon.createWithResource(context, res())
 
-    /** Need the palette too? Resolve once, take `.primary.toArgb()`; custom themes reparse JSON. */
+    /** Needing the palette too, resolve once: each call here is a fresh JSON parse. */
     fun accentArgb(themeId: String?, customThemeJson: String?): Int =
         resolvePalette(themeId, customThemeJson).primary.toArgb()
 }

@@ -1,4 +1,4 @@
-//! Release panic="abort": every #[uniffi::export] fn returns Result or is total, never panics.
+//! Release panic = "abort": an export returns Err or is total, never panics.
 
 uniffi::setup_scaffolding!();
 
@@ -6,7 +6,6 @@ uniffi::setup_scaffolding!();
 mod preproc;
 pub use preproc::*;
 
-/// The trunk stays frozen inside the `.pte`; only the head and its adapter are trainable here.
 mod head;
 pub use head::*;
 
@@ -24,18 +23,26 @@ pub use stats::*;
 mod accuracy;
 pub use accuracy::*;
 
-/// SPEC/inference.md §8.4; display-only, nothing that classifies reads a calibrated fan.
+/// SPEC/inference.md §8.4, display-side only: nothing that classifies a category reads it.
 mod conformal;
 pub use conformal::*;
 
 /// CG-EGA on dotXem's grid, not Kovatchev 2004's (SPEC/invariants.md §6.3).
 mod cg_ega;
 
+/// CGM.md §4–§7.
+mod aidex_session;
+pub use aidex_session::*;
+
+/// Every physical quantity crosses as an exact integer, no float on the path a reading takes.
+mod ct5_session;
+pub use ct5_session::*;
+
 /// The heightfield both minigames stand on; cosmetic only, like them.
 mod terrain;
 pub use terrain::*;
 
-/// Cosmetic: no reading/dose/alarm depends on it; uniffi Object, one FFI call per frame.
+/// Cosmetic only — no reading, dose or alarm depends on it.
 mod game;
 pub use game::*;
 
@@ -51,27 +58,28 @@ const KOV_CLINICAL_OFFSET: f64 = 5.381;
 pub(crate) const CLINICAL_BG_CLAMP_MIN: f64 = 20.0;
 pub(crate) const CLINICAL_BG_CLAMP_MAX: f64 = 500.0;
 
-/// The 20-byte 0x0059 glucose payload (CGM.md §3.1): 16 data bytes + a trailing LE u32 CRC.
+/// CGM.md §3.1: 16 data bytes + a trailing LE u32 CRC.
 const ADVERT_LEN: usize = 20;
-/// CRC and seed input: P[0..15].
+/// P[0..15] — the CRC input, and the seed source.
 const ADVERT_DATA_LEN: usize = 16;
 /// MSB-first, no reflect, no final xor (CGM.md §3.2).
 const ADVERT_CRC_POLY: u32 = 0x04C1_1DB7;
-/// Seed modulus applied to the summed LE words (CGM.md §3.2).
+/// Modulus on the summed LE words (CGM.md §3.2).
 const ADVERT_SEED_MOD: u32 = 0x7F_A777;
 /// Glucose is the low 10 bits of the 16-bit bitfield; the valid flag is bit 15.
 const GLUCOSE_MASK: u16 = 0x03FF;
 
-/// Maps to Kotlin CoreException; adapter maps Decode to null (decodeAdvert → DecodedAdvert?).
+/// uniffi maps this onto Kotlin `CoreException`; the adapter maps `Decode` to `null`.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum CoreError {
     #[error("decode failed: {reason}")]
     Decode { reason: String },
+    /// Never-expected states, surfaced as `Err` to stay off the panic path.
     #[error("internal error: {reason}")]
     Internal { reason: String },
 }
 
-/// CGM.md §3.1. uniffi record → Kotlin `com.t1dm.core.model.PrevGlucose`.
+/// CGM.md §3.1.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct PrevGlucose {
     pub glucose_mgdl: i32,
@@ -79,7 +87,7 @@ pub struct PrevGlucose {
     pub quality: i32,
 }
 
-/// CGM.md §3.1/§3.2. `crc32` holds the validated CRC unsigned in the low 32 bits of the i64.
+/// CGM.md §3.1/§3.2. `crc32` is the validated CRC, unsigned in the low 32 bits of the i64.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct DecodedAdvert {
     pub min_from_start: i32,
@@ -107,7 +115,7 @@ fn le16(b: &[u8]) -> u16 {
     u16::from_le_bytes([b[0], b[1]])
 }
 
-/// CGM.md §3.2; <<1 on u32 drops the high bit (shift-overflow only panics out-of-range).
+/// CGM.md §3.2: <<1 drops the high bit rather than panicking on shift overflow.
 fn crc32_normal(buf: &[u8], init: u32) -> u32 {
     let mut crc = init;
     for &b in buf {
@@ -123,9 +131,9 @@ fn crc32_normal(buf: &[u8], init: u32) -> u32 {
     crc
 }
 
-/// CGM.md §3.2: seed = four LE words summed mod 0x7FA777; data must be ≥16 bytes, rest ignored.
+/// CGM.md §3.2. `data` must be at least 16 bytes; only the first 16 are used.
 fn advert_crc(data: &[u8]) -> u32 {
-    // WRAPPING u32 (firmware's native type); a wider accumulator diverges once sums pass 2^32.
+    // Wrapping u32, the firmware's native width: live adverts sum the four LE words past 2^32.
     let seed = le32(&data[0..4])
         .wrapping_add(le32(&data[4..8]))
         .wrapping_add(le32(&data[8..12]))
@@ -139,7 +147,7 @@ fn glucose_of(bitfield: u16) -> (i32, bool) {
     ((bitfield & GLUCOSE_MASK) as i32, (bitfield >> 15) & 1 == 1)
 }
 
-/// CGM.md §3.1/§3.2; payload ≥20 bytes, trailing ignored. Err(Decode) — never panic — maps to null
+/// CGM.md §3.1/3.2: payload is 0x0059 data, >=20 bytes; Err(Decode) never panics.
 #[uniffi::export]
 pub fn decode_advert(payload: Vec<u8>) -> Result<DecodedAdvert, CoreError> {
     if payload.len() < ADVERT_LEN {
@@ -180,7 +188,7 @@ pub fn decode_advert(payload: Vec<u8>) -> Result<DecodedAdvert, CoreError> {
     })
 }
 
-/// CGM.md §3.2 over 16-byte region; unsigned in low 32 bits of i64. Err(Decode), never panic.
+/// CGM.md §3.2, unsigned in the low 32 bits of the i64. `Err(Decode)` below 16 bytes.
 #[uniffi::export]
 pub fn advert_crc32(payload: Vec<u8>) -> Result<i64, CoreError> {
     if payload.len() < ADVERT_DATA_LEN {
@@ -194,7 +202,7 @@ pub fn advert_crc32(payload: Vec<u8>) -> Result<i64, CoreError> {
     Ok(advert_crc(&payload) as i64)
 }
 
-/// mg/dL → risk, CLINICAL scale (SPEC/invariants.md §4); NaN = low bound. Models use their own.
+/// mg/dL to risk, CLINICAL scale (SPEC/invariants.md §4). Total: BG clamped [20,500], NaN->low.
 #[uniffi::export]
 pub fn kovatchev_f(mgdl: f64) -> f64 {
     let g = if mgdl.is_nan() {
@@ -211,7 +219,7 @@ pub fn kovatchev_f_clinical_batch(mgdl: Vec<f64>) -> Vec<f64> {
     mgdl.into_iter().map(kovatchev_f).collect()
 }
 
-/// risk → mg/dL, inverse of kovatchev_f with §5 guards; not the forecast-decode transform.
+/// Inverse of kovatchev_f: NaN/-inf->f(20), +inf->f(500), risk clamped to [f(20),f(500)].
 #[uniffi::export]
 pub fn kovatchev_f_inv(risk: f64) -> f64 {
     let r_lo = kovatchev_f(CLINICAL_BG_CLAMP_MIN); // f(20) ≈ −3.1629
@@ -283,7 +291,7 @@ mod tests {
 
     #[test]
     fn decode_advert_live_overflow_seed() {
-        // The four LE seed words sum past 2^32; a non-wrapping accumulator gets the wrong CRC.
+        // The four LE seed words sum past 2^32; a non-wrapping accumulator gets the CRC wrong.
         let p = hex("f2 10 00 00 14 ad 80 63 ac 80 64 a8 80 63 00 00 dd fe f8 3f");
         let d = decode_advert(p).expect("live overflow-seed advert must decode");
         assert_eq!(d.min_from_start, 4338);
@@ -320,7 +328,6 @@ mod tests {
 
     #[test]
     fn decode_fuzz_never_panics() {
-        // Deterministic xorshift; the invariant under test is that no input panics.
         let mut state: u64 = 0x1234_5678_9ABC_DEF0;
         let mut next = || {
             state ^= state << 13;
@@ -348,7 +355,7 @@ mod tests {
             let p: Vec<u8> = (0..len).map(|i| (next() as u8) ^ (i as u8)).collect();
             let _ = decode_advert(p);
         }
-        // A random 32-bit CRC matches ~1/2^32, so essentially none of 200k should pass.
+        // A random 32-bit CRC matches ~1/2^32.
         assert!(decoded < 8, "improbably many random CRC hits: {decoded}");
     }
 

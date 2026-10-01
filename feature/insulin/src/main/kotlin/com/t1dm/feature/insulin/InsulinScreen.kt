@@ -57,10 +57,10 @@ private const val DOSE_STEPS = 18
 /** Far short of the ~309 digits that reach +Infinity. */
 private const val MAX_UNITS_CHARS = 8
 
-/** Finite, not just >0.0: +Infinity poisons IOB, defeats §3.6-C ceiling, NaN comparisons false. */
+/** Finite, not just >0.0: +Infinity poisons IOB, defeats §3.6-C ceiling (NaN compares false). */
 private fun Double?.loggableDose(): Double? = this?.takeIf { it.isFinite() && it > 0.0 }
 
-/** Owns EXACTLY ONE vertical scroll incl. footer; initialRapidLabel/BasalLabel seed each tab. */
+/** Owns the one vertical scroll incl. footer: sibling after this gets maxHeight=0, silently. */
 @Composable
 fun InsulinScreen(
     iobCob: IobCobReadout? = null,
@@ -106,7 +106,7 @@ fun InsulinScreen(
     }
 }
 
-/** Disabled until a preset exists as well as a dose; catalogue arrives async, confirm needs one. */
+/** Disabled until preset AND dose exist: catalogue arrives async, confirmation names insulin. */
 @Composable
 private fun DoseEntry(
     kind: InsulinKind,

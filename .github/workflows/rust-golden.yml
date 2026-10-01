@@ -1,8 +1,6 @@
 name: rust-golden
 
-# Bit-for-bit golden gate for the Rust core (crate t1dm-core, at crates/t1dm-core).
-# Phase 0: only the roundtrip proof exists; the CGM.md / INFERENCE.md byte + golden
-# vectors are added as unit tests as they come online (§2.2, §3.6).
+# Bit-for-bit gate for t1dm-core. No tables here: libre3-core runs its table-free tests only.
 on:
   pull_request:
 
@@ -12,5 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: cargo test -p t1dm-core
-        run: cargo test -p t1dm-core
+      - name: cargo test both crates
+        env:
+          LIBRE3_TABLES_SKIP: "1"
+        run: cargo test -p t1dm-core -p libre3-core

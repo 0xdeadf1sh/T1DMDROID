@@ -2,7 +2,7 @@ package com.t1dm.feature.settings
 
 import androidx.compose.runtime.Composable
 
-/** Vibration presets are opaque strings, no `:alerts` dep; none change when alarm fires (§3.6-A) */
+/** Vibration presets stay fixed while an alarm fires (§3.6-A); opaque, no :alerts dependency. */
 @Composable
 fun AlertsSettingsScreen(
     vibrationOptions: List<String>,

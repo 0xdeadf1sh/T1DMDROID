@@ -22,7 +22,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** A window pairs a forecast only with SAME-sensor truth; cross-sensor gaps hit §8.4 as error. */
+/** A matured window pairs a forecast only with same-sensor truth; cross-sensor = model error. */
 @RunWith(AndroidJUnit4::class)
 class CrossSensorWindowTest {
 

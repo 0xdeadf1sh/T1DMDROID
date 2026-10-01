@@ -43,14 +43,14 @@ import kotlin.math.pow
 import kotlin.math.round
 import kotlin.math.roundToInt
 
-/** Every number is the core's, nothing recomputed; an undefined quantity is omitted, not zero. */
+/** Every number is the core's, nothing recomputed; an undefined quantity is omitted, not zeroed. */
 
 private val FigureHeight = 128.dp
 private val RowHeight = 18.dp
 private val RowGap = 9.dp
 private val LabelSp = 9.sp
 
-/** Persistence cap sits below the RMSE bar top when the model lost; no band, no MAE for it. */
+/** Persistence cap sits below RMSE top when model lost; no band/MAE, so only it's capped. */
 @Composable
 internal fun ErrorByHorizonFigure(hs: List<HorizonMetrics>) {
     val cs = MaterialTheme.colorScheme
@@ -149,7 +149,7 @@ internal fun CalibrationFigure(hs: List<HorizonMetrics>) {
     }
 }
 
-/** §6.3: whole-window, no horizon label; each bar carries its own n, denominators differ widely. */
+/** §6.3, whole-window, no horizon label; each bar carries its own `n`, denominators differ ~10x. */
 @Composable
 internal fun CgEgaFigure(cg: CgEga) {
     val p = LocalT1dmSemantics.current
@@ -192,20 +192,20 @@ internal fun DtsFigure(hs: List<HorizonMetrics>) {
     )
 }
 
-/** Percent; empty where any input is non-finite, so a partial partition isn't rendered as data. */
+/** Percent; empty where any input is non-finite, else a partial partition looks like real data. */
 internal fun dtsShares(b: PointBlock): List<Float> {
     val s = listOf(b.dtsA, b.dtsB, b.dtsC, b.dtsD, b.dtsE).map { it.finite() ?: return emptyList() }
     return s.map { it.coerceAtLeast(0f) }
 }
 
-/** Hue carries ordinal severity only (palette can't supply five); one ramp for both grids. */
+/** Hue carries ordinal severity only, see [REGION_ALPHA]; one ramp for both grids read together. */
 @Composable
 private fun zoneRamp(): List<Color> {
     val p = LocalT1dmSemantics.current
     return listOf(p.inRange, p.inRange.copy(alpha = 0.45f), p.low, p.high, p.urgentLow)
 }
 
-/** Percent from the FOUR the core publishes; B=A∪B-A, C is the remainder; non-finite is empty. */
+/** Percent from the 4 core publishes: B is `A∪B − A`, C is the rest; empty if any is non-finite. */
 internal fun clarkeShares(b: PointBlock): List<Float> {
     val a = b.clarkeA.finite() ?: return emptyList()
     val ab = b.clarkeAb.finite() ?: return emptyList()
@@ -222,11 +222,11 @@ private val DotRadius = 1.9.dp
 
 private val ZONE_LETTERS = listOf("A", "B", "C", "D", "E")
 
-/** Region tint/dot ink per zone A-E; OPACITY separates them, not hue (theme roles may collide). */
+/** Region tint/dot ink per zone A-E; OPACITY separates five, not hue, since themes may collide. */
 private val REGION_ALPHA = listOf(0.06f, 0.13f, 0.22f, 0.34f, 0.48f)
 private val DOT_ALPHA = listOf(0.35f, 0.55f, 0.75f, 0.90f, 1.00f)
 
-/** zoneOf/grid must be the SAME grid; basis is the median line, not the band projection. */
+/** [zoneOf]/[grid] must match; [horizonMin]/[points] one metrics; basis is median, not band. */
 @Composable
 internal fun ErrorGridFigure(
     horizonMin: Int,
@@ -244,7 +244,7 @@ internal fun ErrorGridFigure(
     val fills = ramp.mapIndexed { i, c -> c.copy(alpha = REGION_ALPHA[i]) }
     val inks = ramp.mapIndexed { i, c -> c.copy(alpha = DOT_ALPHA[i]) }
 
-    // Emitted outside the Canvas, so shares still name every zone when the canvas draws nothing.
+    // Outside the Canvas, so shares still name every zone when the canvas draws nothing.
     Legend(
         ZONE_LETTERS.mapIndexed { i, letter ->
             LegendItem(inks[i], if (shares.isEmpty()) letter else "$letter ${fmtAxis(shares[i])}")
@@ -271,7 +271,7 @@ internal fun ErrorGridFigure(
         fun px(v: Float) = left + (v / axisMax) * side
         fun py(v: Float) = bottom - (v / axisMax) * side
 
-        // Whole-pixel edges: a fractional edge antialiases into a hairline read as a boundary.
+        // Whole-pixel edges: a fractional edge antialiases into a false zone-boundary hairline.
         fun snap(v: Float) = round(v)
         runs.forEach { r ->
             val x0 = snap(left + r.truthIndex * side / grid.cells)
@@ -295,7 +295,7 @@ internal fun ErrorGridFigure(
             label(measurer, fmtAxis(t), axisStyle, gx, bottom + tickRow - lineH, centreX = true)
         }
 
-        // A pair off axis is DROPPED and counted, never clamped into a zone not classified.
+        // Off-axis pair is DROPPED and counted, never clamped, or it'd sit in an unclassified zone.
         val r = DotRadius.toPx()
         var offScale = 0
         points.forEach { pt ->
@@ -321,7 +321,7 @@ internal fun ErrorGridFigure(
     }
 }
 
-/** Percent counted off the per-point enums the core classified; empty for an empty series. */
+/** Percent off per-point enums the core classified; empty series stays empty, not partitioned. */
 internal fun zoneShares(points: List<ScoredPoint>, zoneOf: (ScoredPoint) -> Int): List<Float> {
     if (points.isEmpty()) return emptyList()
     val counts = IntArray(ZONE_LETTERS.size)
@@ -329,7 +329,7 @@ internal fun zoneShares(points: List<ScoredPoint>, zoneOf: (ScoredPoint) -> Int)
     return counts.map { 100f * it / points.size }
 }
 
-/** One painted cell run: truth column, pred rows [predFrom,predUntil); zone is an ORDINAL. */
+/** Painted cell run: truth col [truthIndex], `[predFrom, predUntil)`; [zone] ordinal, unnamed. */
 internal class ZoneRun(
     val truthIndex: Int,
     val predFrom: Int,
@@ -366,12 +366,12 @@ private const val ANCHOR_MIN_SHARE = 0.005
 /** Two letters of one zone closer than this fraction of the axis are one lobe seen twice. */
 private const val ANCHOR_MIN_SEPARATION = 0.22
 
-/** Fraction of axis a letter must stand clear of; a fraction, not a cell count, survives CELLS. */
+/** Axis clearance a letter needs: 11sp ink reaches ~8mg/dL; survives [ZoneLattice.CELLS] change. */
 private const val ANCHOR_CLEARANCE = 0.03
 
 internal fun anchorClearanceCells(cells: Int): Int = (ANCHOR_CLEARANCE * cells).roundToInt()
 
-/** Lobes above/below identity anchored separately, at the nearest clear-neighbourhood cell. */
+/** Lobes above/below identity anchored separately, nearest clear cell, else nearest cell of any. */
 internal fun zoneAnchors(grid: ZoneLattice): List<ZoneAnchor> {
     if (grid.isEmpty) return emptyList()
     val n = grid.cells
@@ -457,7 +457,7 @@ private val CellSp = 9.sp
 /** Opacity of the fullest cell, capped short of 1 so the printed count stays legible. */
 private const val CELL_ALPHA_MAX = 0.62f
 
-/** Truth's bin on x, forecast's on y; shaded by COUNT never risk; empty binLabels bares axes. */
+/** Truth bin on x, forecast on y; shaded by COUNT not risk; empty [binLabels] leaves unlabelled. */
 @Composable
 internal fun TrendMatrixFigure(m: TrendMatrix, binLabels: List<String>) {
     val cs = MaterialTheme.colorScheme
@@ -524,7 +524,7 @@ internal fun trendCategoryShares(m: TrendMatrix): List<Float> {
     return m.categoryPct.map { it.finite() ?: return emptyList() }
 }
 
-/** edges are the core's interior edges; a wrong-length list yields no labels, never a guess. */
+/** [edges] are the core's interior edges; wrong length yields no labels, not a guessed axis. */
 internal fun trendBinLabels(edges: List<Double>): List<String> {
     if (edges.size != TREND_BINS - 1) return emptyList()
     val n = edges.map { fmtRate(it) }
