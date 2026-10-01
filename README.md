@@ -1,6 +1,6 @@
 # T1DMDROID
 
-A personal Android app for Type 1 Diabetes that reads a continuous glucose monitor — Microtech/Ottai **AiDEX X / LinX**, **Anytime CT5** or **Libre 3** — over a held, paired Bluetooth-LE GATT session and runs **on-device** glucose forecasting. It is advisory-only — it never actuates insulin delivery — and is built for a single arm64 device rather than for general distribution: it is sideloaded, not published to any app store.
+A personal Android app for Type 1 Diabetes that reads a continuous glucose monitor — Microtech/Ottai **AiDEX X / LinX**, **Anytime CT5** or **Libre 3** — over a held, paired Bluetooth-LE GATT session and runs **on-device** glucose forecasting. It is advisory-only — it never actuates insulin delivery. It runs on Android 12 and later, on arm64 and x86_64, and is sideloaded rather than published to any app store.
 
 Designed by a T1DM patient, informed by lived experience.
 
@@ -16,6 +16,7 @@ Designed by a T1DM patient, informed by lived experience.
 - [Module map](#module-map)
 - [Building](#building)
 - [Running on Xiaomi HyperOS / MIUI](#running-on-xiaomi-hyperos--miui)
+- [Background controls on other phones](#background-controls-on-other-phones)
 - [Target device](#target-device)
 - [Related projects](#related-projects)
 - [License](#license)
@@ -108,9 +109,9 @@ Restore merges: a record already present is kept, so importing the same file twi
 ## Building
 
 - Android SDK **36** and the NDK, JDK **21**.
-- A Rust toolchain with the `aarch64-linux-android` target and [`cargo-ndk`](https://github.com/bbqsrc/cargo-ndk) installed **and on `PATH`**, or the build fails. With no NDK found, the native build is skipped and the APK may package a stale `.so` from an earlier build.
+- A Rust toolchain with the `aarch64-linux-android` and `x86_64-linux-android` targets and [`cargo-ndk`](https://github.com/bbqsrc/cargo-ndk) installed **and on `PATH`**, or the build fails. With no NDK found, the native build is skipped and the APK may package a stale `.so` from an earlier build.
 
-The app targets **arm64-v8a only**, `minSdk 34`, `targetSdk 36`.
+The app ships **arm64-v8a** and **x86_64**, `minSdk 31`, `targetSdk 36`. The ABI list is `t1dm.abis` in `gradle.properties`; the Rust cross-build and every `abiFilters` read it. Release builds run lint with `NewApi` fatal across every module, so a call above API 31 without a version check fails the build.
 
 ```sh
 ./gradlew :app:assemblePersonalRelease
@@ -155,9 +156,18 @@ An "Activity Launcher"-type app reaches the same control: `com.android.settings.
 The setting is **device-wide**, persists across reboots, and is cleared by a factory reset — no app can set it on the user's behalf.
 
 
+## Background controls on other phones
+
+**Settings → Background** reads what the OS currently allows the app and opens the system page for each: battery optimization, exact alarms (Android 12 only; from 13 the app holds `USE_EXACT_ALARM`), notifications, and full-screen alerts (Android 14+). On Xiaomi, Samsung, OnePlus/OPPO/realme, vivo and Huawei/Honor phones it also opens the maker's own autostart or background-limit page, whose state no app can read. A maker page that has moved falls back to the app's details page.
+
+The app asks once, on first start, for the battery-optimization exemption. An exempt app may also start its foreground service from the background, which the CGM watchdog relies on to restart a killed service on Android 12+.
+
+Below Android 13 no Bluetooth handle can carry a random address type, so a CT5 is always found by scan rather than redialled at its stored address.
+
+
 ## Target device
 
-The build targets a single phone: a **Redmi K90 Max** (MediaTek Dimensity 9500 / MT6993) running **Android 16 / HyperOS**, arm64-v8a. Inference runs on the CPU; the SoC's APU is not used, since the MediaTek NeuroPilot runtime ships through Play feature delivery and a sideloaded build cannot fetch it. Other devices are untested and unsupported.
+The app is tested on one phone: a **Redmi K90 Max** (MediaTek Dimensity 9500 / MT6993) running **Android 16 / HyperOS**, arm64-v8a. Other phones and Android versions are untested on hardware. Inference runs on the CPU; the SoC's APU is not used, since the MediaTek NeuroPilot runtime ships through Play feature delivery and a sideloaded build cannot fetch it.
 
 
 ## Related projects
