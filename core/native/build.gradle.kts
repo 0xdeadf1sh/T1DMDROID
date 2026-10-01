@@ -64,17 +64,19 @@ val generateUniffiBindings = tasks.register<Exec>("generateUniffiBindings") {
 
 val cargoNdkBuild = tasks.register<Exec>("cargoNdkBuild") {
     group = "rust"
-    description = "Cross-build libt1dm_core.so for arm64-v8a into jniLibs via cargo-ndk."
+    description = "Cross-build the cdylibs for every t1dm.abis entry into jniLibs via cargo-ndk."
     workingDir = rootProject.projectDir
+    val abis = providers.gradleProperty("t1dm.abis").get().split(',')
     // Without these inputs Gradle calls the task up-to-date and repackages a stale .so.
     crateDirs.forEach { inputs.dir(it) }
     inputs.file(rootProject.layout.projectDirectory.file("Cargo.lock"))
+    inputs.property("abis", abis)
     outputs.dir(generatedJniLibsDir)
     val ndk = findNdkHome()
     // No NDK: a host-only skip, which packages whatever .so generated/jniLibs still holds.
     onlyIf {
         if (ndk == null) {
-            logger.warn("cargoNdkBuild SKIPPED — no NDK found; the arm64 .so will not be built (host-only).")
+            logger.warn("cargoNdkBuild SKIPPED — no NDK found; no Android .so will be built (host-only).")
             false
         } else {
             true
@@ -88,13 +90,14 @@ val cargoNdkBuild = tasks.register<Exec>("cargoNdkBuild") {
     }
     if (ndk != null) environment("ANDROID_NDK_HOME", ndk)
     val out = generatedJniLibsDir.get().asFile.absolutePath
-    // Writes <out>/arm64-v8a/<lib>; the 16 KB link args live in .cargo/config.toml. The test
-    // guard fails the task if cargo-ndk quietly copies only one of the two cdylibs.
+    // Writes <out>/<abi>/<lib>; the 16 KB link args live in .cargo/config.toml. The test
+    // guard fails the task if cargo-ndk quietly skips a cdylib or an ABI.
     val packages = crates.joinToString(" ") { "-p ${it.pkg}" }
-    val shipped = crates.joinToString(" && ") { "test -f '$out/arm64-v8a/${it.lib}'" }
+    val targets = abis.joinToString(" ") { "-t $it" }
+    val shipped = abis.flatMap { abi -> crates.map { "test -f '$out/$abi/${it.lib}'" } }.joinToString(" && ")
     commandLine(
         "bash", "-c",
-        "cargo ndk -t arm64-v8a -o '$out' build --release $packages && $shipped"
+        "cargo ndk $targets -o '$out' build --release $packages && $shipped"
     )
 }
 

@@ -9,7 +9,7 @@ plugins {
 extensions.configure<LibraryExtension> {
     defaultConfig {
         ndk {
-            abiFilters += "arm64-v8a"
+            abiFilters += providers.gradleProperty("t1dm.abis").get().split(',')
         }
     }
     // No ndkVersion: it would force an NDK install at configuration time on host-only machines.

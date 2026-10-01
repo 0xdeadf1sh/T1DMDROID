@@ -27,9 +27,8 @@ android {
         versionCode = 249
         versionName = "0.92.0"
 
-        // Single target device.
         ndk {
-            abiFilters += "arm64-v8a"
+            abiFilters += providers.gradleProperty("t1dm.abis").get().split(',')
         }
 
         buildConfigField("String", "GIT_SHA", "\"$gitSha\"")

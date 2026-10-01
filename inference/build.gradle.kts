@@ -5,9 +5,9 @@ plugins {
 android {
     namespace = "com.t1dm.inference"
 
-    // Parity with :app, which already filters to arm64-v8a at merge.
+    // Parity with :app, which already filters at merge.
     defaultConfig {
-        ndk { abiFilters += "arm64-v8a" }
+        ndk { abiFilters += providers.gradleProperty("t1dm.abis").get().split(',') }
     }
 }
 
