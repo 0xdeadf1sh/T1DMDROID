@@ -16,7 +16,8 @@ restated here, and this file is only what is local and operational.
   the build traps, the debugging discipline, the watch link.
 
 `docs/` is the interface documentation — `CGM.md`, `INFERENCE.md` and
-`WATCH_BLE.md`. Read the one your change touches, and keep
+`WATCH_BLE.md`. `CGM.md` is tracked on `private` only; on `main` it is a
+gitignored local file and never pushed. Read the one your change touches, and keep
 it true afterwards.
 
 ## The skills are gates, not suggestions
@@ -33,13 +34,16 @@ Read the description of each before starting, not after being blocked.
 
 ## Two branches, one body of work
 
-`main` is public and reads the sensor by passive advertisement only. `private` is
-local-only and replaces that read path with connected sensor sessions: its `:cgm`
-sources and their Rust counterparts, the debug bring-up surfaces they need, and
-the unredacted `docs/CGM.md`. Only `main` may ever be pushed;
-`.git/hooks/pre-push` enforces that as an allowlist, and `publish-audit` greps for
-the private symbols by name — so do not name them in a file that lives on `main`,
-this one included.
+Both branches carry the connected sensor sessions. They differ at one seam,
+sensor expiry: `private` reads a sensor past its rated life; `main` keeps expired
+readings out of storage and alarms. `main` is pushed to GitHub; `private` never
+is.
+
+`.git/hooks/pre-push` allows `refs/heads/main` alone, refuses tags, and runs
+`private`'s `scripts/publish-audit.sh` against the commit being pushed. The hook is
+untracked; a fresh clone has none. `publish-audit.sh` and `scripts/check-no-reset.sh`
+live on `private` only: they name what they hunt for, so do not name it in a file
+that lives on `main`, this one included.
 
 **Everything outside that seam belongs on both branches** — see *T1DMDROID has
 two branches, and most work belongs on both* in `../T1DMCOMMON/CLAUDE.md`.
@@ -55,8 +59,10 @@ mirroring it if it is one of these:
   `main` they are `pull_request`-only, and `publish-audit` fails the push if that
   changes: a `push` trigger there made GitHub build an APK on every push.
 - `LICENSE` — carried on `main`, the branch that is published.
-- `README.md` and `docs/CGM.md` — each branch describes its own read path.
-- The `:cgm` module's architecture, and every file that plugs into it.
+- `README.md` — `main` keeps the advisory-only line and the CAUTION block, and
+  does not link `docs/CGM.md`.
+- `docs/CGM.md` — tracked on `private`; on `main`, listed in `.gitignore`.
+- The expiry seam, and every file that wires it.
 
 ## Build both branches, every time
 
@@ -73,9 +79,9 @@ found: `cargoNdkBuild` skips with a warning, and the APK packages the **stale**
 
 What differs is the purpose, and therefore what you do with the result.
 
-**`main` — proof that it still compiles.** The public branch has no connected CGM
-path, so a change written against `private` can reference a class that does not
-exist there, and nothing will notice until the day it is pushed. Build it, read
+**`main` — proof that it still compiles.** A change written against `private` can
+reference something `main` drops at the expiry seam, and nothing will notice until
+the day it is pushed. Build it, read
 the result, discard the APK. Add `:app:assemblePublicRelease` when the change
 touches flavour-gated code: the `public` flavour compiles a different
 `Disclaimer.kt` and stubs the fail-open override out entirely
