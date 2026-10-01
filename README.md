@@ -27,7 +27,7 @@ The app pairs with the sensor, holds the GATT session open, and reads live value
 
 A small transformer runs over that feed entirely on the device. It predicts any withheld stretch of glucose rather than only the next two hours, so one artifact fills a gap the sensor left as well as it forecasts, and a low-rank adapter can personalise it from the wearer's own matured forecasts while the exported weights stay frozen. Around it sit meal and insulin logs, advisory statistics, and a deterministic, model-free alarm path for out-of-range and loss-of-signal. Optional integrations add a one-way Nightscout bridge and an encrypted BLE link to watch peripherals.
 
-The Bluetooth, inference, and watch protocols are documented under [`docs/`](docs): [`CGM.md`](docs/CGM.md), [`INFERENCE.md`](docs/INFERENCE.md), and [`WATCH_BLE.md`](docs/WATCH_BLE.md).
+The inference and watch protocols are documented under [`docs/`](docs): [`INFERENCE.md`](docs/INFERENCE.md) and [`WATCH_BLE.md`](docs/WATCH_BLE.md).
 
 
 ## Features

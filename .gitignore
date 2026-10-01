@@ -2,6 +2,7 @@
 # (see CLAUDE.md private/public seam — these must never enter the GPL tree)
 *.private.md
 PLAN.private.md
+/docs/CGM.md
 NOTES.md
 scratch/
 scratchpad/
