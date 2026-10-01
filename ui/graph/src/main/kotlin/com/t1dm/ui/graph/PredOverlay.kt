@@ -32,10 +32,10 @@ class PredSeries internal constructor(
 suspend fun predOverlayOf(
     predictions: List<ModelPrediction>,
     unit: UnitSpace = UnitSpace.MgDl,
-    kovatchevFBatch: ((DoubleArray) -> DoubleArray)? = null,
+    kovatchevFClinicalBatch: ((DoubleArray) -> DoubleArray)? = null,
     calibrateBands: ((ModelPrediction) -> List<Double>?)? = null,
 ): List<PredSeries> = withContext(Dispatchers.Default) {
-    predictions.mapNotNull { buildPredSeries(it, unit, kovatchevFBatch, calibrateBands?.invoke(it)) }
+    predictions.mapNotNull { buildPredSeries(it, unit, kovatchevFClinicalBatch, calibrateBands?.invoke(it)) }
 }
 
 /** Lanes of horizonSteps+1 values each: median, lo outer→inner, hi outer→inner. */
@@ -62,7 +62,7 @@ internal fun writePredLanes(p: ModelPrediction, bands: List<Double>, dst: Double
 fun buildPredSeries(
     p: ModelPrediction,
     unit: UnitSpace,
-    kovatchevFBatch: ((DoubleArray) -> DoubleArray)?,
+    kovatchevFClinicalBatch: ((DoubleArray) -> DoubleArray)?,
     calibratedBandsMgdl: List<Double>? = null,
 ): PredSeries? {
     val n = p.horizonSteps
@@ -70,7 +70,7 @@ fun buildPredSeries(
     val bands = calibratedBandsMgdl?.takeIf { it.size == n * p.nQuantiles } ?: p.bandsMgdl
     val w = n + 1
     val src = DoubleArray(PRED_LANES * w).also { writePredLanes(p, bands, it, 0) }
-    val v = toUnit(src, unit, kovatchevFBatch) ?: return null
+    val v = toUnit(src, unit, kovatchevFClinicalBatch) ?: return null
     fun lane(k: Int) = v.copyOfRange(k * w, (k + 1) * w)
     return PredSeries(
         modelId = p.modelId,

@@ -39,10 +39,10 @@ class SmoothedMgdl internal constructor(
 ) {
     val isEmpty: Boolean get() = tsMs.isEmpty()
 
-    /** Empty when [kovatchevFBatch] answers a different length. */
-    fun inUnit(unit: UnitSpace, kovatchevFBatch: ((DoubleArray) -> DoubleArray)?): SmoothedTrace {
+    /** Empty when [kovatchevFClinicalBatch] answers a different length. */
+    fun inUnit(unit: UnitSpace, kovatchevFClinicalBatch: ((DoubleArray) -> DoubleArray)?): SmoothedTrace {
         if (isEmpty) return SmoothedTrace.EMPTY
-        val ys = toUnit(mgdl, unit, kovatchevFBatch) ?: return SmoothedTrace.EMPTY
+        val ys = toUnit(mgdl, unit, kovatchevFClinicalBatch) ?: return SmoothedTrace.EMPTY
         return SmoothedTrace(tsMs, ys, breakAfter)
     }
 
@@ -86,6 +86,6 @@ fun buildSmoothedTrace(
     readings: List<CgmReading>,
     unit: UnitSpace,
     smoothMgdl: (DoubleArray) -> DoubleArray,
-    kovatchevFBatch: ((DoubleArray) -> DoubleArray)? = null,
+    kovatchevFClinicalBatch: ((DoubleArray) -> DoubleArray)? = null,
     maxGapMin: Float = 30f,
-): SmoothedTrace = buildSmoothedMgdl(readings, smoothMgdl, maxGapMin).inUnit(unit, kovatchevFBatch)
+): SmoothedTrace = buildSmoothedMgdl(readings, smoothMgdl, maxGapMin).inUnit(unit, kovatchevFClinicalBatch)

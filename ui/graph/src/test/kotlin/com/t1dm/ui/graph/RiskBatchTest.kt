@@ -51,14 +51,14 @@ class RiskBatchTest {
 
     @Test fun graphFrameConvertsInOneCall() {
         val rs = (0 until 500).map { reading(T0 + it * STEP, 40 + (it * 37) % 400) }
-        val frame = buildGraphFrame(rs, UnitSpace.Kovatchev, maxPoints = rs.size + 1, kovatchevFBatch = batch)
+        val frame = buildGraphFrame(rs, UnitSpace.Kovatchev, maxPoints = rs.size + 1, kovatchevFClinicalBatch = batch)
         assertEquals(1, calls)
         for (i in rs.indices) assertEquals(risk(rs[i].bgMgdl!!.toDouble()), frame.ys[i], 0f)
     }
 
     @Test fun aShortBatchWithholdsTheTrace() {
         val rs = (0 until 10).map { reading(T0 + it * STEP, 100) }
-        val frame = buildGraphFrame(rs, UnitSpace.Kovatchev, kovatchevFBatch = { it.copyOf(it.size - 1) })
+        val frame = buildGraphFrame(rs, UnitSpace.Kovatchev, kovatchevFClinicalBatch = { it.copyOf(it.size - 1) })
         assertTrue(frame.isEmpty)
     }
 

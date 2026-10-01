@@ -59,7 +59,7 @@ private const val BANDS = 3
 suspend fun hindsightFrameOf(
     rows: List<ModelPrediction>,
     unit: UnitSpace = UnitSpace.MgDl,
-    kovatchevFBatch: ((DoubleArray) -> DoubleArray)? = null,
+    kovatchevFClinicalBatch: ((DoubleArray) -> DoubleArray)? = null,
     calibrateFans: ((fansMgdl: () -> List<Double>, steps: Int, nQuantiles: Int) -> List<Double>?)? = null,
 ): HindsightFrame? = withContext(Dispatchers.Default) {
     if (rows.isEmpty()) return@withContext null
@@ -115,7 +115,7 @@ suspend fun hindsightFrameOf(
         stale[c] = p.stale
         c++
     }
-    val v = toUnit(mgdl, unit, kovatchevFBatch) ?: return@withContext null
+    val v = toUnit(mgdl, unit, kovatchevFClinicalBatch) ?: return@withContext null
 
     val median = FloatArray(kept * span)
     val lo = FloatArray(BANDS * kept * span)

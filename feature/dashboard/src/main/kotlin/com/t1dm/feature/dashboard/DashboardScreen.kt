@@ -136,7 +136,7 @@ fun DashboardScreen(
     unit: UnitSpace = UnitSpace.MgDl,
     predictions: List<ModelPrediction> = emptyList(),
     kovatchevF: ((Double) -> Double)? = null,
-    kovatchevFBatch: ((DoubleArray) -> DoubleArray)? = null,
+    kovatchevFClinicalBatch: ((DoubleArray) -> DoubleArray)? = null,
     // `SPEC/inference.md` §8.4; DISPLAY ONLY — [predictions] stays raw for alarms, rails, storage.
     calibrateBands: ((ModelPrediction) -> List<Double>?)? = null,
     // Hindsight sweep's correction, batched: one apply, so no fan draws a different basis.
@@ -319,13 +319,15 @@ fun DashboardScreen(
     // One job, one unit: a series landing alone would draw on the other unit's axis.
     val memo = remember { PanelMemo() }
     val panel by produceState(
-        PanelSeries.EMPTY, readings, unit, kovatchevFBatch, rolledForecast, predictions, calibrateBands,
+        PanelSeries.EMPTY, readings, unit, kovatchevFClinicalBatch, rolledForecast, predictions, calibrateBands,
         smoothMgdl, smoothingWindow, showSmoothed, hindsightBucket, hindsightModelId,
         hindsightLatestCycleMs, hindsightIn, calibrateFans,
     ) {
         value = coroutineScope {
             val frame = async {
-                memo.frame.get(readings, unit) { graphFrameOf(readings, unit, kovatchevFBatch = kovatchevFBatch) }
+                memo.frame.get(readings, unit) {
+                    graphFrameOf(readings, unit, kovatchevFClinicalBatch = kovatchevFClinicalBatch)
+                }
             }
             // Smoothed in mg/dL, so a unit switch only converts; skipped while hidden.
             val smoothed = async {
@@ -334,13 +336,13 @@ fun DashboardScreen(
                 else {
                     val mgdl = memo.smoothedMgdl.get(readings, f, smoothingWindow) { smoothedMgdlOf(readings, f) }
                     memo.smoothed.get(mgdl, unit) {
-                        withContext(Dispatchers.Default) { mgdl.inUnit(unit, kovatchevFBatch) }
+                        withContext(Dispatchers.Default) { mgdl.inUnit(unit, kovatchevFClinicalBatch) }
                     }
                 }
             }
             // Built BEFORE the forecast overlay: the correction below is decided on it.
             val rolled = memo.rolled.get(rolledForecast, unit) {
-                rolledSeriesOf(rolledForecast, unit, kovatchevFBatch)
+                rolledSeriesOf(rolledForecast, unit, kovatchevFClinicalBatch)
             }
             // Same predicate the draw uses; a roll may still draw only a median line.
             val rollOnPanel = rolled?.paintsBand() == true
@@ -350,7 +352,7 @@ fun DashboardScreen(
                     predOverlayOf(
                         predictions.filter { it.selected },
                         unit,
-                        kovatchevFBatch = kovatchevFBatch,
+                        kovatchevFClinicalBatch = kovatchevFClinicalBatch,
                         calibrateBands = calibrateBands.takeIf { !rollOnPanel },
                     )
                 }
@@ -370,7 +372,7 @@ fun DashboardScreen(
                     else hindsightFrameOf(
                         resolve(modelId, bucket.first, bucket.second),
                         unit,
-                        kovatchevFBatch,
+                        kovatchevFClinicalBatch,
                         calibrate?.let { cf -> { fans, steps, nq -> cf(modelId, fans, steps, nq) } },
                     )
                 }

@@ -71,18 +71,18 @@ suspend fun graphFrameOf(
     unit: UnitSpace = UnitSpace.MgDl,
     maxGapMin: Float = 30f,
     maxPoints: Int = 6000,
-    kovatchevFBatch: ((DoubleArray) -> DoubleArray)? = null,
+    kovatchevFClinicalBatch: ((DoubleArray) -> DoubleArray)? = null,
 ): GraphFrame = withContext(Dispatchers.Default) {
-    buildGraphFrame(readings, unit, maxGapMin, maxPoints, kovatchevFBatch)
+    buildGraphFrame(readings, unit, maxGapMin, maxPoints, kovatchevFClinicalBatch)
 }
 
-/** Pure CPU, callable from @Preview or a test; missing kovatchevFBatch falls to mg/dL. */
+/** Pure CPU, callable from @Preview or a test; missing kovatchevFClinicalBatch falls to mg/dL. */
 fun buildGraphFrame(
     readings: List<CgmReading>,
     unit: UnitSpace = UnitSpace.MgDl,
     maxGapMin: Float = 30f,
     maxPoints: Int = 6000,
-    kovatchevFBatch: ((DoubleArray) -> DoubleArray)? = null,
+    kovatchevFClinicalBatch: ((DoubleArray) -> DoubleArray)? = null,
 ): GraphFrame {
     val kept = readings.asSequence()
         .filter { it.bgMgdl != null && it.flag != ReadingFlag.INVALID }
@@ -92,7 +92,7 @@ fun buildGraphFrame(
 
     val t0 = kept.first().tsMs
     val n = kept.size
-    var ys = toUnit(DoubleArray(n) { kept[it].bgMgdl!!.toDouble() }, unit, kovatchevFBatch)
+    var ys = toUnit(DoubleArray(n) { kept[it].bgMgdl!!.toDouble() }, unit, kovatchevFClinicalBatch)
         ?: return GraphFrame.EMPTY
     var xs = FloatArray(n)
     var flags = IntArray(n)
@@ -140,12 +140,12 @@ fun buildGraphFrame(
 internal fun toUnit(
     mgdl: DoubleArray,
     unit: UnitSpace,
-    kovatchevFBatch: ((DoubleArray) -> DoubleArray)?,
+    kovatchevFClinicalBatch: ((DoubleArray) -> DoubleArray)?,
 ): FloatArray? = when (unit) {
     UnitSpace.MgDl -> FloatArray(mgdl.size) { mgdl[it].toFloat() }
     UnitSpace.MmolL -> FloatArray(mgdl.size) { (mgdl[it] / 18.0182).toFloat() }
     UnitSpace.Kovatchev -> {
-        val risk = kovatchevFBatch?.invoke(mgdl) ?: mgdl
+        val risk = kovatchevFClinicalBatch?.invoke(mgdl) ?: mgdl
         if (risk.size != mgdl.size) null else FloatArray(risk.size) { risk[it].toFloat() }
     }
 }

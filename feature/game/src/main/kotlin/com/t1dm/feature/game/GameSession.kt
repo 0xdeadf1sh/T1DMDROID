@@ -52,7 +52,7 @@ suspend fun loadGameScene(
 ): GameScene = withContext(Dispatchers.Default) {
     val frame = buildGraphFrame(
         readings, unit, maxPoints = TRACK_MAX_POINTS,
-        kovatchevFBatch = kovatchevF?.let { f -> { mgdl -> DoubleArray(mgdl.size) { f(mgdl[it]) } } },
+        kovatchevFClinicalBatch = kovatchevF?.let { f -> { mgdl -> DoubleArray(mgdl.size) { f(mgdl[it]) } } },
     )
     val track = buildGameTrack(TrackTrace.of(frame), rangeMinMgdl, rangeMaxMgdl, kovatchevF)
     val paint = if (strokes.isEmpty() || !track.isPlayable) {

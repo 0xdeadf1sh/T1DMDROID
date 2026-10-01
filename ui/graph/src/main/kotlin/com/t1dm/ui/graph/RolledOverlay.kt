@@ -40,14 +40,14 @@ class RolledSeries internal constructor(
 suspend fun rolledSeriesOf(
     rolled: RolledForecast?,
     unit: UnitSpace = UnitSpace.MgDl,
-    kovatchevFBatch: ((DoubleArray) -> DoubleArray)? = null,
-): RolledSeries? = withContext(Dispatchers.Default) { buildRolledSeries(rolled, unit, kovatchevFBatch) }
+    kovatchevFClinicalBatch: ((DoubleArray) -> DoubleArray)? = null,
+): RolledSeries? = withContext(Dispatchers.Default) { buildRolledSeries(rolled, unit, kovatchevFClinicalBatch) }
 
 /** Pure. Null when there is nothing to draw. */
 fun buildRolledSeries(
     rolled: RolledForecast?,
     unit: UnitSpace,
-    kovatchevFBatch: ((DoubleArray) -> DoubleArray)?,
+    kovatchevFClinicalBatch: ((DoubleArray) -> DoubleArray)?,
 ): RolledSeries? {
     if (rolled == null || rolled.isEmpty) return null
     val n = rolled.size
@@ -69,7 +69,7 @@ fun buildRolledSeries(
             mgdl[2 * n + i] = rolled.upperBg.getOrElse(i) { rolled.medianBg[i] }
         }
     }
-    val v = toUnit(mgdl, unit, kovatchevFBatch) ?: return null
+    val v = toUnit(mgdl, unit, kovatchevFClinicalBatch) ?: return null
     fun lane(k: Int) = v.copyOfRange(k * n, (k + 1) * n)
     val median = lane(0)
     val lo = Array(pairs) { lane(1 + it) }
