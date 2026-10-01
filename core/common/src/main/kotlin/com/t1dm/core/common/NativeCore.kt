@@ -58,6 +58,9 @@ interface NativeCore {
     /** Kovatchev BG → risk-space transform `f`. */
     fun kovatchevF(mgdl: Double): Double
 
+    /** [kovatchevF] over a series; one JNI crossing where the backend has a batch export. */
+    fun kovatchevFBatch(mgdl: DoubleArray): DoubleArray = DoubleArray(mgdl.size) { kovatchevF(mgdl[it]) }
+
     /** Inverse Kovatchev transform `f_inv`, risk-space → mg/dL. */
     fun kovatchevFInv(risk: Double): Double
 

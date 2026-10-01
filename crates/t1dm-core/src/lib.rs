@@ -205,6 +205,12 @@ pub fn kovatchev_f(mgdl: f64) -> f64 {
     KOV_CLINICAL_SCALE * (g.ln().powf(KOV_CLINICAL_POWER) - KOV_CLINICAL_OFFSET)
 }
 
+/// kovatchev_f over a whole series in one FFI crossing; element-wise identical to the scalar.
+#[uniffi::export]
+pub fn kovatchev_f_batch(mgdl: Vec<f64>) -> Vec<f64> {
+    mgdl.into_iter().map(kovatchev_f).collect()
+}
+
 /// risk → mg/dL, inverse of kovatchev_f with §5 guards; not the forecast-decode transform.
 #[uniffi::export]
 pub fn kovatchev_f_inv(risk: f64) -> f64 {
@@ -360,6 +366,20 @@ mod tests {
             let got = kovatchev_f(g);
             assert!((got - want).abs() < 1e-3, "f({g}) = {got}, want {want}");
         }
+    }
+
+    #[test]
+    fn kovatchev_f_batch_matches_scalar_bitwise() {
+        let xs: Vec<f64> = (0..=1200)
+            .map(|i| i as f64 * 0.5)
+            .chain([f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -50.0, 1e9])
+            .collect();
+        let got = kovatchev_f_batch(xs.clone());
+        assert_eq!(got.len(), xs.len());
+        for (g, r) in xs.iter().zip(&got) {
+            assert_eq!(r.to_bits(), kovatchev_f(*g).to_bits(), "f({g})");
+        }
+        assert!(kovatchev_f_batch(Vec::new()).is_empty());
     }
 
     #[test]

@@ -124,6 +124,7 @@ import uniffi.t1dm_core.extendBasal as uniffiExtendBasal
 import uniffi.t1dm_core.forecastDegeneracyCheck as uniffiForecastDegeneracyCheck
 import uniffi.t1dm_core.gamma as uniffiGamma
 import uniffi.t1dm_core.kovatchevF as uniffiKovatchevF
+import uniffi.t1dm_core.kovatchevFBatch as uniffiKovatchevFBatch
 import uniffi.t1dm_core.kovatchevFInv as uniffiKovatchevFInv
 import uniffi.t1dm_core.normalizeSample as uniffiNormalizeSample
 import uniffi.t1dm_core.onBoard as uniffiOnBoard
@@ -193,6 +194,9 @@ class UniffiNativeCore : NativeCore {
     override fun advertCrc32(payload: ByteArray): Long = uniffiAdvertCrc32(payload)
 
     override fun kovatchevF(mgdl: Double): Double = uniffiKovatchevF(mgdl)
+
+    override fun kovatchevFBatch(mgdl: DoubleArray): DoubleArray =
+        uniffiKovatchevFBatch(mgdl.asList()).toDoubleArray()
 
     override fun kovatchevFInv(risk: Double): Double = uniffiKovatchevFInv(risk)
 
