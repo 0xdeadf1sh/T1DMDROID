@@ -640,12 +640,12 @@ mod tests {
 
     #[test]
     fn snval_golden() {
-        assert_eq!(aidex_snval("22222C74D9".into()).unwrap(), vec![2, 2, 2, 2, 2, 12, 7, 4, 13, 9]);
+        assert_eq!(aidex_snval("00000T1DM0".into()).unwrap(), vec![0, 0, 0, 0, 0, 29, 1, 13, 22, 0]);
     }
 
     #[test]
     fn snval_rejects_bad_char() {
-        assert!(aidex_snval("2222-C74D9".into()).is_err());
+        assert!(aidex_snval("0000-T1DM0".into()).is_err());
         assert!(aidex_snval("".into()).is_err());
     }
 

@@ -21,7 +21,7 @@ object CgmConstants {
     /** In match order, derived — never a second list. */
     val NAME_PREFIXES: List<String> = MODEL_BY_NAME_PREFIX.keys.toList()
 
-    /** [brand] is the matched prefix without its separator: "LinX-22222C74D9" reads "LinX". */
+    /** [brand] is the matched prefix without its separator: "LinX-00000T1DM0" reads "LinX". */
     data class AdvertMatch(
         val prefix: String,
         val sensorModelId: String,

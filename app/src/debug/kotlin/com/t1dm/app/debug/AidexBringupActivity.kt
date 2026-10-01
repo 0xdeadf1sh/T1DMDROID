@@ -760,7 +760,7 @@ class AidexBringupActivity : Activity() {
 
     companion object {
         private const val TAG = "AIDEXPROBE"
-        private const val OLD_SERIAL = "22222C74D9"
+        private const val OLD_SERIAL = "00000T1DM0"
         private const val REQ_PERMS = 42
         private const val CMD_TIMEOUT_MS = 12_000L
         private const val CONNECT_TIMEOUT_MS = 35_000L

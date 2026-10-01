@@ -126,7 +126,7 @@ class MigrationConstantsTest {
     @Test
     fun `the archive fallback agrees with the migration backfill`() {
         assertEquals(CgmSensorModelId.AIDEX_DEBUG, legacySensorModelIdFor(CgmSourceId.DEBUG.value))
-        assertEquals(CgmSensorModelId.AIDEX_X, legacySensorModelIdFor("aidexx:22222C74D9"))
+        assertEquals(CgmSensorModelId.AIDEX_X, legacySensorModelIdFor("aidexx:00000T1DM0"))
 
         assertTrue(
             "the migration would classify the debug source differently from a restore",
@@ -136,7 +136,7 @@ class MigrationConstantsTest {
         assertTrue(
             "the migration would classify a real sensor differently from a restore",
             MigrationRunner.SQL_10_11_BACKFILL_REAL
-                .contains("'${legacySensorModelIdFor("aidexx:22222C74D9")}'"),
+                .contains("'${legacySensorModelIdFor("aidexx:00000T1DM0")}'"),
         )
     }
 

@@ -19,7 +19,7 @@ class SensorModelMappingTest {
     @Test
     fun `a replacement sensor of another brand joins the same history`() {
         assertEquals(
-            CgmConstants.matchAdvertName("AiDEX X-22222C74D9")?.sensorModelId,
+            CgmConstants.matchAdvertName("AiDEX X-00000T1DM0")?.sensorModelId,
             CgmConstants.matchAdvertName("LinX-9AB31F02C4")?.sensorModelId,
         )
     }
@@ -40,11 +40,11 @@ class SensorModelMappingTest {
 
     @Test
     fun `one match yields the brand, the model and the serial together`() {
-        val m = CgmConstants.matchAdvertName("AiDEX X-22222C74D9")!!
+        val m = CgmConstants.matchAdvertName("AiDEX X-00000T1DM0")!!
         assertEquals("AiDEX X", m.brand)
-        assertEquals("22222C74D9", m.serial)
+        assertEquals("00000T1DM0", m.serial)
         assertEquals(CgmSensorModelId.AIDEX_X, m.sensorModelId)
-        assertEquals("LinX", CgmConstants.matchAdvertName("LinX-22222C74D9")!!.brand)
+        assertEquals("LinX", CgmConstants.matchAdvertName("LinX-00000T1DM0")!!.brand)
         assertEquals("Lumi", CgmConstants.matchAdvertName("Lumi-0001")!!.brand)
         assertEquals("Smart", CgmConstants.matchAdvertName("Smart-0001")!!.brand)
     }

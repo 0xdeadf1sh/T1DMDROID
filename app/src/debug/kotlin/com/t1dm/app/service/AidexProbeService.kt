@@ -937,8 +937,8 @@ class AidexProbeService : Service() {
         const val ACTION_PROBE_HISTORY = "com.t1dm.app.PROBE_HISTORY"
 
         /** The old sensor; the staged modes refuse this serial. */
-        private const val SERIAL = "22222C74D9"
-        private const val OLD_SERIAL = "22222C74D9"
+        private const val SERIAL = "00000T1DM0"
+        private const val OLD_SERIAL = "00000T1DM0"
 
         private const val CH_ID = "t1dm.debug.aidexprobe"
         private const val NOTIF_ID = 4210

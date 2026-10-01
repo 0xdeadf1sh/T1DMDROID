@@ -15,7 +15,7 @@ class Ct5ConstantsTest {
         assertNull("eleven digits", Ct5Constants.bsnFrom("Anytime01234567891"))
         assertNull("not digits", Ct5Constants.bsnFrom("Anytime01234567A9"))
         assertNull("nothing after the prefix", Ct5Constants.bsnFrom("Anytime"))
-        assertNull("another family", Ct5Constants.bsnFrom("LinX-22222C74D9"))
+        assertNull("another family", Ct5Constants.bsnFrom("LinX-00000T1DM0"))
         assertNull("a separator this family does not use", Ct5Constants.bsnFrom("Anytime-0123456789"))
     }
 

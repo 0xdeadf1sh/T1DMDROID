@@ -8,8 +8,8 @@ import org.junit.Test
 class CgmSourceNamingTest {
 
     private fun descriptor(
-        display: String = "AiDEX X 22222C74D9",
-        serial: String? = "22222C74D9",
+        display: String = "AiDEX X 00000T1DM0",
+        serial: String? = "00000T1DM0",
         ordinal: Int = CgmSourceDescriptor.UNASSIGNED_ORDINAL,
     ) = CgmSourceDescriptor(
         id = CgmSourceId("aidexx:$serial"),
@@ -59,7 +59,7 @@ class CgmSourceNamingTest {
 
     @Test
     fun `an incidental serial is the ordinal digit while names are hidden`() {
-        assertEquals("22222C74D9", descriptor(ordinal = 2).incidentalSerial(showNames = true))
+        assertEquals("00000T1DM0", descriptor(ordinal = 2).incidentalSerial(showNames = true))
         assertEquals("222222", descriptor(ordinal = 2).incidentalSerial(showNames = false))
         assertEquals("000000", descriptor(ordinal = 0).incidentalSerial(showNames = false))
     }
@@ -70,7 +70,7 @@ class CgmSourceNamingTest {
         for (ordinal in 0..30) {
             val masked = descriptor(ordinal = ordinal).incidentalSerial(showNames = false)
             assertEquals(CgmSourceDescriptor.MASKED_SERIAL_LEN, masked?.length)
-            assertTrue("the mask must not contain the serial", masked?.contains("22222C74D9") == false)
+            assertTrue("the mask must not contain the serial", masked?.contains("00000T1DM0") == false)
         }
         assertEquals(null, descriptor().incidentalSerial(showNames = false))
     }

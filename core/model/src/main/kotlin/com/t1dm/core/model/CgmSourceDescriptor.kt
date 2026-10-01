@@ -46,7 +46,7 @@ data class CgmSourceDescriptor(
     val vendorId: String,          // owning plugin, e.g. "aidexx"
     val sensorModelId: String,     // sensor family; display scope ([CgmSensorModelId])
     val advertName: String?,       // what the sensor announced, verbatim; null = never recorded
-    val displayName: String,       // e.g. "AiDEX X 22222C74D9"
+    val displayName: String,       // e.g. "AiDEX X 00000T1DM0"
     val serialSuffix: String?,     // the name/serial suffix used to match adverts
     val warmupWindowMin: Int,      // seeded per vendor, then user-tunable; drives WARMUP
     val passiveOnly: Boolean,      // AiDEX X: false (connected GATT session is the sole read path)
@@ -55,7 +55,7 @@ data class CgmSourceDescriptor(
     /** Zero-based, stable; [UNASSIGNED_ORDINAL] until minted on first write. Never positional. */
     val ordinal: Int = UNASSIGNED_ORDINAL,
 ) {
-    /** [displayName] with [serialSuffix] stripped — "AiDEX X" rather than "AiDEX X 22222C74D9". */
+    /** [displayName] with [serialSuffix] stripped — "AiDEX X" rather than "AiDEX X 00000T1DM0". */
     val shortName: String
         get() {
             val serial = serialSuffix ?: return displayName

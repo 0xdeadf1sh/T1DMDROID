@@ -408,9 +408,9 @@ class CgmPanelMappingTest {
 
     @Test
     fun `a card names the sensor and states the number the rest of the app uses`() {
-        val row = state(sources = listOf(source("a:1", display = "AiDEX X 22222C74D9", ordinal = 2)))
+        val row = state(sources = listOf(source("a:1", display = "AiDEX X 00000T1DM0", ordinal = 2)))
             .sensors.single()
-        assertEquals("AiDEX X 22222C74D9", row.name)
+        assertEquals("AiDEX X 00000T1DM0", row.name)
         assertEquals("CGM #2", row.ordinalLabel)
     }
 
