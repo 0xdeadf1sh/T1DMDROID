@@ -59,7 +59,7 @@ mirroring it if it is one of these:
   `main` they are `pull_request`-only, and `publish-audit` fails the push if that
   changes: a `push` trigger there made GitHub build an APK on every push.
 - `LICENSE` — carried on `main`, the branch that is published.
-- `README.md` — `main` keeps the advisory-only line and the CAUTION block, and
+- `README.md` — `main` keeps the CAUTION block, builds the `public` flavor, and
   does not link `docs/CGM.md`.
 - `docs/CGM.md` — tracked on `private`; on `main`, listed in `.gitignore`.
 - The expiry seam, and every file that wires it.
