@@ -92,6 +92,14 @@ class MigrationConstantsTest {
     }
 
     @Test
+    fun `the v33 prediction key is exactly what Room generates`() {
+        val index = MigrationRunner.SQL_32_33_CREATE_PREDICTION_KEY
+            .replace("`prediction`", "`\${TABLE_NAME}`")
+            .replace("\"", "\\\"")
+        assertTrue("the prediction key DDL is not the one Room expects: $index", schemaText(33).contains(index))
+    }
+
+    @Test
     fun `the real-sensor backfill writes exactly CgmSensorModelId AIDEX_X`() {
         assertTrue(
             "MIGRATION_10_11 no longer backfills ${CgmSensorModelId.AIDEX_X}: " +

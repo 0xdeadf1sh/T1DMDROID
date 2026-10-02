@@ -217,6 +217,7 @@ class BgPanelEditTest {
                     modelId = "m.pte",
                     cycleTsMs = made,
                     anchorTsMs = made,
+                    sourceId = src.value,
                     stepMs = step,
                     medianBg = List(3) { 110.0 + it },
                     bandsMgdl = List(3 * 7) { 100.0 + it },
@@ -231,14 +232,14 @@ class BgPanelEditTest {
             ),
             nowMs = now,
         )
-        assertEquals(1, repo.predictionsForModelInRange("m.pte", t0, now).size)
+        assertEquals(1, repo.predictionsForModelInRange("m.pte", src, t0, now).size)
 
         repo.cutBgRange(t0, t0, now)
 
         assertEquals(
             "the record of what the model said survives its inputs being corrected",
             1,
-            repo.predictionsForModelInRange("m.pte", t0, now).size,
+            repo.predictionsForModelInRange("m.pte", src, t0, now).size,
         )
     }
 

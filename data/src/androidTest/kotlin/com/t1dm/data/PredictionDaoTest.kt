@@ -81,6 +81,13 @@ class PredictionDaoTest {
     }
 
     @Test
+    fun sameCycleModelOnTwoSensorsKeepsBoth() = kotlinx.coroutines.test.runTest {
+        repo.upsertPredictions(listOf(pred("m1").copy(sourceId = "a"), pred("m1").copy(sourceId = "b")), nowMs = 1_000)
+        repo.upsertPredictions(listOf(pred("m1").copy(sourceId = "a")), nowMs = 2_000)
+        assertEquals(2, repo.predictionsInRange(0, 600_000).size)
+    }
+
+    @Test
     fun latestCycleReturnsAllModelsSelectedFirst() = kotlinx.coroutines.test.runTest {
         repo.upsertPredictions(
             listOf(pred("m1", selected = false), pred("m2", selected = true), pred("m3", selected = false)),

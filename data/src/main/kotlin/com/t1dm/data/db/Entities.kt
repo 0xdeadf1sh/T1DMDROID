@@ -339,7 +339,7 @@ data class KvEntity(
 @Entity(
     tableName = "prediction",
     indices = [
-        Index(value = ["madeAtMs", "modelId"], unique = true),
+        Index(value = ["madeAtMs", "modelId", "sourceId"], unique = true),
         Index("madeAtMs"),
         Index("modelId"),
     ],

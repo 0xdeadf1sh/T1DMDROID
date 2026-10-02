@@ -54,14 +54,30 @@ class RoomBgHistoryProvider(
         return measuredSeries(repository.recentReadings(srcId, maxSteps + BG_SERIES_ROW_MARGIN), srcId, maxSteps, minSteps)
     }
 
-    /** Fills are spliced into the trusted sensor's stream only, so only it reads them. */
+    override suspend fun otherActiveSourceIds(): List<String> {
+        val authoritative = registry.authoritative.value ?: repository.authoritativeSourceId()
+        return repository.activeSourceIds().filter { it != authoritative }.map { it.value }
+    }
+
+    override suspend fun sourceBgSeries(sourceId: String, maxSteps: Int, minSteps: Int): BgSeries? {
+        val id = CgmSourceId(sourceId)
+        val readings = repository.recentReadings(id, maxSteps + BG_SERIES_ROW_MARGIN)
+        return assembleBgSeries(readings, sourceId, maxSteps, minSteps, withReconstructed = true) { _, _ ->
+            emptyMap()
+        }
+    }
+
+    override suspend fun sourceMeasuredStepsInWindow(sourceId: String, windowSteps: Int): Int =
+        measuredStepsOf(CgmSourceId(sourceId), windowSteps)
+
+    /** Fills are spliced into the authoritative sensor's stream only, so only it reads them. */
     override suspend fun fitSources(maxSteps: Int, minSteps: Int): List<FitSource> {
-        val trusted = registry.authoritative.value ?: repository.authoritativeSourceId()
-        val ids = listOfNotNull(trusted) + repository.allSourceIds().filter { it != trusted }
+        val authoritative = registry.authoritative.value ?: repository.authoritativeSourceId()
+        val ids = listOfNotNull(authoritative) + repository.allSourceIds().filter { it != authoritative }
         val out = ArrayList<FitSource>(ids.size)
         for (id in ids) {
             val readings = repository.recentReadings(id, maxSteps + BG_SERIES_ROW_MARGIN)
-            val withFills = id == trusted
+            val withFills = id == authoritative
             val dense = assembleBgSeries(readings, id.value, maxSteps, minSteps, withReconstructed = true) { a, b ->
                 if (!withFills) emptyMap()
                 else runCatching { repository.infillInRange(a, b).associate { it.ts to it.mgdl } }.getOrElse { emptyMap() }
@@ -133,8 +149,12 @@ class RoomBgHistoryProvider(
 
     /** WARMUP-gate numerator: distinct slots holding real sensor signal. */
     override suspend fun measuredStepsInWindow(windowSteps: Int): Int {
-        if (windowSteps <= 0) return 0
         val srcId = registry.authoritative.value ?: repository.authoritativeSourceId() ?: return 0
+        return measuredStepsOf(srcId, windowSteps)
+    }
+
+    private suspend fun measuredStepsOf(srcId: CgmSourceId, windowSteps: Int): Int {
+        if (windowSteps <= 0) return 0
         val readings = repository.recentReadings(srcId, windowSteps + BG_SERIES_ROW_MARGIN)
             .filter {
                 it.bgMgdl != null &&

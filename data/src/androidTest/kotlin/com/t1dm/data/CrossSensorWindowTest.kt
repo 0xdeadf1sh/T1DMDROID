@@ -122,6 +122,26 @@ class CrossSensorWindowTest {
         assertEquals(120.0, set.windows.single().realizedBg.first(), 1e-9)
     }
 
+    @Test
+    fun aPooledBacktestScoresEachForecastAgainstItsOwnSensor() = runTest {
+        repo.upsertSource(descriptor(worn), authoritative = false, nowMs = t0)
+        repo.upsertSource(descriptor(truthSrc), authoritative = true, nowMs = t0)
+        for (i in 0..(horizonSteps * 4)) repo.upsertReading(reading(truthSrc, t0 + i * step, 120))
+        for (i in 0..(horizonSteps * 4)) repo.upsertReading(reading(worn, t0 + i * step, 148))
+
+        val now = t0 + (horizonSteps * 4) * step
+        val set = repo.forecastWindowsOf(
+            listOf(prediction(t0 + step, truthSrc.value), prediction(t0 + step, worn.value)),
+            setOf(truthSrc, worn),
+            horizonMaxMin = 120,
+            sinceMs = t0,
+            nowMs = now,
+        )
+
+        assertEquals(listOf(120.0, 148.0), set.windows.map { it.realizedBg.first() })
+        assertEquals(0, set.nForeignSource)
+    }
+
     private companion object {
         const val MODEL = "m"
     }

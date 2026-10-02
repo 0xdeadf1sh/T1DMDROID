@@ -4,6 +4,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,6 +21,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
@@ -42,6 +45,7 @@ import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.fadingEdges
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.BacktestRefusal
+import com.t1dm.core.model.BacktestSensor
 import com.t1dm.core.model.BacktestStop
 import com.t1dm.core.model.BandCalibration
 import com.t1dm.core.model.BandCalibrationOutcome
@@ -87,7 +91,8 @@ fun ModelDetailScreen(
     onDropBandCalibration: () -> Unit = {},
     /** Null until one is run for this model in this process. */
     backtest: ModelBacktest? = null,
-    onBacktest: (days: Int) -> Unit = {},
+    backtestSensors: List<BacktestSensor> = emptyList(),
+    onBacktest: (days: Int, sourceIds: List<String>) -> Unit = { _, _ -> },
     onCancelBacktest: () -> Unit = {},
 ) {
     val meta = state.metaOf(modelId)
@@ -153,7 +158,7 @@ fun ModelDetailScreen(
         }
 
 
-        section("Backtest") { BacktestControls(backtest, onBacktest, onCancelBacktest) }
+        section("Backtest") { BacktestControls(backtest, backtestSensors, onBacktest, onCancelBacktest) }
 
         // Keep prior rows through a recompute: collapse to "Computing…" only with no prior suite.
         val suite = shown?.suite
@@ -529,13 +534,24 @@ private fun ClarkeHorizonPicker(options: List<Int>, selected: Int?, onSelect: (I
     }
 }
 
-private val BACKTEST_DAYS = listOf(1, 3, 7, 14)
+private val BACKTEST_DAYS = listOf(7, 14, 30)
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun BacktestControls(backtest: ModelBacktest?, onRun: (days: Int) -> Unit, onCancel: () -> Unit) {
+private fun BacktestControls(
+    backtest: ModelBacktest?,
+    sensors: List<BacktestSensor>,
+    onRun: (days: Int, sourceIds: List<String>) -> Unit,
+    onCancel: () -> Unit,
+) {
     val haptics = rememberT1dmHaptics()
     val running = backtest as? ModelBacktest.Running
-    var days by rememberSaveable { mutableStateOf(backtest?.days ?: 7) }
+    var days by rememberSaveable { mutableStateOf(backtest?.days?.takeIf { it in BACKTEST_DAYS } ?: 7) }
+    // Null until a chip is touched: the authoritative sensor alone.
+    var picked by rememberSaveable { mutableStateOf<List<String>?>(null) }
+    val nowMs = remember(sensors) { System.currentTimeMillis() }
+    val inWindow = sensors.filter { it.newestMs >= nowMs - days * 86_400_000L }
+    val chosen = (picked ?: inWindow.filter { it.authoritative }.map { it.id }).filter { id -> inWindow.any { it.id == id } }
     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(top = 4.dp)) {
         BACKTEST_DAYS.forEachIndexed { i, d ->
             SegmentedButton(
@@ -546,9 +562,26 @@ private fun BacktestControls(backtest: ModelBacktest?, onRun: (days: Int) -> Uni
             ) { Text("$d d") }
         }
     }
+    if (inWindow.size > 1 || (inWindow.isNotEmpty() && chosen.isEmpty())) {
+        FlowRow(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            inWindow.forEach { s ->
+                val on = s.id in chosen
+                FilterChip(
+                    selected = on,
+                    enabled = running == null,
+                    onClick = { haptics.perform(HapticEvent.SegmentTick); picked = if (on) chosen - s.id else chosen + s.id },
+                    label = { Text(s.label) },
+                )
+            }
+        }
+    }
     Row(verticalAlignment = Alignment.CenterVertically) {
         if (running == null) {
-            TextButton(onClick = { haptics.perform(HapticEvent.Tap); onRun(days) }) { Text("Run") }
+            TextButton(
+                onClick = { haptics.perform(HapticEvent.Tap); onRun(days, chosen) },
+                enabled = chosen.isNotEmpty(),
+            ) { Text("Run") }
+            if (inWindow.isEmpty()) Note("No readings in $days d")
         } else {
             TextButton(onClick = { haptics.perform(HapticEvent.Reject); onCancel() }) { Text("Cancel") }
             CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -564,6 +597,14 @@ private fun BacktestControls(backtest: ModelBacktest?, onRun: (days: Int) -> Uni
                 "${backtest.days} d · %,d / %,d forecasts · ".format(backtest.nForecasts, backtest.nOrigins) +
                     fmtDuration(backtest.elapsedMs.toDouble()),
             )
+            if (backtest.forecastsBySource.size > 1) {
+                // Never the raw id: it can carry the serial the name-privacy setting hides.
+                Note(
+                    backtest.forecastsBySource.entries.joinToString(" · ") { (id, n) ->
+                        "${sensors.firstOrNull { it.id == id }?.label ?: "CGM"} %,d".format(n)
+                    },
+                )
+            }
             if (backtest.adapterAttached) Note("Adapter attached — may be in-sample")
             when (backtest.stopped) {
                 BacktestStop.TOO_HOT -> Note("Stopped — too hot")
@@ -605,7 +646,7 @@ private fun emptyWhy(m: ModelMetrics?): String {
     return when {
         // Ahead of the history arms: after a sensor change there IS history.
         m.nForeignSource > 0 && m.nMatured == 0 ->
-            "${m.nForeignSource} forecasts from the previous sensor — refit after ~17 h"
+            "${m.nForeignSource} forecasts from other sensors — refit after ~17 h"
         m.nMatured == 0 -> "Insufficient history — no matured forecast yet"
         built == 0 -> "CGM gaps — ${m.nIncomplete} of ${m.nMatured} forecasts dropped"
         m.suite.nWindows == 0 -> "Fan not scoreable — $built forecasts rejected"

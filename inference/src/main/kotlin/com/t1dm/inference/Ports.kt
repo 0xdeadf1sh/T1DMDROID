@@ -46,7 +46,16 @@ interface BgHistoryProvider {
     /** Slots holding the model's own output; never a fit target/window (SPEC/invariants.md §1). */
     suspend fun reconstructedSlots(maxSteps: Int): Set<Long> = emptySet()
 
-    /** Every sensor's fit input, trusted first. Default: the trusted one alone. */
+    /** Active sensors other than the authoritative one; each is forecast for display only. */
+    suspend fun otherActiveSourceIds(): List<String> = emptyList()
+
+    /** [recentBgSeries] for one sensor; no fills, they live in the authoritative stream only. */
+    suspend fun sourceBgSeries(sourceId: String, maxSteps: Int, minSteps: Int): BgSeries? = null
+
+    /** [measuredStepsInWindow] for one sensor. */
+    suspend fun sourceMeasuredStepsInWindow(sourceId: String, windowSteps: Int): Int = 0
+
+    /** Every sensor's fit input, authoritative first. Default: the authoritative one alone. */
     suspend fun fitSources(maxSteps: Int, minSteps: Int): List<FitSource> {
         val dense = recentBgSeries(maxSteps, minSteps) ?: return emptyList()
         val measured = fitBgSeries(maxSteps, minSteps) ?: return emptyList()

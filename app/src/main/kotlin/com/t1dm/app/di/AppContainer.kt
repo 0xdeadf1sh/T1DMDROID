@@ -156,6 +156,8 @@ import com.t1dm.data.db.SampleEntity
 import com.t1dm.inference.BG_SERIES_ROW_MARGIN
 import com.t1dm.inference.assembleBgSeries
 import com.t1dm.core.model.BacktestRefusal
+import com.t1dm.core.model.BacktestSensor
+import com.t1dm.core.model.CgmSourceId
 import com.t1dm.core.model.ForecastWindowSet
 import com.t1dm.core.model.ModelBacktest
 import com.t1dm.core.model.ModelDescriptor
@@ -971,7 +973,7 @@ class AppContainer(context: Context) {
     val backtests: StateFlow<Map<String, ModelBacktest>> = _backtests.asStateFlow()
 
     /** One at a time, process-wide; in [appScope], so leaving the panel does not cancel it. */
-    fun startBacktest(modelId: String, days: Int) {
+    fun startBacktest(modelId: String, days: Int, sourceIds: List<String>) {
         if (!backtestRunning.compareAndSet(false, true)) {
             if (_backtests.value[modelId] !is ModelBacktest.Running) {
                 _backtests.update { it + (modelId to ModelBacktest.Refused(days, BacktestRefusal.BUSY)) }
@@ -981,7 +983,7 @@ class AppContainer(context: Context) {
         _backtests.update { it + (modelId to ModelBacktest.Running(days, 0, 0)) }
         backtestJob = appScope.launch(dispatchers.default) {
             try {
-                val outcome = runBacktest(modelId, days) { done, total ->
+                val outcome = runBacktest(modelId, days, sourceIds.map(::CgmSourceId)) { done, total ->
                     if (done % BACKTEST_PROGRESS_EVERY == 0 || done == total) {
                         _backtests.update { it + (modelId to ModelBacktest.Running(days, done, total)) }
                     }
@@ -1009,38 +1011,48 @@ class AppContainer(context: Context) {
         _backtests.update { it - modelId }
     }
 
+    /** One sensor's whole record, newest first; the live series takes its rows by count. */
+    private class BacktestStream(val source: CgmSourceId, val newestFirst: List<CgmReading>, val withFills: Boolean) {
+        val indexOf = HashMap<Long, Int>(newestFirst.size * 2).apply {
+            newestFirst.forEachIndexed { i, r -> put(r.tsMs, i) }
+        }
+    }
+
+    private class BacktestOrigin(val stream: BacktestStream, val tsMs: Long)
+
     private suspend fun runBacktest(
         modelId: String,
         days: Int,
+        sourceIds: List<CgmSourceId>,
         onProgress: (done: Int, total: Int) -> Unit,
     ): ModelBacktest {
         val t0 = System.nanoTime()
         val now = System.currentTimeMillis()
         val desc = inferenceController.descriptorOf(modelId)
             ?: return ModelBacktest.Refused(days, BacktestRefusal.NOT_LOADED)
-        // From the repository, not the registry: must match `forecastWindowsOf`'s filter.
-        val source = repository.authoritativeSourceId()
-            ?: return ModelBacktest.Refused(days, BacktestRefusal.NO_SENSOR)
+        if (sourceIds.isEmpty()) return ModelBacktest.Refused(days, BacktestRefusal.NO_SENSOR)
+        // Fills live in the authoritative sensor's stream only, as the live cycle reads them.
+        val authoritative = repository.authoritativeSourceId()
         val horizonMaxMin = ACCURACY_HORIZONS_MIN.max()
         val since = now - days.toLong() * 86_400_000L
         val lastOrigin = now - horizonMaxMin * 60_000L
-        // Whole source: the live series takes its rows by count, not by time.
-        val newestFirst = repository.readingsInRange(source, 0L, now).asReversed()
-        val origins = newestFirst.asReversed()
-            .filter { it.bgMgdl != null && isRealMeasurement(it.provenance, it.flag) && it.tsMs in since..lastOrigin }
-            .map { it.tsMs }
+        val streams = sourceIds.distinct().map { id ->
+            BacktestStream(id, repository.readingsInRange(id, 0L, now).asReversed(), withFills = id == authoritative)
+        }
+        val origins = streams.flatMap { s ->
+            s.newestFirst.asReversed()
+                .filter { it.bgMgdl != null && isRealMeasurement(it.provenance, it.flag) && it.tsMs in since..lastOrigin }
+                .map { BacktestOrigin(s, it.tsMs) }
+        }
         if (origins.isEmpty()) return ModelBacktest.Refused(days, BacktestRefusal.NO_HISTORY)
 
         val maxSteps = desc.maxContextPatches * desc.patchSize
         val minSteps = desc.minContextPatches * desc.patchSize
-        val contextFrom = origins.first() - maxSteps * CurveEngine.STEP_MS
-        val horizonEnd = origins.last() + desc.predictionHorizonHours * 3_600_000L + CurveEngine.STEP_MS
+        val contextFrom = origins.minOf { it.tsMs } - maxSteps * CurveEngine.STEP_MS
+        val horizonEnd = origins.maxOf { it.tsMs } + desc.predictionHorizonHours * 3_600_000L + CurveEngine.STEP_MS
         val doses = doseStore.snapshot(contextFrom - ChannelBuilder.PAD_MS, horizonEnd)
         val infills = repository.infillInRange(0L, now)
         val infillCreatedAt = infills.associate { it.ts to it.createdAtMs }
-        val indexOf = HashMap<Long, Int>(newestFirst.size * 2).apply {
-            newestFirst.forEachIndexed { i, r -> put(r.tsMs, i) }
-        }
 
         // What the phone held when the anchor arrived; a promoted reconstruction's rx is its slot.
         fun known(r: CgmReading, asOfMs: Long): Boolean =
@@ -1050,9 +1062,10 @@ class AppContainer(context: Context) {
                 r.rxWallMs <= asOfMs
             }
 
-        val inputAt: suspend (Long, ModelDescriptor) -> InferenceController.BacktestInput? = { origin, _ ->
-            val at = indexOf.getValue(origin)
-            val asOf = maxOf(origin, newestFirst[at].rxWallMs)
+        val inputAt: suspend (BacktestOrigin, ModelDescriptor) -> InferenceController.BacktestInput? = { o, _ ->
+            val newestFirst = o.stream.newestFirst
+            val at = o.stream.indexOf.getValue(o.tsMs)
+            val asOf = maxOf(o.tsMs, newestFirst[at].rxWallMs)
             val limit = maxSteps + BG_SERIES_ROW_MARGIN
             val rows = ArrayList<CgmReading>(limit)
             var j = at
@@ -1060,14 +1073,18 @@ class AppContainer(context: Context) {
                 if (known(newestFirst[j], asOf)) rows += newestFirst[j]
                 j++
             }
-            assembleBgSeries(rows, source.value, maxSteps, minSteps, withReconstructed = true) { from, to ->
-                infills.asSequence()
-                    .filter { it.ts in from..to && it.createdAtMs <= asOf }
-                    .associate { it.ts to it.mgdl }
+            assembleBgSeries(rows, o.stream.source.value, maxSteps, minSteps, withReconstructed = true) { from, to ->
+                if (!o.stream.withFills) {
+                    emptyMap()
+                } else {
+                    infills.asSequence()
+                        .filter { it.ts in from..to && it.createdAtMs <= asOf }
+                        .associate { it.ts to it.mgdl }
+                }
             }?.let { series ->
                 val builder = ChannelBuilder(curveEngine, doses.at(asOf))
                 InferenceController.BacktestInput(
-                    cycleTsMs = origin,
+                    cycleTsMs = o.tsMs,
                     series = series,
                     context = ContextChannelSource { g, n -> dashboardCurveChannels(g, n, builder) },
                     future = FutureOverrideSource { r, n -> dashboardFutureChannels(r, n, builder) },
@@ -1078,12 +1095,15 @@ class AppContainer(context: Context) {
         run.refusal?.let { return ModelBacktest.Refused(days, it) }
 
         // Newest first, as `forecastWindows` hands the suite its rows.
-        val set = repository.forecastWindowsOf(run.forecasts.asReversed(), horizonMaxMin, since, now)
+        val newestFirst = run.forecasts.sortedByDescending { it.cycleTsMs }
+        val set = repository.forecastWindowsOf(newestFirst, streams.mapTo(HashSet()) { it.source }, horizonMaxMin, since, now)
+        val bySource = run.forecasts.groupingBy { it.sourceId }.eachCount()
         return ModelBacktest.Done(
             days = days,
             metrics = metricsOf(set, ACCURACY_MIN_SAMPLES, includeCgEga = true),
             nForecasts = run.forecasts.size,
             nOrigins = origins.size,
+            forecastsBySource = streams.associate { it.source.value to (bySource[it.source.value] ?: 0) },
             adapterAttached = run.adapterAttached,
             stopped = run.stopped,
             elapsedMs = (System.nanoTime() - t0) / 1_000_000L,
@@ -2491,6 +2511,20 @@ class AppContainer(context: Context) {
     val authoritativeSource: Flow<CgmSourceDescriptor?> = repository.observeAuthoritativeSource()
 
     val allSources: Flow<List<CgmSourceDescriptor>> = repository.observeSources()
+
+    /** Every unhidden sensor with a reading, authoritative first, then by newest reading. */
+    val backtestSensors: Flow<List<BacktestSensor>> =
+        combine(allSources.distinctUntilChanged(), authoritativeSource, settingsStore.showSensorNames) { all, auth, show ->
+            Triple(all, auth?.id, show)
+        }.mapLatest { (all, authId, show) ->
+            all.filter { !it.hidden || it.id == authId }
+                .mapNotNull { d ->
+                    val extent = repository.readingExtent(d.id) ?: return@mapNotNull null
+                    val label = if (show) d.displayName else d.ordinalLabel()
+                    BacktestSensor(d.id.value, label, d.id == authId, extent.newestMs)
+                }
+                .sortedWith(compareByDescending<BacktestSensor> { it.authoritative }.thenByDescending { it.newestMs })
+        }
 
     /** Null means "whichever is authoritative"; unpersisted, must not survive a restart. */
     private val viewedSourceId = MutableStateFlow<com.t1dm.core.model.CgmSourceId?>(null)

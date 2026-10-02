@@ -569,11 +569,15 @@ interface PredictionDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(predictions: List<PredictionEntity>)
 
+    /** `IS`, not `=`: the unique key never matches two NULL sources, so REPLACE keeps both. */
+    @Query("DELETE FROM prediction WHERE madeAtMs = :madeAtMs AND modelId = :modelId AND sourceId IS :sourceId")
+    suspend fun deleteSlot(madeAtMs: Long, modelId: String, sourceId: String?)
+
     @Query(
-        "SELECT * FROM prediction WHERE madeAtMs = (SELECT MAX(madeAtMs) FROM prediction) " +
-            "ORDER BY selected DESC, modelId",
+        "SELECT * FROM prediction WHERE sourceId IS :sourceId AND madeAtMs = " +
+            "(SELECT MAX(madeAtMs) FROM prediction WHERE sourceId IS :sourceId) ORDER BY selected DESC, modelId",
     )
-    suspend fun latestCycle(): List<PredictionEntity>
+    suspend fun latestCycle(sourceId: String?): List<PredictionEntity>
 
     @Query("SELECT * FROM prediction WHERE madeAtMs BETWEEN :fromMs AND :toMs ORDER BY madeAtMs DESC, modelId")
     suspend fun range(fromMs: Long, toMs: Long): List<PredictionEntity>

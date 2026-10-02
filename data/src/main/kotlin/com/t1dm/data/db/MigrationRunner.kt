@@ -697,6 +697,20 @@ object MigrationRunner {
         }
     }
 
+    internal const val SQL_32_33_DROP_PREDICTION_KEY = "DROP INDEX IF EXISTS `index_prediction_madeAtMs_modelId`"
+
+    internal const val SQL_32_33_CREATE_PREDICTION_KEY =
+        "CREATE UNIQUE INDEX IF NOT EXISTS `index_prediction_madeAtMs_modelId_sourceId` " +
+            "ON `prediction` (`madeAtMs`, `modelId`, `sourceId`)"
+
+    /** Every active sensor is forecast each cycle; rows unique on the old key stay unique. */
+    val MIGRATION_32_33 = object : Migration(32, 33) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_32_33_DROP_PREDICTION_KEY)
+            connection.execSQL(SQL_32_33_CREATE_PREDICTION_KEY)
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -729,6 +743,7 @@ object MigrationRunner {
         MIGRATION_29_30,
         MIGRATION_30_31,
         MIGRATION_31_32,
+        MIGRATION_32_33,
     )
 
     fun <T : RoomDatabase> configure(builder: RoomDatabase.Builder<T>): RoomDatabase.Builder<T> =

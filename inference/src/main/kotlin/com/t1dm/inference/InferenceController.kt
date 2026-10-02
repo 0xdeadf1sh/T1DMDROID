@@ -89,7 +89,9 @@ class InferenceController(
     /** Old predictions describe nothing vs. a new sensor's glucose; metadata/telemetry survive. */
     fun onCgmSourceChanged() {
         // update, not copy(): outside cycleMutex, a read-modify-write races a cycle's publish.
-        _state.update { it.copy(predictions = emptyList(), lastCycleTsMs = null, lastCause = null) }
+        _state.update {
+            it.copy(predictions = emptyList(), otherPredictions = emptyMap(), lastCycleTsMs = null, lastCause = null)
+        }
     }
 
     private val stub = StubBackend()
@@ -485,10 +487,10 @@ class InferenceController(
      * Replays [origins] through [modelId] as it runs now — offset, adapter, smoothing — and stores
      * nothing. Null from [inputAt] skips an origin. One forward per lock, so the live cycle interleaves.
      */
-    suspend fun backtest(
+    suspend fun <O> backtest(
         modelId: String,
-        origins: List<Long>,
-        inputAt: suspend (originTsMs: Long, desc: ModelDescriptor) -> BacktestInput?,
+        origins: List<O>,
+        inputAt: suspend (origin: O, desc: ModelDescriptor) -> BacktestInput?,
         onProgress: (done: Int, total: Int) -> Unit,
     ): BacktestRun {
         val entry = cycleMutex.withLock { loaded[modelId] }
@@ -499,12 +501,12 @@ class InferenceController(
         val lora = loraStore?.attached(modelId)
         val window = smoothingWindow()
         val out = ArrayList<ModelPrediction>(origins.size)
-        for ((i, ts) in origins.withIndex()) {
+        for ((i, origin) in origins.withIndex()) {
             onProgress(i, origins.size)
             if (i % BACKTEST_THERMAL_EVERY == 0 && overTempNote(System.currentTimeMillis()) != null) {
                 return BacktestRun(out, lora != null, BacktestStop.TOO_HOT)
             }
-            val input = inputAt(ts, desc) ?: continue
+            val input = inputAt(origin, desc) ?: continue
             val gi = buildGraphInput(
                 desc,
                 input.series.mgdl,
@@ -854,7 +856,10 @@ class InferenceController(
         // Before warmup gate so the banner is over-temp, not warmup; copy preserves circadianTime.
         overTempNote(nowMs)?.let { note ->
             _state.value = _state.value.copy(
-                predictions = emptyList(), lastCause = InferenceCause.OVER_TEMPERATURE, note = note,
+                predictions = emptyList(),
+                otherPredictions = emptyMap(),
+                lastCause = InferenceCause.OVER_TEMPERATURE,
+                note = note,
             )
             Timber.tag(TAG).i(note)
             return
@@ -866,9 +871,34 @@ class InferenceController(
         val minContextHours = minSteps * GRID_MS / MS_PER_HOUR
         val requiredHours = warmupHoursProvider().coerceAtLeast(minContextHours)
         val requiredSteps = Math.round(requiredHours * MS_PER_HOUR / GRID_MS).toInt()
-        val measuredSteps = runCatching { history.measuredStepsInWindow(requiredSteps) }.getOrDefault(0)
         // Passive CGM never fills every slot: needs WARMUP_COMPLETION_FRACTION, then latches.
         val completionSteps = kotlin.math.ceil(requiredSteps * WARMUP_COMPLETION_FRACTION).toInt()
+        val gate = ContextGate(minSteps, maxSteps, requiredHours, requiredSteps, completionSteps)
+        runAuthoritative(cause, nowMs, gate, selReal, selHasTime)
+        runOtherSources(nowMs, gate)
+    }
+
+    private class ContextGate(
+        val minSteps: Int,
+        val maxSteps: Int,
+        val requiredHours: Double,
+        val requiredSteps: Int,
+        val completionSteps: Int,
+    )
+
+    private suspend fun runAuthoritative(
+        cause: InferenceCause,
+        nowMs: Long,
+        gate: ContextGate,
+        selReal: Boolean,
+        selHasTime: Boolean,
+    ) {
+        val minSteps = gate.minSteps
+        val maxSteps = gate.maxSteps
+        val requiredHours = gate.requiredHours
+        val requiredSteps = gate.requiredSteps
+        val completionSteps = gate.completionSteps
+        val measuredSteps = runCatching { history.measuredStepsInWindow(requiredSteps) }.getOrDefault(0)
         if (measuredSteps >= completionSteps) warmupSatisfiedUpTo = maxOf(warmupSatisfiedUpTo, requiredSteps)
         val warmedUp = measuredSteps >= completionSteps || requiredSteps <= warmupSatisfiedUpTo
         if (!warmedUp) {
@@ -914,6 +944,44 @@ class InferenceController(
             return
         }
         runCycle(cause, series, nowMs)
+    }
+
+    /** SPEC/invariants.md §7: display only; predictions, circadian belief, warm-up untouched. */
+    private suspend fun runOtherSources(nowMs: Long, gate: ContextGate) {
+        val ids = runCatching { history.otherActiveSourceIds() }.getOrDefault(emptyList())
+        // No latch: a sensor that drops below the warm-up fraction stops being forecast.
+        val ready = ids.mapNotNull { src ->
+            val measured = runCatching { history.sourceMeasuredStepsInWindow(src, gate.requiredSteps) }
+                .getOrDefault(0)
+            if (measured < gate.completionSteps) return@mapNotNull null
+            runCatching { history.sourceBgSeries(src, gate.maxSteps, gate.minSteps) }.getOrNull()?.let { src to it }
+        }
+        cycleMutex.withLock {
+            if (ready.isEmpty() || loaded.isEmpty() || overTempNote(nowMs) != null) {
+                _state.update { it.copy(otherPredictions = emptyMap()) }
+                return@withLock
+            }
+            val cycleTs = snapToGrid(nowMs)
+            val anchorDesc = (loaded[selectedId] ?: loaded.values.firstOrNull())?.bundle?.descriptor
+            val bySource = LinkedHashMap<String, List<ModelPrediction>>(ready.size)
+            for ((src, series) in ready) {
+                val stale = (nowMs - series.anchorTsMs) > freshnessThresholdMs
+                val doseChannels = buildDoseChannels(series)
+                val futureChannels = anchorDesc?.let { buildFutureChannels(series, it) }
+                val preds = ArrayList<ModelPrediction>(loaded.size)
+                for ((id, entry) in loaded) {
+                    if (!entry.real) continue
+                    runCatching { runOne(entry, id == selectedId, series, doseChannels, futureChannels, cycleTs, stale) }
+                        .onSuccess { preds.add(it) }
+                        .onFailure { Timber.tag(TAG).w(it, "model %s on another sensor failed", id) }
+                }
+                if (preds.isNotEmpty()) bySource[src] = preds.sortedByDescending { it.selected }
+            }
+            _state.update { it.copy(otherPredictions = bySource) }
+            runCatching { predictionStore.persist(cycleTs, bySource.values.flatten()) }
+                .onFailure { Timber.tag(TAG).w(it, "other-sensor prediction persist failed") }
+            Timber.tag(TAG).i("other sensors: %d forecast of %d active", bySource.size, ids.size)
+        }
     }
 
     /** Public so the service can drive a synthetic or manual cycle with no sensor present. */

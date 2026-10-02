@@ -863,10 +863,35 @@ class MigrationTest {
     }
 
     @Test
-    fun migrate1To32_fullChain() {
+    fun migrate32To33_twoSensorsShareACycle() {
+        val seed = helper.createDatabase(32)
+        val cols = "`madeAtMs`,`modelId`,`horizonSteps`,`nQuantiles`,`stepMs`,`anchorTsMs`,`lastBg`," +
+            "`lineBlob`,`fanBlob`,`status`,`backend`,`selected`,`stale`,`createdAtMs`,`sourceId`"
+        seed.execSQL(
+            "INSERT INTO `prediction` ($cols) VALUES " +
+                "(300000,'m',1,1,300000,300000,120.0,X'00',X'00','OK','NATIVE_RIDGE_FP64',1,0,300000,'a')",
+        )
+        seed.close()
+
+        val db = helper.runMigrationsAndValidate(33, listOf(MigrationRunner.MIGRATION_32_33))
+        db.execSQL(
+            "INSERT INTO `prediction` ($cols) VALUES " +
+                "(300000,'m',1,1,300000,300000,140.0,X'00',X'00','OK','NATIVE_RIDGE_FP64',1,0,300000,'b')",
+        )
+
+        assertEquals(
+            "one model's forecasts of two sensors in one cycle are two rows",
+            2,
+            countRows(db, "SELECT COUNT(*) FROM `prediction` WHERE `madeAtMs` = 300000 AND `modelId` = 'm'"),
+        )
+        db.close()
+    }
+
+    @Test
+    fun migrate1To33_fullChain() {
         helper.createDatabase(1).close()
         helper.runMigrationsAndValidate(
-            32,
+            33,
             listOf(
                 MigrationRunner.MIGRATION_1_2,
                 MigrationRunner.MIGRATION_2_3,
@@ -899,6 +924,7 @@ class MigrationTest {
                 MigrationRunner.MIGRATION_29_30,
                 MigrationRunner.MIGRATION_30_31,
                 MigrationRunner.MIGRATION_31_32,
+                MigrationRunner.MIGRATION_32_33,
             ),
         )
     }

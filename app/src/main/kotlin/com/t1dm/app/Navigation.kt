@@ -152,6 +152,7 @@ import com.t1dm.core.model.BandCalibrationOutcome
 import com.t1dm.core.model.ErrorGridLattices
 import com.t1dm.core.model.ModelMetrics
 import com.t1dm.core.model.ModelPrediction
+import com.t1dm.core.model.CgmSourceId
 import com.t1dm.feature.security.SecurityPanelState
 import com.t1dm.feature.security.SecurityScreen
 import com.t1dm.feature.security.WatchPanelDevice
@@ -1031,13 +1032,25 @@ private fun T1dmNavHost(
                     }
                 }
             val sensitivity = rememberSensitivity(container)
-            // Forecasts come from the AUTHORITATIVE sensor; emptying the list withholds all three.
+            // Each sensor shows its own fan (§7); the band correction is the authoritative one's.
             val viewingOther by container.viewingNonAuthoritative.collectAsState(false)
             val viewedSourceKey by container.viewedSourceKey.collectAsState(null)
+            val shownPredictions = if (viewingOther) {
+                viewedSourceKey?.let { inference.otherPredictions[it] }.orEmpty()
+            } else {
+                inference.predictions
+            }
+            val hindsightIn = remember(viewedSourceKey) {
+                val source = viewedSourceKey?.let(::CgmSourceId)
+                val fetch: suspend (String, Long, Long) -> List<ModelPrediction> = { modelId, fromMs, toMs ->
+                    source?.let { container.repository.predictionsForModelInRange(modelId, it, fromMs, toMs) }.orEmpty()
+                }
+                fetch
+            }
             // Null until both load, so the mg/dL placeholder on entry does not dissolve.
             val swapKey = storedUnit?.let { u -> viewedSourceKey?.let { it to u } }
-            // Off the UNWITHHELD predictions: withholding the fan must not move the trace.
-            val forecastEndMs = inference.predictions.firstOrNull { it.selected }
+            // Else the authoritative fan: a sensor still warming up must not move the trace.
+            val forecastEndMs = (shownPredictions.firstOrNull { it.selected } ?: inference.selectedPrediction)
                 ?.takeIf { it.horizonSteps > 0 }
                 ?.let { it.anchorTsMs + it.horizonSteps * it.stepMs }
             // maskControls is null until a model with a descriptor is selected, hiding the gesture.
@@ -1061,11 +1074,11 @@ private fun T1dmNavHost(
                 swapKey = swapKey,
                 unit = glucoseUnit,
                 thresholds = container.alarmConfig.thresholds,
-                predictions = if (viewingOther) emptyList() else inference.predictions,
+                predictions = shownPredictions,
                 kovatchevF = container.nativeCore::kovatchevF,
                 kovatchevFClinicalBatch = container.nativeCore::kovatchevFClinicalBatch,
-                calibrateBands = calibrateBands,
-                calibrateFans = calibrateFans,
+                calibrateBands = if (viewingOther) null else calibrateBands,
+                calibrateFans = if (viewingOther) null else calibrateFans,
                 iobCob = iobCob,
                 sensitivity = sensitivity,
                 curveChannels = container::dashboardOverlayChannels,
@@ -1124,7 +1137,7 @@ private fun T1dmNavHost(
                 paintStrokes = paintStrokes,
                 onAddPaintStroke = container::addPaintStroke,
                 onDeletePaintStroke = container::deletePaintStroke,
-                hindsightIn = container.repository::predictionsForModelInRange,
+                hindsightIn = hindsightIn,
                 gameSlot = { m, kind, fromMs, dropMs, spanMin, clock, ready, exit ->
                     DashboardGamePanel(
                         container, m, kind, fromMs, dropMs, spanMin, clock, ready, exit, range, paintStrokes,
@@ -1257,6 +1270,7 @@ private fun T1dmNavHost(
             }
             // §8.4: last outcome is local so reopen does not re-announce a fit already read.
             val backtests by container.backtests.collectAsState()
+            val backtestSensors by container.backtestSensors.collectAsState(emptyList())
             val bandCalibrations by container.bandCalibrations.collectAsState()
             val bandCalibration: BandCalibration? = bandCalibrations[modelId]
             var fitOutcome by remember(modelId) { mutableStateOf<BandCalibrationOutcome?>(null) }
@@ -1289,7 +1303,8 @@ private fun T1dmNavHost(
                 onFitBandCalibration = { if (!fitting) fitTick++ },
                 onDropBandCalibration = { scope.launch { container.dropBandCalibration(modelId) } },
                 backtest = backtests[modelId],
-                onBacktest = { days -> container.startBacktest(modelId, days) },
+                backtestSensors = backtestSensors,
+                onBacktest = { days, sourceIds -> container.startBacktest(modelId, days, sourceIds) },
                 onCancelBacktest = { container.cancelBacktest(modelId) },
             )
         }

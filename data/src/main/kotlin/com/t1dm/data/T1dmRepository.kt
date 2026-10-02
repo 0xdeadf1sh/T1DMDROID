@@ -958,27 +958,34 @@ class T1dmRepository(
     )
 
 
-    /** `(madeAtMs, modelId)` REPLACEs. */
+    /** `(madeAtMs, modelId, sourceId)` replaces, a null source included. */
     suspend fun upsertPredictions(preds: List<ModelPrediction>, nowMs: Long) = withContext(io) {
-        predictions.upsertAll(preds.map { it.toEntity(nowMs) })
+        val rows = preds.map { it.toEntity(nowMs) }
+        inWriteTx {
+            for (r in rows) predictions.deleteSlot(r.madeAtMs, r.modelId, r.sourceId)
+            predictions.upsertAll(rows)
+        }
     }
 
-    /** Selected model first. */
+    /** The authoritative sensor's latest cycle, selected model first. */
     suspend fun latestCyclePredictions(): List<ModelPrediction> = withContext(io) {
-        predictions.latestCycle().map { it.toModel() }
+        predictions.latestCycle(sources.authoritativeSourceId()).map { it.toModel() }
     }
 
     suspend fun predictionsInRange(fromMs: Long, toMs: Long): List<ModelPrediction> =
         withContext(io) { predictions.range(fromMs, toMs).map { it.toModel() } }
 
-    /** Ascending write order; scoped to authoritative source, else the fan bleeds in. */
-    suspend fun predictionsForModelInRange(modelId: String, fromMs: Long, toMs: Long): List<ModelPrediction> =
-        withContext(io) {
-            val authoritative = sources.authoritativeSourceId() ?: return@withContext emptyList()
-            predictions.rangeForModel(modelId, fromMs, toMs)
-                .map { it.toModel() }
-                .filter { it.sourceId == authoritative }
-        }
+    /** Ascending write order; one sensor's, else another's fan bleeds in. */
+    suspend fun predictionsForModelInRange(
+        modelId: String,
+        sourceId: CgmSourceId,
+        fromMs: Long,
+        toMs: Long,
+    ): List<ModelPrediction> = withContext(io) {
+        predictions.rangeForModel(modelId, fromMs, toMs)
+            .map { it.toModel() }
+            .filter { it.sourceId == sourceId.value }
+    }
 
     suspend fun deletePredictionsForModel(modelId: String) = withContext(io) { predictions.deleteByModel(modelId) }
 
@@ -992,20 +999,28 @@ class T1dmRepository(
         sinceMs: Long,
         nowMs: Long,
         toleranceMs: Long = 150_000L, // half a 5-min grid step
-    ): ForecastWindowSet = windowsOf(horizonMaxMin, sinceMs, nowMs, toleranceMs) { horizonMs ->
-        predictions.range(sinceMs, nowMs - horizonMs).map { it.toModel() }.filter { it.modelId == modelId }
+    ): ForecastWindowSet {
+        val authoritative = withContext(io) { sources.authoritativeSourceId() } ?: return ForecastWindowSet.EMPTY
+        return windowsOf(setOf(authoritative), horizonMaxMin, sinceMs, nowMs, toleranceMs) { horizonMs ->
+            predictions.range(sinceMs, nowMs - horizonMs).map { it.toModel() }.filter { it.modelId == modelId }
+        }
     }
 
-    /** [forecastWindows]'s pairing for forecasts that were never stored: a backtest's. */
+    /** [forecastWindows]'s pairing for forecasts that were never stored: a backtest's, pooled. */
     suspend fun forecastWindowsOf(
         forecasts: List<ModelPrediction>,
+        sourceIds: Set<CgmSourceId>,
         horizonMaxMin: Int,
         sinceMs: Long,
         nowMs: Long,
         toleranceMs: Long = 150_000L,
-    ): ForecastWindowSet = windowsOf(horizonMaxMin, sinceMs, nowMs, toleranceMs) { forecasts }
+    ): ForecastWindowSet =
+        windowsOf(sourceIds.mapTo(HashSet()) { it.value }, horizonMaxMin, sinceMs, nowMs, toleranceMs) { forecasts }
+
+    private class Truth(val ts: LongArray, val rows: List<Pair<Long, Int>>)
 
     private suspend fun windowsOf(
+        scored: Set<String>,
         horizonMaxMin: Int,
         sinceMs: Long,
         nowMs: Long,
@@ -1017,21 +1032,23 @@ class T1dmRepository(
         if (horizonMaxMin <= 0 || horizonMs % stepMs != 0L) return@withContext ForecastWindowSet.EMPTY
         val nSteps = (horizonMs / stepMs).toInt()
 
-        // Sorted for binary search; authoritative-source scoped, else cross-sensor noise=error.
-        val authoritative = sources.authoritativeSourceId() ?: return@withContext ForecastWindowSet.EMPTY
-        val truth = readings.rangeForSource(authoritative, sinceMs - toleranceMs, nowMs)
-            .asSequence()
-            .filter { it.bgMgdl != null && isRealMeasurement(it.provenance, it.flag) }
-            .map { it.tsMs to it.bgMgdl!! }
-            .distinctBy { it.first }
-            .sortedBy { it.first }
-            .toList()
-        if (truth.isEmpty()) return@withContext ForecastWindowSet.EMPTY
-        val truthTs = LongArray(truth.size) { truth[it].first }
+        // Sorted for binary search; a forecast meets its own sensor, else cross-sensor noise=error.
+        val truthBySource = HashMap<String, Truth>(scored.size * 2)
+        for (src in scored) {
+            val rows = readings.rangeForSource(src, sinceMs - toleranceMs, nowMs)
+                .asSequence()
+                .filter { it.bgMgdl != null && isRealMeasurement(it.provenance, it.flag) }
+                .map { it.tsMs to it.bgMgdl!! }
+                .distinctBy { it.first }
+                .sortedBy { it.first }
+                .toList()
+            if (rows.isNotEmpty()) truthBySource[src] = Truth(LongArray(rows.size) { rows[it].first }, rows)
+        }
+        if (truthBySource.isEmpty()) return@withContext ForecastWindowSet.EMPTY
 
         // Forecast side of the same scoping; a null sourceId (pre-v25) never matches, is refused.
         val ofModel = forecasts(horizonMs).filter { it.status == ForecastStatus.OK }
-        val rows = ofModel.filter { it.sourceId == authoritative }
+        val rows = ofModel.filter { it.sourceId in scored }
         // Counted, not just dropped: an empty panel after a sensor change would look broken.
         val nForeignSource = ofModel.size - rows.size
 
@@ -1046,11 +1063,12 @@ class T1dmRepository(
             nMatured++
             if (nq == 0) nq = p.nQuantiles else if (p.nQuantiles != nq) { nIncomplete++; continue }
 
-            val anchor = nearestWithin(truthTs, truth, p.cycleTsMs, toleranceMs)
-            if (anchor == null) { nIncomplete++; continue }
+            val truth = truthBySource[p.sourceId]
+            val anchor = truth?.let { nearestWithin(it.ts, it.rows, p.cycleTsMs, toleranceMs) }
+            if (truth == null || anchor == null) { nIncomplete++; continue }
             val realized = ArrayList<Double>(nSteps)
             for (i in 1..nSteps) {
-                val v = nearestWithin(truthTs, truth, p.cycleTsMs + i * stepMs, toleranceMs) ?: break
+                val v = nearestWithin(truth.ts, truth.rows, p.cycleTsMs + i * stepMs, toleranceMs) ?: break
                 realized += v.toDouble()
             }
             if (realized.size != nSteps) { nIncomplete++; continue }

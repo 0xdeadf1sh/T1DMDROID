@@ -138,7 +138,10 @@ data class WarmupProgress(val measuredHours: Double, val requiredHours: Double) 
 /** Immutable UI snapshot. [predictions] is selected-first; [note] says why a refusal refused. */
 data class InferenceState(
     val running: List<RunningModel> = emptyList(),
+    /** The authoritative sensor's; the only forecasts alarms, dosing and outbound read (§7). */
     val predictions: List<ModelPrediction> = emptyList(),
+    /** Every other active sensor's, by source id; display only. A sensor in warm-up is absent. */
+    val otherPredictions: Map<String, List<ModelPrediction>> = emptyMap(),
     val latencies: List<ModelLatency> = emptyList(),
     val metas: List<ModelMeta> = emptyList(),
     val telemetry: List<ModelTelemetry> = emptyList(),
