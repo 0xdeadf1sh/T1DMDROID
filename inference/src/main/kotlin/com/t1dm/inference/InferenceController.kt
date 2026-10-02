@@ -629,7 +629,7 @@ class InferenceController(
                 if (anchor !in 0 until g.n || g.target[anchor].isNaN()) return false
                 // No reconstruction anywhere in context; a carried-forward slot stays admissible.
                 if (g.reconstructed(w, w + ctxSteps) > 0) return false
-                // Overlapping sensors: the one earlier in the list, the trusted one first, keeps it.
+                // Overlapping sensors: the one earlier in the list, authoritative first, keeps it.
                 val a = g.msOf(w)
                 val b = g.msOf(w + shape.winLen)
                 return (0 until k).none { grids[it].measuredMs(a, b) > 0 }

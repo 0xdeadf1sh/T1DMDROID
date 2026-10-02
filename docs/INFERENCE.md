@@ -140,7 +140,7 @@ the head over those states and puts a low-rank adapter in front of it.
   backtest, the other two in the BG panel's fills of their shape. One per kind may
   be attached to a model at once.
 - **Which windows it sees.** Windows of the adapter's own kind only, from up to a
-  year of every sensor's measured readings, trusted sensor first; a window whose
+  year of every sensor's measured readings, authoritative sensor first; a window whose
   time another sensor earlier in that order has measured is left to that sensor. No
   meal or bolus may start inside the predicted span. Candidates sit on an hourly
   grid, and beside each meal or bolus: the span opens on the step after it, or, for
