@@ -61,6 +61,7 @@ object ThemeIds {
     const val UMBRELLA = "umbrella"
     const val HELLO_KITTY = "hello_kitty"
     const val EINK = "eink"
+    const val MATRIX = "matrix"
     const val CUSTOM = "custom"
 }
 
@@ -149,9 +150,31 @@ val EInkPalette = T1dmPalette(
     urgentHigh = Color(0xFFF2EDE3),
 )
 
+/** Pure black; every role but the grid clears AA on surfaceVariant. */
+val MatrixPalette = T1dmPalette(
+    id = ThemeIds.MATRIX,
+    displayName = "Matrix",
+    dark = true,
+    background = Color(0xFF000000),
+    surface = Color(0xFF04120A),
+    surfaceVariant = Color(0xFF0A2412),
+    primary = Color(0xFF00FF41),
+    onPrimary = Color(0xFF000000),
+    secondary = Color(0xFFE6FFEA),
+    onSecondary = Color(0xFF000000),
+    ink = Color(0xFFC8FFD4),
+    inkMuted = Color(0xFF66CC80),
+    grid = Color(0xFF145A26),
+    urgentLow = Color(0xFFFF4D6A),
+    low = Color(0xFFFFD000),
+    inRange = Color(0xFF00FF41),
+    high = Color(0xFFFF9100),
+    urgentHigh = Color(0xFFFF5040),
+)
+
 /** In selector order; Tron first is the default. */
 val BundledPalettes: List<T1dmPalette> =
-    listOf(TronPalette, UmbrellaPalette, HelloKittyPalette, EInkPalette)
+    listOf(TronPalette, UmbrellaPalette, HelloKittyPalette, EInkPalette, MatrixPalette)
 
 fun paletteForId(id: String?): T1dmPalette =
     BundledPalettes.firstOrNull { it.id == id } ?: TronPalette
