@@ -1056,6 +1056,7 @@ class T1dmRepository(
         var nIncomplete = 0
         var nq = 0
         val out = ArrayList<ForecastWindow>()
+        val cutFrom = ArrayList<ModelPrediction>()
         for (p in rows) {
             if (p.stepMs != stepMs || p.nQuantiles <= 0) continue
             if (p.medianBg.size < nSteps || p.bandsMgdl.size < nSteps * p.nQuantiles) continue
@@ -1079,8 +1080,9 @@ class T1dmRepository(
                 realizedBg = realized,
                 lastBg = anchor.toDouble(),
             )
+            cutFrom += p
         }
-        ForecastWindowSet(out, nMatured, nIncomplete, nForeignSource)
+        ForecastWindowSet(out, nMatured, nIncomplete, nForeignSource, cutFrom)
     }
 
     /** [truthTs] must be sorted ascending. */

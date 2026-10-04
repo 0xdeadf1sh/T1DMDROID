@@ -51,17 +51,12 @@ import com.t1dm.core.model.BandCalibration
 import com.t1dm.core.model.BandCalibrationOutcome
 import com.t1dm.core.model.BandFitRefusal
 import com.t1dm.core.model.CgEga
-import com.t1dm.core.model.CgEgaRegion
 import com.t1dm.core.model.ErrorGridLattices
-import com.t1dm.core.model.ExcursionAccuracy
 import com.t1dm.core.model.HorizonMetrics
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.ModelMeta
 import com.t1dm.core.model.ModelBacktest
 import com.t1dm.core.model.ModelMetrics
-import com.t1dm.core.model.PointBlock
-import com.t1dm.core.model.TrendMatrix
-import com.t1dm.core.model.TREND_CATEGORIES
 import com.t1dm.core.model.ModelTelemetry
 import com.t1dm.core.model.displayName
 import kotlin.math.abs
@@ -94,6 +89,8 @@ fun ModelDetailScreen(
     backtestSensors: List<BacktestSensor> = emptyList(),
     onBacktest: (days: Int, sourceIds: List<String>) -> Unit = { _, _ -> },
     onCancelBacktest: () -> Unit = {},
+    onExportBacktest: () -> Unit = {},
+    backtestExportStatus: String? = null,
 ) {
     val meta = state.metaOf(modelId)
     val telemetry = state.telemetryOf(modelId)
@@ -158,7 +155,9 @@ fun ModelDetailScreen(
         }
 
 
-        section("Backtest") { BacktestControls(backtest, backtestSensors, onBacktest, onCancelBacktest) }
+        section("Backtest") {
+            BacktestControls(backtest, backtestSensors, onBacktest, onCancelBacktest, onExportBacktest, backtestExportStatus)
+        }
 
         // Keep prior rows through a recompute: collapse to "Computing…" only with no prior suite.
         val suite = shown?.suite
@@ -169,7 +168,7 @@ fun ModelDetailScreen(
             Note(if (showingBacktest) "Replayed forecast vs realized BG" else "Forecast vs realized BG")
             when {
                 scored.isNotEmpty() -> {
-                    BandTable(scored)
+                    Table(bandTable(scored))
                     // §6.2: band figure may not stand apart from coverage/width; table has both.
                     ErrorByHorizonFigure(scored)
                 }
@@ -198,20 +197,20 @@ fun ModelDetailScreen(
             // Five shares individually, never an A+B: the paper's panel declines to report one.
             section("DTS zones — band τ.25–.75") {
                 DtsFigure(scored)
-                DtsTable(scored)
+                Table(dtsTable(scored))
             }
             // Per horizon: trend agreement decays, pooling would hide that.
             section("Trend risk categories — median line") {
                 Note("1 no risk · 2 under · 3 over · 4/5 extreme")
                 TrendCategoryFigure(scored)
-                TrendTable(scored)
+                Table(trendTable(scored))
             }
             // §6.2: the same block on the median line, kept a table apart from the band figures.
-            section("Median line") { MedianTable(scored) }
-            section("Outer band τ.05–.95 · persistence") { OuterTable(scored) }
+            section("Median line") { Table(medianTable(scored)) }
+            section("Outer band τ.05–.95 · persistence") { Table(outerTable(scored)) }
             section("Excursions vs alarm bands") {
                 Note("Hypo off the τ.25 edge, hyper off τ.75")
-                ExcursionTable(scored)
+                Table(excursionTable(scored))
             }
         }
 
@@ -263,7 +262,7 @@ fun ModelDetailScreen(
             when {
                 shownCgEga != null -> {
                     CgEgaFigure(shownCgEga)
-                    CgEgaTable(shownCgEga)
+                    Table(cgEgaTable(shownCgEga))
                 }
                 !showingBacktest && cgEgaLoading -> Note("Computing…")
                 scored.isEmpty() -> Note("Needs scored windows")
@@ -348,155 +347,10 @@ fun ModelDetailScreen(
     }
 }
 
-// Column order follows `T1DMAI/metrics/core/report.py::_suite_table`.
-
-private fun col(header: String, weight: Float) =
-    com.t1dm.core.design.TableColumn(header, weight, numeric = true)
-
-private const val WIDE = 980
-
-/** §6.2: cov50/w50 share the row, keeping a widened band from reading flawless in the errors. */
 @Composable
-private fun BandTable(hs: List<HorizonMetrics>) {
-    com.t1dm.core.design.DataTable(
-        columns = listOf(
-            com.t1dm.core.design.TableColumn("h", 0.7f),
-            col("RMSE pt", 1f), col("RMSE wm", 1f), col("MAE pt", 1f), col("MAE wm", 1f),
-            col("MARD %", 1f), col("A %", 0.9f), col("A+B %", 1f), col("E %", 0.9f),
-            col("cov50 %", 1f), col("w50", 0.9f), col("skill", 0.9f), col("n", 0.7f),
-        ),
-        rows = hs.map { h ->
-            pointCells(h, h.band) + listOf(
-                pct(h.bandCov50), f1(h.bandWidth50), skill(h.band), h.n.toString(),
-            )
-        },
-        minWidth = WIDE,
-    )
+private fun Table(t: MetricTable) {
+    com.t1dm.core.design.DataTable(t.columns, t.rows, minWidth = t.minWidth)
 }
-
-/** §6.2 — a different quantity on one forecast, so a separate table. A line has no coverage. */
-@Composable
-private fun MedianTable(hs: List<HorizonMetrics>) {
-    com.t1dm.core.design.DataTable(
-        columns = listOf(
-            com.t1dm.core.design.TableColumn("h", 0.7f),
-            col("RMSE pt", 1f), col("RMSE wm", 1f), col("MAE pt", 1f), col("MAE wm", 1f),
-            col("MARD %", 1f), col("A %", 0.9f), col("A+B %", 1f), col("E %", 0.9f),
-            col("skill", 0.9f), col("n", 0.7f),
-        ),
-        rows = hs.map { h ->
-            pointCells(h, h.medianLine) + listOf(skill(h.medianLine), h.n.toString())
-        },
-        minWidth = WIDE,
-    )
-}
-
-/** The persistence baseline both bases' skill is measured against. */
-@Composable
-private fun OuterTable(hs: List<HorizonMetrics>) {
-    com.t1dm.core.design.DataTable(
-        columns = listOf(
-            com.t1dm.core.design.TableColumn("h", 0.8f),
-            col("cov90 %", 1f), col("w90", 1f), col("persist pt", 1.2f), col("persist wm", 1.2f),
-        ),
-        rows = hs.map { h ->
-            listOf(
-                "${h.horizonMin}m", pct(h.bandCov90), f1(h.bandWidth90),
-                f1(h.rmsePersistPoint), f1(h.rmsePersistWinmean),
-            )
-        },
-    )
-}
-
-/** §6.1. The denominators sit beside the ratios: 1.00 over one crossing is not 1.00 over forty. */
-@Composable
-private fun ExcursionTable(hs: List<HorizonMetrics>) {
-    com.t1dm.core.design.DataTable(
-        columns = listOf(
-            com.t1dm.core.design.TableColumn("h", 0.7f),
-            col("hypo rec", 1.1f), col("hypo prec", 1.2f), col("hypo t/p", 1.1f),
-            col("hyper rec", 1.2f), col("hyper prec", 1.3f), col("hyper t/p", 1.2f),
-        ),
-        rows = hs.map { h ->
-            listOf("${h.horizonMin}m") + excursionCells(h.hypo) + excursionCells(h.hyper)
-        },
-        minWidth = 620,
-    )
-}
-
-/** No A+B: the panel that published the grid declined to report one; cov50/w50 share the row. */
-@Composable
-private fun DtsTable(hs: List<HorizonMetrics>) {
-    com.t1dm.core.design.DataTable(
-        columns = listOf(
-            com.t1dm.core.design.TableColumn("h", 0.8f),
-            col("A %", 1f), col("B %", 1f), col("C %", 1f), col("D %", 1f), col("E %", 1f),
-            col("|risk|", 1.1f), col("cov50 %", 1.1f), col("w50", 0.9f), col("n", 0.8f),
-        ),
-        rows = hs.map { h ->
-            val b = h.band
-            listOf(
-                "${h.horizonMin}m",
-                f1(b.dtsA), f1(b.dtsB), f1(b.dtsC), f1(b.dtsD), f1(b.dtsE),
-                f3(b.dtsMeanAbsRisk), pct(h.bandCov50), f1(h.bandWidth50), h.n.toString(),
-            )
-        },
-        minWidth = 760,
-    )
-}
-
-/** n is the matrix's own count, below the horizon's wherever the 15-min lookback did not reach. */
-@Composable
-private fun TrendTable(hs: List<HorizonMetrics>) {
-    com.t1dm.core.design.DataTable(
-        columns = listOf(
-            com.t1dm.core.design.TableColumn("h", 0.8f),
-        ) + List(TREND_CATEGORIES) { col("${it + 1} %", 1f) } + listOf(col("n", 0.8f)),
-        rows = hs.map { h -> listOf("${h.horizonMin}m") + trendCells(h.trend) },
-        minWidth = 560,
-    )
-}
-
-private fun trendCells(m: TrendMatrix): List<String> =
-    List(TREND_CATEGORIES) { f1(m.categoryPct.getOrNull(it)) } + m.n.toString()
-
-/** §6.3 — the whole window, so no horizon column and no horizon in any label. */
-@Composable
-private fun CgEgaTable(cg: CgEga) {
-    com.t1dm.core.design.DataTable(
-        columns = listOf(
-            com.t1dm.core.design.TableColumn("region", 1f),
-            col("AP %", 1f), col("BE %", 1f), col("EP %", 1f), col("n", 0.8f),
-        ),
-        rows = listOf(
-            cgEgaCells("hypo", cg.hypo),
-            cgEgaCells("eu", cg.eu),
-            cgEgaCells("hyper", cg.hyper),
-        ),
-    )
-}
-
-private fun pointCells(h: HorizonMetrics, b: PointBlock): List<String> = listOf(
-    "${h.horizonMin}m",
-    f1(b.rmsePoint), f1(b.rmseWinmean), f1(b.maePoint), f1(b.maeWinmean),
-    f1(b.mard), f1(b.clarkeA), f1(b.clarkeAb), "%.2f".format(b.clarkeE),
-)
-
-private fun excursionCells(e: ExcursionAccuracy): List<String> =
-    listOf(f2(e.recall), f2(e.precision), "${e.nTrue}/${e.nPred}")
-
-private fun cgEgaCells(name: String, r: CgEgaRegion): List<String> =
-    listOf(name, f1(r.apPct), f1(r.bePct), f1(r.epPct), r.n.toString())
-
-private fun f1(v: Double?): String = if (v == null || !v.isFinite()) "—" else "%.1f".format(v)
-
-private fun f2(v: Double?): String = if (v == null || !v.isFinite()) "—" else "%.2f".format(v)
-
-private fun f3(v: Double?): String = if (v == null || !v.isFinite()) "—" else "%.3f".format(v)
-
-private fun pct(v: Double): String = if (!v.isFinite()) "—" else "%.1f".format(v * 100)
-
-private fun skill(b: PointBlock): String = f2(b.skillPoint)
 
 /** Minutes; 60 separates model error from persistence but keeps the scatter about the forecast. */
 internal const val CLARKE_GRID_DEFAULT_MIN = 60
@@ -543,6 +397,8 @@ private fun BacktestControls(
     sensors: List<BacktestSensor>,
     onRun: (days: Int, sourceIds: List<String>) -> Unit,
     onCancel: () -> Unit,
+    onExport: () -> Unit,
+    exportStatus: String?,
 ) {
     val haptics = rememberT1dmHaptics()
     val running = backtest as? ModelBacktest.Running
@@ -611,6 +467,8 @@ private fun BacktestControls(
                 BacktestStop.MODEL_CHANGED -> Note("Stopped — model reloaded")
                 null -> Unit
             }
+            TextButton(onClick = { haptics.perform(HapticEvent.Tap); onExport() }) { Text("Export PDF") }
+            exportStatus?.let { Note(it) }
         }
         is ModelBacktest.Refused -> Note(
             when (backtest.refusal) {
@@ -640,7 +498,7 @@ private fun AccuracySourcePicker(backtest: Boolean, onSelect: (backtest: Boolean
     }
 }
 
-private fun emptyWhy(m: ModelMetrics?): String {
+internal fun emptyWhy(m: ModelMetrics?): String {
     if (m == null) return "Insufficient history — nothing scored yet"
     val built = m.nMatured - m.nIncomplete
     return when {
@@ -715,7 +573,7 @@ private fun rangeOrNa(lo: Int?, hi: Int?): String =
 
 private fun fmtMs(ms: Double): String = if (ms >= 100) "${ms.toInt()} ms" else "%.1f ms".format(ms)
 
-private fun fmtDuration(ms: Double): String = when {
+internal fun fmtDuration(ms: Double): String = when {
     ms >= 3_600_000 -> "%.2f h".format(ms / 3_600_000)
     ms >= 60_000 -> "%.1f min".format(ms / 60_000)
     ms >= 1_000 -> "%.2f s".format(ms / 1_000)

@@ -1,10 +1,11 @@
 package com.t1dm.app.stats
 
-import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
-import android.graphics.pdf.PdfDocument
+import com.t1dm.core.design.PdfPager
+import com.t1dm.core.design.PdfPager.Companion.M
+import com.t1dm.core.design.PdfPager.Companion.W
 import com.t1dm.core.model.AdvancedStats
 import com.t1dm.core.model.AgpBin
 import com.t1dm.core.model.ClinicalCuts
@@ -33,15 +34,9 @@ import kotlin.math.ceil
 
 /** Every BG level is drawn in mg/dL, whatever the active unit space. */
 object StatsPdf {
-    private const val W = 595 // A4 @ 72 dpi
-    private const val H = 842
-    private const val M = 40f
-    private const val FOOT = 34f
-
     /** [ClinicalCuts.UNAVAILABLE] marks a missing native core; the heatmap is withheld with it. */
     fun write(out: OutputStream, c: StatsComposite, cuts: ClinicalCuts) {
-        val doc = PdfDocument()
-        val p = Pager(doc)
+        val p = PdfPager()
         val s = c.local
 
         p.title("T1DM — Glucose statistics report")
@@ -128,237 +123,169 @@ object StatsPdf {
         p.finish(out)
     }
 
-    private class Pager(private val doc: PdfDocument) {
-        private var pageNo = 0
-        private lateinit var page: PdfDocument.Page
-        private lateinit var cv: Canvas
-        private var y = 0f
-
-        private val titleP = paint(Color.BLACK, 20f, bold = true)
-        private val sectionP = paint(Color.rgb(30, 60, 100), 13f, bold = true)
-        private val keyP = paint(Color.DKGRAY, 11f)
-        private val valP = paint(Color.BLACK, 11f)
-        private val capP = paint(Color.GRAY, 9.5f)
-        private val footP = paint(Color.GRAY, 9f)
-        private val axisP = paint(Color.GRAY, 8.5f)
-
-        init { newPage() }
-
-        private fun newPage() {
-            pageNo++
-            page = doc.startPage(PdfDocument.PageInfo.Builder(W, H, pageNo).create())
-            cv = page.canvas
-            cv.drawColor(Color.WHITE)
-            y = M + 8f
+    private fun PdfPager.tirStrip(b: SubBands) {
+        need(26f)
+        y += 8f
+        val x0 = M; val w = W - 2 * M; val bh = 16f
+        val segs = listOf(
+            b.veryLow to Color.rgb(0xB7, 0x1C, 0x1C),
+            b.low to Color.rgb(0xF5, 0x7C, 0x00),
+            b.inRange to Color.rgb(0x2E, 0x7D, 0x32),
+            b.high to Color.rgb(0xF9, 0xA8, 0x25),
+            b.veryHigh to Color.rgb(0xC6, 0x28, 0x28),
+        )
+        val total = segs.sumOf { it.first }.takeIf { it > 0 } ?: 1.0
+        var x = x0
+        val fill = Paint().apply { isAntiAlias = true }
+        segs.forEach { (frac, col) ->
+            val sw = (frac / total * w).toFloat()
+            if (sw > 0) { fill.color = col; canvas.drawRect(x, y, x + sw, y + bh, fill); x += sw }
         }
-
-        private fun need(h: Float) {
-            if (y + h > H - FOOT) {
-                stampFooter()
-                doc.finishPage(page)
-                newPage()
-            }
-        }
-
-        private fun stampFooter() {
-            cv.drawText("Page $pageNo", W - M - 40f, H - 18f, footP)
-        }
-
-        fun title(t: String) { cv.drawText(t, M, y, titleP); y += 22f }
-        fun body(t: String) { need(16f); cv.drawText(t, M, y + 12f, keyP); y += 15f }
-        fun caption(t: String) { need(14f); cv.drawText(t, M, y + 10f, capP); y += 13f }
-        fun gap(h: Float) { y += h }
-
-        fun section(t: String) {
-            need(30f)
-            y += 16f
-            cv.drawText(t, M, y, sectionP)
-            cv.drawLine(M, y + 4f, W - M, y + 4f, axisP)
-            y += 12f
-        }
-
-        fun kv(k: String, v: String) {
-            need(16f)
-            y += 15f
-            cv.drawText(k, M, y, keyP)
-            cv.drawText(v, W / 2f - 30f, y, valP)
-        }
-
-        fun tirStrip(b: SubBands) {
-            need(26f)
-            y += 8f
-            val x0 = M; val w = W - 2 * M; val bh = 16f
-            val segs = listOf(
-                b.veryLow to Color.rgb(0xB7, 0x1C, 0x1C),
-                b.low to Color.rgb(0xF5, 0x7C, 0x00),
-                b.inRange to Color.rgb(0x2E, 0x7D, 0x32),
-                b.high to Color.rgb(0xF9, 0xA8, 0x25),
-                b.veryHigh to Color.rgb(0xC6, 0x28, 0x28),
-            )
-            val total = segs.sumOf { it.first }.takeIf { it > 0 } ?: 1.0
-            var x = x0
-            val fill = Paint().apply { isAntiAlias = true }
-            segs.forEach { (frac, col) ->
-                val sw = (frac / total * w).toFloat()
-                if (sw > 0) { fill.color = col; cv.drawRect(x, y, x + sw, y + bh, fill); x += sw }
-            }
-            y += bh + 2f
-        }
-
-        /** An unmeasured cell is outlined, never filled, so a gap cannot read as a value. */
-        fun heatGrid(cells: List<HeatCell>, stat: HeatStat) {
-            val labelW = 26f
-            val gridW = W - 2 * M - labelW
-            val cw = gridW / HEATMAP_HOURS
-            val rh = 13f
-            val gh = rh * DAY_LABELS.size
-            // One need() for caption and grid, so a break cannot land between them.
-            need(gh + 40f)
-            cv.drawText(
-                if (stat == HeatStat.Median) "Median per weekday and hour" else "Mean per weekday and hour",
-                M, y + 10f, capP,
-            )
-            y += 17f
-            val top = y
-            val grid = FloatArray(DAY_LABELS.size * HEATMAP_HOURS) { Float.NaN }
-            for (cell in cells) {
-                if (cell.dow in DAY_LABELS.indices && cell.hour in 0 until HEATMAP_HOURS) {
-                    grid[cell.dow * HEATMAP_HOURS + cell.hour] = cell.value(stat).toFloat()
-                }
-            }
-            val fill = Paint().apply { isAntiAlias = true }
-            val outline = Paint().apply { style = Paint.Style.STROKE; color = Color.LTGRAY; isAntiAlias = true }
-            for (dRow in DAY_LABELS.indices) {
-                val ry = top + dRow * rh
-                cv.drawText(DAY_LABELS[dRow], M, ry + rh - 3f, axisP)
-                for (h in 0 until HEATMAP_HOURS) {
-                    val cx = M + labelW + h * cw
-                    val v = grid[dRow * HEATMAP_HOURS + h]
-                    if (v.isNaN()) {
-                        cv.drawRect(cx + 0.5f, ry + 0.5f, cx + cw - 0.5f, ry + rh - 0.5f, outline)
-                    } else {
-                        fill.color = heatColor(v.toDouble()).toArgb()
-                        cv.drawRect(cx + 0.5f, ry + 0.5f, cx + cw - 0.5f, ry + rh - 0.5f, fill)
-                    }
-                }
-            }
-            for (h in 0..HEATMAP_HOURS step 3) {
-                cv.drawText(h.toString(), M + labelW + h * cw - 4f, top + gh + 9f, axisP)
-            }
-            y = top + gh + 14f
-        }
-
-        fun heatLegend() {
-            need(26f)
-            y += 4f
-            val span = HEAT_CEIL_MGDL - HEAT_FLOOR_MGDL
-            val x0 = M + 26f
-            val w = W - 2 * M - 26f
-            val bh = 7f
-            val fill = Paint().apply { isAntiAlias = false }
-            var px = 0
-            while (px < w.toInt()) {
-                fill.color = heatColor(HEAT_FLOOR_MGDL + (px / w) * span).toArgb()
-                cv.drawRect(x0 + px, y, x0 + px + 1f, y + bh, fill)
-                px++
-            }
-            listOf(HEAT_FLOOR_MGDL, HEAT_MID_MGDL, HEAT_CEIL_MGDL).forEach { v ->
-                val x = x0 + ((v - HEAT_FLOOR_MGDL) / span * w).toFloat()
-                cv.drawText(d(v, 0), (x - 6f).coerceIn(M, W - M - 18f), y + bh + 9f, axisP)
-            }
-            y += bh + 14f
-        }
-
-        fun agpChart(agp: List<AgpBin>, target: TargetRange) {
-            val ch = 170f
-            need(ch + 16f)
-            y += 6f
-            val x0 = M; val w = W - 2 * M; val top = y; val bot = y + ch
-            val loBg = 40.0
-            val hiBg = maxOf(300.0, ceil(agp.maxOf { it.p95 } / 50.0) * 50.0)
-            fun xAt(minute: Int) = x0 + (minute / 1440f) * w
-            fun yAt(bg: Double) = (bot - ((bg - loBg) / (hiBg - loBg) * ch)).toFloat().coerceIn(top, bot)
-
-            val bandPaint = Paint().apply { color = Color.rgb(0xE8, 0xF5, 0xE9); isAntiAlias = true }
-            cv.drawRect(x0, yAt(target.highMgdl.toDouble()), x0 + w, yAt(target.lowMgdl.toDouble()), bandPaint)
-            cv.drawRect(x0, top, x0 + w, bot, Paint().apply { style = Paint.Style.STROKE; color = Color.LTGRAY })
-
-            ribbon(agp, ::xAt, ::yAt, { it.p5 }, { it.p95 }, Color.argb(60, 0x42, 0x85, 0xF4))
-            ribbon(agp, ::xAt, ::yAt, { it.p25 }, { it.p75 }, Color.argb(110, 0x42, 0x85, 0xF4))
-            val med = Path()
-            agp.forEachIndexed { i, b ->
-                val px = xAt(b.minuteOfDay); val py = yAt(b.p50)
-                if (i == 0) med.moveTo(px, py) else med.lineTo(px, py)
-            }
-            cv.drawPath(med, Paint().apply { style = Paint.Style.STROKE; strokeWidth = 2f; color = Color.rgb(0x15, 0x65, 0xC0); isAntiAlias = true })
-
-            listOf(loBg, target.lowMgdl.toDouble(), target.highMgdl.toDouble(), hiBg).forEach {
-                cv.drawText(d(it, 0), x0 - 20f, yAt(it) + 3f, axisP)
-            }
-            listOf(0, 360, 720, 1080, 1440).forEach {
-                cv.drawText("${it / 60}h", xAt(it) - 6f, bot + 11f, axisP)
-            }
-            y = bot + 16f
-        }
-
-        private fun ribbon(
-            agp: List<AgpBin>, xAt: (Int) -> Float, yAt: (Double) -> Float,
-            lo: (AgpBin) -> Double, hi: (AgpBin) -> Double, color: Int,
-        ) {
-            if (agp.size < 2) return
-            val path = Path()
-            path.moveTo(xAt(agp.first().minuteOfDay), yAt(hi(agp.first())))
-            agp.forEach { path.lineTo(xAt(it.minuteOfDay), yAt(hi(it))) }
-            for (i in agp.indices.reversed()) path.lineTo(xAt(agp[i].minuteOfDay), yAt(lo(agp[i])))
-            path.close()
-            cv.drawPath(path, Paint().apply { this.color = color; isAntiAlias = true })
-        }
-
-        fun histogram(s: AdvancedStats, target: TargetRange) {
-            val ch = 110f
-            need(ch + 18f)
-            y += 4f
-            val x0 = M; val w = W - 2 * M; val bot = y + ch
-            val maxFrac = s.histogram.maxOfOrNull { it.frac }?.takeIf { it > 0 } ?: 1.0
-            val bw = w / s.histogram.size
-            val fill = Paint().apply { isAntiAlias = true }
-            s.histogram.forEachIndexed { i, bin ->
-                val mid = (bin.lo + bin.hi) / 2.0
-                fill.color = when {
-                    mid < target.lowMgdl -> Color.rgb(0xF5, 0x7C, 0x00)
-                    mid > target.highMgdl -> Color.rgb(0xF9, 0xA8, 0x25)
-                    else -> Color.rgb(0x2E, 0x7D, 0x32)
-                }
-                val bh = (bin.frac / maxFrac * ch).toFloat()
-                val bx = x0 + i * bw
-                cv.drawRect(bx, bot - bh, bx + bw - 1f, bot, fill)
-            }
-            cv.drawText("40", x0, bot + 11f, axisP)
-            cv.drawText("400 mg/dL", x0 + w - 46f, bot + 11f, axisP)
-            y = bot + 16f
-        }
-
-        fun episode(label: String, e: EpisodeSummary, isHypo: Boolean) {
-            need(16f)
-            y += 15f
-            cv.drawText(label, M, y, keyP)
-            val v = if (e.count == 0) "none" else {
-                "${e.count} · avg ${durMin(e.meanDurationMs)} · ${if (isHypo) "nadir" else "peak"} " +
-                    "${d(e.meanExtreme, 0)} (worst ${d(e.worstExtreme, 0)}) mg/dL"
-            }
-            cv.drawText(v, W / 2f - 60f, y, valP)
-        }
-
-        fun finish(out: OutputStream) {
-            stampFooter()
-            doc.finishPage(page)
-            doc.writeTo(out)
-            doc.close()
-        }
+        y += bh + 2f
     }
 
-    private fun paint(c: Int, size: Float, bold: Boolean = false) = Paint().apply {
-        color = c; textSize = size; isFakeBoldText = bold; isAntiAlias = true
+    /** An unmeasured cell is outlined, never filled, so a gap cannot read as a value. */
+    private fun PdfPager.heatGrid(cells: List<HeatCell>, stat: HeatStat) {
+        val labelW = 26f
+        val gridW = W - 2 * M - labelW
+        val cw = gridW / HEATMAP_HOURS
+        val rh = 13f
+        val gh = rh * DAY_LABELS.size
+        // One need() for caption and grid, so a break cannot land between them.
+        need(gh + 40f)
+        canvas.drawText(
+            if (stat == HeatStat.Median) "Median per weekday and hour" else "Mean per weekday and hour",
+            M, y + 10f, capP,
+        )
+        y += 17f
+        val top = y
+        val grid = FloatArray(DAY_LABELS.size * HEATMAP_HOURS) { Float.NaN }
+        for (cell in cells) {
+            if (cell.dow in DAY_LABELS.indices && cell.hour in 0 until HEATMAP_HOURS) {
+                grid[cell.dow * HEATMAP_HOURS + cell.hour] = cell.value(stat).toFloat()
+            }
+        }
+        val fill = Paint().apply { isAntiAlias = true }
+        val outline = Paint().apply { style = Paint.Style.STROKE; color = Color.LTGRAY; isAntiAlias = true }
+        for (dRow in DAY_LABELS.indices) {
+            val ry = top + dRow * rh
+            canvas.drawText(DAY_LABELS[dRow], M, ry + rh - 3f, axisP)
+            for (h in 0 until HEATMAP_HOURS) {
+                val cx = M + labelW + h * cw
+                val v = grid[dRow * HEATMAP_HOURS + h]
+                if (v.isNaN()) {
+                    canvas.drawRect(cx + 0.5f, ry + 0.5f, cx + cw - 0.5f, ry + rh - 0.5f, outline)
+                } else {
+                    fill.color = heatColor(v.toDouble()).toArgb()
+                    canvas.drawRect(cx + 0.5f, ry + 0.5f, cx + cw - 0.5f, ry + rh - 0.5f, fill)
+                }
+            }
+        }
+        for (h in 0..HEATMAP_HOURS step 3) {
+            canvas.drawText(h.toString(), M + labelW + h * cw - 4f, top + gh + 9f, axisP)
+        }
+        y = top + gh + 14f
+    }
+
+    private fun PdfPager.heatLegend() {
+        need(26f)
+        y += 4f
+        val span = HEAT_CEIL_MGDL - HEAT_FLOOR_MGDL
+        val x0 = M + 26f
+        val w = W - 2 * M - 26f
+        val bh = 7f
+        val fill = Paint().apply { isAntiAlias = false }
+        var px = 0
+        while (px < w.toInt()) {
+            fill.color = heatColor(HEAT_FLOOR_MGDL + (px / w) * span).toArgb()
+            canvas.drawRect(x0 + px, y, x0 + px + 1f, y + bh, fill)
+            px++
+        }
+        listOf(HEAT_FLOOR_MGDL, HEAT_MID_MGDL, HEAT_CEIL_MGDL).forEach { v ->
+            val x = x0 + ((v - HEAT_FLOOR_MGDL) / span * w).toFloat()
+            canvas.drawText(d(v, 0), (x - 6f).coerceIn(M, W - M - 18f), y + bh + 9f, axisP)
+        }
+        y += bh + 14f
+    }
+
+    private fun PdfPager.agpChart(agp: List<AgpBin>, target: TargetRange) {
+        val ch = 170f
+        need(ch + 16f)
+        y += 6f
+        val x0 = M; val w = W - 2 * M; val top = y; val bot = y + ch
+        val loBg = 40.0
+        val hiBg = maxOf(300.0, ceil(agp.maxOf { it.p95 } / 50.0) * 50.0)
+        fun xAt(minute: Int) = x0 + (minute / 1440f) * w
+        fun yAt(bg: Double) = (bot - ((bg - loBg) / (hiBg - loBg) * ch)).toFloat().coerceIn(top, bot)
+
+        val bandPaint = Paint().apply { color = Color.rgb(0xE8, 0xF5, 0xE9); isAntiAlias = true }
+        canvas.drawRect(x0, yAt(target.highMgdl.toDouble()), x0 + w, yAt(target.lowMgdl.toDouble()), bandPaint)
+        canvas.drawRect(x0, top, x0 + w, bot, Paint().apply { style = Paint.Style.STROKE; color = Color.LTGRAY })
+
+        ribbon(agp, ::xAt, ::yAt, { it.p5 }, { it.p95 }, Color.argb(60, 0x42, 0x85, 0xF4))
+        ribbon(agp, ::xAt, ::yAt, { it.p25 }, { it.p75 }, Color.argb(110, 0x42, 0x85, 0xF4))
+        val med = Path()
+        agp.forEachIndexed { i, b ->
+            val px = xAt(b.minuteOfDay); val py = yAt(b.p50)
+            if (i == 0) med.moveTo(px, py) else med.lineTo(px, py)
+        }
+        canvas.drawPath(med, Paint().apply { style = Paint.Style.STROKE; strokeWidth = 2f; color = Color.rgb(0x15, 0x65, 0xC0); isAntiAlias = true })
+
+        listOf(loBg, target.lowMgdl.toDouble(), target.highMgdl.toDouble(), hiBg).forEach {
+            canvas.drawText(d(it, 0), x0 - 20f, yAt(it) + 3f, axisP)
+        }
+        listOf(0, 360, 720, 1080, 1440).forEach {
+            canvas.drawText("${it / 60}h", xAt(it) - 6f, bot + 11f, axisP)
+        }
+        y = bot + 16f
+    }
+
+    private fun PdfPager.ribbon(
+        agp: List<AgpBin>, xAt: (Int) -> Float, yAt: (Double) -> Float,
+        lo: (AgpBin) -> Double, hi: (AgpBin) -> Double, color: Int,
+    ) {
+        if (agp.size < 2) return
+        val path = Path()
+        path.moveTo(xAt(agp.first().minuteOfDay), yAt(hi(agp.first())))
+        agp.forEach { path.lineTo(xAt(it.minuteOfDay), yAt(hi(it))) }
+        for (i in agp.indices.reversed()) path.lineTo(xAt(agp[i].minuteOfDay), yAt(lo(agp[i])))
+        path.close()
+        canvas.drawPath(path, Paint().apply { this.color = color; isAntiAlias = true })
+    }
+
+    private fun PdfPager.histogram(s: AdvancedStats, target: TargetRange) {
+        val ch = 110f
+        need(ch + 18f)
+        y += 4f
+        val x0 = M; val w = W - 2 * M; val bot = y + ch
+        val maxFrac = s.histogram.maxOfOrNull { it.frac }?.takeIf { it > 0 } ?: 1.0
+        val bw = w / s.histogram.size
+        val fill = Paint().apply { isAntiAlias = true }
+        s.histogram.forEachIndexed { i, bin ->
+            val mid = (bin.lo + bin.hi) / 2.0
+            fill.color = when {
+                mid < target.lowMgdl -> Color.rgb(0xF5, 0x7C, 0x00)
+                mid > target.highMgdl -> Color.rgb(0xF9, 0xA8, 0x25)
+                else -> Color.rgb(0x2E, 0x7D, 0x32)
+            }
+            val bh = (bin.frac / maxFrac * ch).toFloat()
+            val bx = x0 + i * bw
+            canvas.drawRect(bx, bot - bh, bx + bw - 1f, bot, fill)
+        }
+        canvas.drawText("40", x0, bot + 11f, axisP)
+        canvas.drawText("400 mg/dL", x0 + w - 46f, bot + 11f, axisP)
+        y = bot + 16f
+    }
+
+    private fun PdfPager.episode(label: String, e: EpisodeSummary, isHypo: Boolean) {
+        need(16f)
+        y += 15f
+        canvas.drawText(label, M, y, keyP)
+        val v = if (e.count == 0) "none" else {
+            "${e.count} · avg ${durMin(e.meanDurationMs)} · ${if (isHypo) "nadir" else "peak"} " +
+                "${d(e.meanExtreme, 0)} (worst ${d(e.worstExtreme, 0)}) mg/dL"
+        }
+        canvas.drawText(v, W / 2f - 60f, y, valP)
     }
 
     private fun todLabel(startMin: Int): String = when (startMin) {

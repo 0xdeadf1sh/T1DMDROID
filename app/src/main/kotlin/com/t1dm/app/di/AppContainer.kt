@@ -155,9 +155,13 @@ import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.SampleEntity
 import com.t1dm.inference.BG_SERIES_ROW_MARGIN
 import com.t1dm.inference.assembleBgSeries
+import com.t1dm.core.model.BACKTEST_EXAMPLE_CONTEXT_MS
+import com.t1dm.core.model.BACKTEST_EXAMPLES_PER_LIST
+import com.t1dm.core.model.BacktestExample
 import com.t1dm.core.model.BacktestRefusal
 import com.t1dm.core.model.BacktestSensor
 import com.t1dm.core.model.CgmSourceId
+import com.t1dm.core.model.pickBacktestExamples
 import com.t1dm.core.model.ForecastWindowSet
 import com.t1dm.core.model.ModelBacktest
 import com.t1dm.core.model.ModelDescriptor
@@ -166,6 +170,7 @@ import com.t1dm.data.db.toBlob
 import com.t1dm.data.db.LoggedExerciseEntity
 import com.t1dm.data.db.LoggedMealEntity
 import com.t1dm.app.lab.LabController
+import com.t1dm.feature.models.BacktestPdf
 import com.t1dm.feature.models.LoraFitSpec
 import com.t1dm.feature.models.LoraFitProgress
 import com.t1dm.feature.models.LoraPanelState
@@ -193,6 +198,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
+import java.io.OutputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -1108,7 +1114,31 @@ class AppContainer(context: Context) {
             stopped = run.stopped,
             elapsedMs = (System.nanoTime() - t0) / 1_000_000L,
             finishedAtMs = System.currentTimeMillis(),
+            examples = pickBacktestExamples(set, BACKTEST_EXAMPLE_CONTEXT_MS, BACKTEST_EXAMPLES_PER_LIST),
         )
+    }
+
+    /** False when [modelId] has no finished backtest in this process. */
+    suspend fun writeBacktestPdf(modelId: String, out: OutputStream): Boolean {
+        val done = _backtests.value[modelId] as? ModelBacktest.Done ?: return false
+        val labels = backtestSensors.first().associate { it.id to it.label }
+        val target = statsRepository.targetRange.first()
+        val lattices = errorGridLattices()
+        suspend fun panelOf(e: BacktestExample): BacktestPdf.Panel {
+            val from = e.cycleTsMs - BACKTEST_EXAMPLE_CONTEXT_MS
+            val to = e.cycleTsMs + e.window.realizedBg.size * e.stepMs
+            val readings = repository.readingsInRange(CgmSourceId(e.sourceId), from, e.cycleTsMs)
+                .filter { it.bgMgdl != null && isRealMeasurement(it.provenance, it.flag) }
+            return BacktestPdf.Panel(
+                e, labels[e.sourceId] ?: "CGM", readings, doseStore.carbEvents(from, to), doseStore.insulinEvents(from, to),
+            )
+        }
+        val good = done.examples.good.map { panelOf(it) }
+        val bad = done.examples.bad.map { panelOf(it) }
+        withContext(dispatchers.io) {
+            BacktestPdf.write(out, modelId, done, labels, target, lattices, good, bad)
+        }
+        return true
     }
 
     // §8.4: correction reaches only drawn fans: BG panel overlay, hindsight sweep, watch forecast.

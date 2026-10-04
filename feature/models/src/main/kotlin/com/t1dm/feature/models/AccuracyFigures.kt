@@ -220,11 +220,11 @@ private val GridHeight = 248.dp
 private val ZoneLetterSp = 11.sp
 private val DotRadius = 1.9.dp
 
-private val ZONE_LETTERS = listOf("A", "B", "C", "D", "E")
+internal val ZONE_LETTERS = listOf("A", "B", "C", "D", "E")
 
 /** Region tint/dot ink per zone A-E; OPACITY separates five, not hue, since themes may collide. */
-private val REGION_ALPHA = listOf(0.06f, 0.13f, 0.22f, 0.34f, 0.48f)
-private val DOT_ALPHA = listOf(0.35f, 0.55f, 0.75f, 0.90f, 1.00f)
+internal val REGION_ALPHA = listOf(0.06f, 0.13f, 0.22f, 0.34f, 0.48f)
+internal val DOT_ALPHA = listOf(0.35f, 0.55f, 0.75f, 0.90f, 1.00f)
 
 /** [zoneOf]/[grid] must match; [horizonMin]/[points] one metrics; basis is median, not band. */
 @Composable

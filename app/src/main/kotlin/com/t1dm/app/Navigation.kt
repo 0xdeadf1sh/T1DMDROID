@@ -1271,6 +1271,21 @@ private fun T1dmNavHost(
             // §8.4: last outcome is local so reopen does not re-announce a fit already read.
             val backtests by container.backtests.collectAsState()
             val backtestSensors by container.backtestSensors.collectAsState(emptyList())
+            val ctx = LocalContext.current
+            var backtestExport by remember(modelId) { mutableStateOf<String?>(null) }
+            val backtestPdf = rememberLauncherForActivityResult(
+                ActivityResultContracts.CreateDocument("application/pdf"),
+            ) { uri ->
+                if (uri == null) { backtestExport = "Export cancelled" }
+                else scope.launch {
+                    backtestExport = runCatching {
+                        val wrote = ctx.contentResolver.openOutputStream(uri)?.use {
+                            container.writeBacktestPdf(modelId, it)
+                        } ?: error("could not open file")
+                        if (wrote) "Report exported" else "No backtest to export"
+                    }.getOrElse { "Export failed — ${it.message ?: it::class.simpleName}" }
+                }
+            }
             val bandCalibrations by container.bandCalibrations.collectAsState()
             val bandCalibration: BandCalibration? = bandCalibrations[modelId]
             var fitOutcome by remember(modelId) { mutableStateOf<BandCalibrationOutcome?>(null) }
@@ -1306,6 +1321,11 @@ private fun T1dmNavHost(
                 backtestSensors = backtestSensors,
                 onBacktest = { days, sourceIds -> container.startBacktest(modelId, days, sourceIds) },
                 onCancelBacktest = { container.cancelBacktest(modelId) },
+                onExportBacktest = {
+                    backtestExport = null
+                    backtestPdf.launch("t1dm-backtest-${backtests[modelId]?.days ?: 0}d.pdf")
+                },
+                backtestExportStatus = backtestExport,
             )
         }
         composable("meals") {

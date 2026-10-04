@@ -16,6 +16,8 @@ data class ForecastWindowSet(
     val nMatured: Int,
     val nIncomplete: Int,
     val nForeignSource: Int = 0,
+    /** Parallel to [windows]: the forecast each was cut from. */
+    val forecasts: List<ModelPrediction> = emptyList(),
 ) {
     companion object {
         val EMPTY = ForecastWindowSet(emptyList(), 0, 0)
