@@ -1319,11 +1319,11 @@ private fun T1dmNavHost(
                 onDropBandCalibration = { scope.launch { container.dropBandCalibration(modelId) } },
                 backtest = backtests[modelId],
                 backtestSensors = backtestSensors,
-                onBacktest = { days, sourceIds -> container.startBacktest(modelId, days, sourceIds) },
+                onBacktest = { days -> container.startBacktest(modelId, days) },
                 onCancelBacktest = { container.cancelBacktest(modelId) },
                 onExportBacktest = {
                     backtestExport = null
-                    backtestPdf.launch("t1dm-backtest-${backtests[modelId]?.days ?: 0}d.pdf")
+                    backtestPdf.launch("t1dm-backtest-${backtests[modelId]?.days?.let { "${it}d" } ?: "all"}.pdf")
                 },
                 backtestExportStatus = backtestExport,
             )

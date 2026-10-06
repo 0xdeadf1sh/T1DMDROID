@@ -4,8 +4,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,7 +19,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
@@ -87,7 +84,7 @@ fun ModelDetailScreen(
     /** Null until one is run for this model in this process. */
     backtest: ModelBacktest? = null,
     backtestSensors: List<BacktestSensor> = emptyList(),
-    onBacktest: (days: Int, sourceIds: List<String>) -> Unit = { _, _ -> },
+    onBacktest: (days: Int?) -> Unit = {},
     onCancelBacktest: () -> Unit = {},
     onExportBacktest: () -> Unit = {},
     backtestExportStatus: String? = null,
@@ -388,26 +385,30 @@ private fun ClarkeHorizonPicker(options: List<Int>, selected: Int?, onSelect: (I
     }
 }
 
-private val BACKTEST_DAYS = listOf(7, 14, 30)
+/** Null: the whole record. */
+private val BACKTEST_DAYS = listOf(30, 90, null)
 
-@OptIn(ExperimentalLayoutApi::class)
+internal fun backtestSpan(days: Int?): String = if (days == null) "All" else "$days d"
+
+private fun noReadingsIn(days: Int?): String = if (days == null) "No readings" else "No readings in $days d"
+
 @Composable
 private fun BacktestControls(
     backtest: ModelBacktest?,
     sensors: List<BacktestSensor>,
-    onRun: (days: Int, sourceIds: List<String>) -> Unit,
+    onRun: (days: Int?) -> Unit,
     onCancel: () -> Unit,
     onExport: () -> Unit,
     exportStatus: String?,
 ) {
     val haptics = rememberT1dmHaptics()
     val running = backtest as? ModelBacktest.Running
-    var days by rememberSaveable { mutableStateOf(backtest?.days?.takeIf { it in BACKTEST_DAYS } ?: 7) }
-    // Null until a chip is touched: the authoritative sensor alone.
-    var picked by rememberSaveable { mutableStateOf<List<String>?>(null) }
+    var days by rememberSaveable {
+        mutableStateOf(if (backtest != null && backtest.days in BACKTEST_DAYS) backtest.days else 30)
+    }
     val nowMs = remember(sensors) { System.currentTimeMillis() }
-    val inWindow = sensors.filter { it.newestMs >= nowMs - days * 86_400_000L }
-    val chosen = (picked ?: inWindow.filter { it.authoritative }.map { it.id }).filter { id -> inWindow.any { it.id == id } }
+    val since = days?.let { nowMs - it * 86_400_000L } ?: Long.MIN_VALUE
+    val hasReadings = sensors.any { it.newestMs >= since }
     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(top = 4.dp)) {
         BACKTEST_DAYS.forEachIndexed { i, d ->
             SegmentedButton(
@@ -415,29 +416,16 @@ private fun BacktestControls(
                 enabled = running == null,
                 onClick = { haptics.perform(HapticEvent.SegmentTick); days = d },
                 shape = SegmentedButtonDefaults.itemShape(i, BACKTEST_DAYS.size),
-            ) { Text("$d d") }
-        }
-    }
-    if (inWindow.size > 1 || (inWindow.isNotEmpty() && chosen.isEmpty())) {
-        FlowRow(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            inWindow.forEach { s ->
-                val on = s.id in chosen
-                FilterChip(
-                    selected = on,
-                    enabled = running == null,
-                    onClick = { haptics.perform(HapticEvent.SegmentTick); picked = if (on) chosen - s.id else chosen + s.id },
-                    label = { Text(s.label) },
-                )
-            }
+            ) { Text(backtestSpan(d)) }
         }
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
         if (running == null) {
             TextButton(
-                onClick = { haptics.perform(HapticEvent.Tap); onRun(days, chosen) },
-                enabled = chosen.isNotEmpty(),
+                onClick = { haptics.perform(HapticEvent.Tap); onRun(days) },
+                enabled = hasReadings,
             ) { Text("Run") }
-            if (inWindow.isEmpty()) Note("No readings in $days d")
+            if (!hasReadings) Note(noReadingsIn(days))
         } else {
             TextButton(onClick = { haptics.perform(HapticEvent.Reject); onCancel() }) { Text("Cancel") }
             CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -450,7 +438,7 @@ private fun BacktestControls(
     when (backtest) {
         is ModelBacktest.Done -> {
             Note(
-                "${backtest.days} d · %,d / %,d forecasts · ".format(backtest.nForecasts, backtest.nOrigins) +
+                "${backtestSpan(backtest.days)} · %,d / %,d forecasts · ".format(backtest.nForecasts, backtest.nOrigins) +
                     fmtDuration(backtest.elapsedMs.toDouble()),
             )
             if (backtest.forecastsBySource.size > 1) {
@@ -476,7 +464,7 @@ private fun BacktestControls(
                 BacktestRefusal.NOT_LOADED -> "Model not loaded"
                 BacktestRefusal.NO_ARTIFACT -> "No artifact"
                 BacktestRefusal.NO_SENSOR -> "No sensor"
-                BacktestRefusal.NO_HISTORY -> "No readings in ${backtest.days} d"
+                BacktestRefusal.NO_HISTORY -> noReadingsIn(backtest.days)
                 BacktestRefusal.FAILED -> "Failed"
             },
         )

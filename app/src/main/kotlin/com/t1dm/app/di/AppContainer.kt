@@ -979,7 +979,7 @@ class AppContainer(context: Context) {
     val backtests: StateFlow<Map<String, ModelBacktest>> = _backtests.asStateFlow()
 
     /** One at a time, process-wide; in [appScope], so leaving the panel does not cancel it. */
-    fun startBacktest(modelId: String, days: Int, sourceIds: List<String>) {
+    fun startBacktest(modelId: String, days: Int?) {
         if (!backtestRunning.compareAndSet(false, true)) {
             if (_backtests.value[modelId] !is ModelBacktest.Running) {
                 _backtests.update { it + (modelId to ModelBacktest.Refused(days, BacktestRefusal.BUSY)) }
@@ -989,7 +989,7 @@ class AppContainer(context: Context) {
         _backtests.update { it + (modelId to ModelBacktest.Running(days, 0, 0)) }
         backtestJob = appScope.launch(dispatchers.default) {
             try {
-                val outcome = runBacktest(modelId, days, sourceIds.map(::CgmSourceId)) { done, total ->
+                val outcome = runBacktest(modelId, days) { done, total ->
                     if (done % BACKTEST_PROGRESS_EVERY == 0 || done == total) {
                         _backtests.update { it + (modelId to ModelBacktest.Running(days, done, total)) }
                     }
@@ -1028,21 +1028,22 @@ class AppContainer(context: Context) {
 
     private suspend fun runBacktest(
         modelId: String,
-        days: Int,
-        sourceIds: List<CgmSourceId>,
+        days: Int?,
         onProgress: (done: Int, total: Int) -> Unit,
     ): ModelBacktest {
         val t0 = System.nanoTime()
         val now = System.currentTimeMillis()
         val desc = inferenceController.descriptorOf(modelId)
             ?: return ModelBacktest.Refused(days, BacktestRefusal.NOT_LOADED)
+        val sourceIds = repository.allSourceIds()
         if (sourceIds.isEmpty()) return ModelBacktest.Refused(days, BacktestRefusal.NO_SENSOR)
         // Fills live in the authoritative sensor's stream only, as the live cycle reads them.
         val authoritative = repository.authoritativeSourceId()
         val horizonMaxMin = ACCURACY_HORIZONS_MIN.max()
-        val since = now - days.toLong() * 86_400_000L
+        val since = days?.let { now - it.toLong() * 86_400_000L } ?: 0L
         val lastOrigin = now - horizonMaxMin * 60_000L
-        val streams = sourceIds.distinct().map { id ->
+        val inWindow = sourceIds.filter { (repository.readingExtent(it)?.newestMs ?: -1L) >= since }
+        val streams = inWindow.map { id ->
             BacktestStream(id, repository.readingsInRange(id, 0L, now).asReversed(), withFills = id == authoritative)
         }
         val origins = streams.flatMap { s ->
@@ -1109,7 +1110,7 @@ class AppContainer(context: Context) {
             metrics = metricsOf(set, ACCURACY_MIN_SAMPLES, includeCgEga = true),
             nForecasts = run.forecasts.size,
             nOrigins = origins.size,
-            forecastsBySource = streams.associate { it.source.value to (bySource[it.source.value] ?: 0) },
+            forecastsBySource = streams.mapNotNull { s -> bySource[s.source.value]?.let { s.source.value to it } }.toMap(),
             adapterAttached = run.adapterAttached,
             stopped = run.stopped,
             elapsedMs = (System.nanoTime() - t0) / 1_000_000L,
@@ -2542,19 +2543,16 @@ class AppContainer(context: Context) {
 
     val allSources: Flow<List<CgmSourceDescriptor>> = repository.observeSources()
 
-    /** Every unhidden sensor with a reading, authoritative first, then by newest reading. */
+    /** Every sensor with a reading, hidden ones included, oldest first. */
     val backtestSensors: Flow<List<BacktestSensor>> =
-        combine(allSources.distinctUntilChanged(), authoritativeSource, settingsStore.showSensorNames) { all, auth, show ->
-            Triple(all, auth?.id, show)
-        }.mapLatest { (all, authId, show) ->
-            all.filter { !it.hidden || it.id == authId }
-                .mapNotNull { d ->
+        combine(allSources.distinctUntilChanged(), settingsStore.showSensorNames) { all, show -> all to show }
+            .mapLatest { (all, show) ->
+                all.mapNotNull { d ->
                     val extent = repository.readingExtent(d.id) ?: return@mapNotNull null
                     val label = if (show) d.displayName else d.ordinalLabel()
-                    BacktestSensor(d.id.value, label, d.id == authId, extent.newestMs)
+                    BacktestSensor(d.id.value, label, extent.newestMs)
                 }
-                .sortedWith(compareByDescending<BacktestSensor> { it.authoritative }.thenByDescending { it.newestMs })
-        }
+            }
 
     /** Null means "whichever is authoritative"; unpersisted, must not survive a restart. */
     private val viewedSourceId = MutableStateFlow<com.t1dm.core.model.CgmSourceId?>(null)

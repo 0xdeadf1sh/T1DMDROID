@@ -52,7 +52,7 @@ object BacktestPdf {
         p.title("T1DM — Backtest report")
         p.body("Model $modelId")
         p.body(
-            "${run.days} d · %,d / %,d forecasts · ".format(Locale.US, run.nForecasts, run.nOrigins) +
+            "${backtestSpan(run.days)} · %,d / %,d forecasts · ".format(Locale.US, run.nForecasts, run.nOrigins) +
                 "${fmtDuration(run.elapsedMs.toDouble())} · finished ${stamp(run.finishedAtMs)}",
         )
         // Never the raw id: it can carry the serial the name-privacy setting hides.

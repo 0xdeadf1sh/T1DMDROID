@@ -7,22 +7,23 @@ enum class BacktestStop { TOO_HOT, MODEL_CHANGED }
 
 enum class BacktestRefusal { BUSY, NOT_LOADED, NO_ARTIFACT, NO_SENSOR, NO_HISTORY, FAILED }
 
-/** A sensor a backtest may replay; [label] has the name-privacy setting applied. */
-data class BacktestSensor(val id: String, val label: String, val authoritative: Boolean, val newestMs: Long)
+/** A sensor a backtest replays; [label] has the name-privacy setting applied. */
+data class BacktestSensor(val id: String, val label: String, val newestMs: Long)
 
 /** Past days replayed through one model as it runs now; stored nowhere, read by no classifier. */
 sealed interface ModelBacktest {
-    val days: Int
+    /** Null: the whole record. */
+    val days: Int?
 
-    data class Running(override val days: Int, val done: Int, val total: Int) : ModelBacktest
+    data class Running(override val days: Int?, val done: Int, val total: Int) : ModelBacktest
 
     data class Done(
-        override val days: Int,
+        override val days: Int?,
         val metrics: ModelMetrics,
         /** Origins that yielded a forecast, of [nOrigins] tried. */
         val nForecasts: Int,
         val nOrigins: Int,
-        /** [nForecasts] by source id, in the order the sensors were chosen. */
+        /** [nForecasts] by source id, oldest sensor first; a sensor with none is absent. */
         val forecastsBySource: Map<String, Int>,
         val adapterAttached: Boolean,
         /** Null when every origin was tried. */
@@ -32,7 +33,7 @@ sealed interface ModelBacktest {
         val examples: BacktestExamples,
     ) : ModelBacktest
 
-    data class Refused(override val days: Int, val refusal: BacktestRefusal) : ModelBacktest
+    data class Refused(override val days: Int?, val refusal: BacktestRefusal) : ModelBacktest
 }
 
 /** Drawn before each example's origin; plus the scored span, the minimum gap between two picks. */
