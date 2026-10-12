@@ -28,6 +28,8 @@ data class IobSnapshot(
 
 data class BackendInfo(
     val backend: BackendId,
+    /** The model reads no future dose ([BLIND_MODEL_REFUSAL]). */
+    val blind: Boolean = false,
 ) {
     /** §3.6-E: only fp32 XNNPACK CPU authority drives a dose; StubBackend/baseline both refuse. */
     val trustworthy: Boolean get() = backend == BackendId.EXECUTORCH_XNNPACK_FP32

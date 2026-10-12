@@ -41,8 +41,11 @@ class RollingForecasterAlignmentTest {
 
     private val descriptor = ModelDescriptor(
         bg = ChannelStat(0.0, 1.0),
-        carb = ChannelStat(0.0, 1.0),
-        insulin = ChannelStat(0.0, 1.0),
+        doses = listOf("carb_intake", "insulin_combined").map {
+            DoseChannel(it, ChannelStat(0.0, 1.0), DoseTransform.LOG1P, 0.0)
+        },
+        inputLayout = InputLayout.CURVES,
+        blind = false,
         ropeBase = 1000,
         quantileSpreadMin = 1e-3,
         negFill = -30000.0,
@@ -73,6 +76,43 @@ class RollingForecasterAlignmentTest {
         io = Dispatchers.Unconfined,
         inference = Dispatchers.Unconfined,
     )
+
+    /** A blind model reads no future dose: a candidate is refused, a plain roll announces none. */
+    @Test
+    fun blindModelRefusesACandidateAndAnnouncesNoDose() = runTest {
+        val native = RecordingNativeCore()
+        val store = object : DoseStore {
+            override suspend fun carbEvents(fromMs: Long, toMs: Long): List<CurveEvent> = emptyList()
+            override suspend fun insulinEvents(fromMs: Long, toMs: Long): List<CurveEvent> = emptyList()
+            override suspend fun activeBasalSchedule(): BasalSchedule? = null
+        }
+        val history = object : BgHistoryProvider {
+            override suspend fun recentBgSeries(maxSteps: Int, minSteps: Int): BgSeries =
+                BgSeries(DoubleArray(nCtx) { 120.0 }, anchorTsMs = g + (nCtx - 1) * STEP_MS, gridStartMs = g)
+
+            override suspend fun dosingBgSeries(maxSteps: Int, minSteps: Int): BgSeries =
+                recentBgSeries(maxSteps, minSteps)
+        }
+        val model = object : SelectedModelHandle {
+            override val descriptor = this@RollingForecasterAlignmentTest.descriptor.copy(blind = true)
+            override val backendInfo = fp32Backend()
+            override suspend fun run(input: GraphTensors): GraphOutput = GraphOutput(FloatArray(4 * 6 * 7))
+        }
+        val forecaster = RollingForecaster(
+            native, dispatchers, ChannelBuilder(CurveEngine(native, dispatchers), store), history,
+            SelectedModelProvider { model },
+        )
+        val candidate = CurveEvent(nowMs, STEP_MS, CurveKind.INSULIN, 2.0, listOf(2.0))
+        fun request(c: List<CurveEvent>?) = ForecastRequest(nowMs, 48, 24, emptyList(), c, if (c == null) 0.0 else 2.0)
+
+        val refused = forecaster.roll(request(listOf(candidate)))
+        assertEquals(ForecastEligibility.MISSING, refused.eligibility)
+        assertTrue("a refused roll runs no forward", native.buildContextCalls.isEmpty())
+
+        assertTrue(forecaster.roll(request(null)).eligible)
+        assertEquals(2, native.buildContextCalls.size)
+        assertTrue(native.buildContextCalls.all { it.announcedCarb == null && it.announcedInsulin == null })
+    }
 
     @Test
     fun rollAlignsOriginsAndReanchorsCandidate() = runTest {
@@ -316,19 +356,22 @@ class RollingForecasterAlignmentTest {
 
         override fun onBoard(events: List<CurveEvent>, atMs: Long, kind: CurveKind): Double = 0.0
 
+        override fun eventChannels(events: List<CurveEvent>, gridStartMs: Long, nSteps: Int): List<List<Double>> =
+            List(8) { List(nSteps) { 0.0 } }
+
+        override fun pointDose(record: DoseRecord): PointDose = unused()
+
         override fun buildGraphInput(
             desc: ModelDescriptor,
             bg: List<Double>,
-            carb: List<Double>,
-            insulin: List<Double>,
-            announcedCarb: List<Double>?,
-            announcedInsulin: List<Double>?,
+            doses: List<List<Double>>,
+            announced: List<List<Double>>?,
             maskSpans: List<MaskSpan>,
             withForecast: Boolean,
             smoothingWindow: Int,
         ): GraphInput {
             buildContextCalls += BuildContextCall(
-                bg, carb, insulin, announcedCarb, announcedInsulin, smoothingWindow,
+                bg, doses[0], doses[1], announced?.get(0), announced?.get(1), smoothingWindow,
             )
             val patches = bg.size / desc.patchSize
             val predPatches = desc.predictionHorizonHours * 12 / desc.patchSize
@@ -392,12 +435,7 @@ class RollingForecasterAlignmentTest {
         override fun kovatchevFInv(risk: Double): Double = unused()
         override fun parseDescriptor(json: String): ModelDescriptor? = unused()
         override fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double> = unused()
-        override fun normalizeSample(
-            desc: ModelDescriptor,
-            bg: Double,
-            carb: Double,
-            insulin: Double,
-        ): List<Double> = unused()
+        override fun normalizeSample(desc: ModelDescriptor, raw: List<Double>): List<Double> = unused()
         override fun headOpen(bytes: ByteArray, spec: HeadSpec): NativeHead? = null
         override fun loraTrain(
             head: NativeHead,

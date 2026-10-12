@@ -29,6 +29,9 @@ import com.t1dm.core.model.MaskSpan
 import com.t1dm.core.model.StatSample
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
+import com.t1dm.core.model.DoseRecord
+import com.t1dm.core.model.PointDose
+import com.t1dm.core.model.PointKind
 import com.t1dm.core.model.DecodedAdvert
 import com.t1dm.core.model.ForecastWindow
 import com.t1dm.core.model.MetricsConfig
@@ -41,6 +44,7 @@ import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.core.model.PredictedTime
 import kotlin.math.exp
+import kotlin.math.ln
 import kotlin.math.pow
 import kotlin.math.roundToLong
 import kotlin.math.sqrt
@@ -67,7 +71,7 @@ open class StubNativeCore : NativeCore {
     override fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double> =
         TODO("Phase 2: native causal_smooth")
 
-    override fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double): List<Double> =
+    override fun normalizeSample(desc: ModelDescriptor, raw: List<Double>): List<Double> =
         TODO("Phase 2: native normalize_sample")
 
     override fun denormalizeSample(desc: ModelDescriptor, z: List<Double>): List<Double> =
@@ -76,10 +80,8 @@ open class StubNativeCore : NativeCore {
     override fun buildGraphInput(
         desc: ModelDescriptor,
         bg: List<Double>,
-        carb: List<Double>,
-        insulin: List<Double>,
-        announcedCarb: List<Double>?,
-        announcedInsulin: List<Double>?,
+        doses: List<List<Double>>,
+        announced: List<List<Double>>?,
         maskSpans: List<MaskSpan>,
         withForecast: Boolean,
         smoothingWindow: Int,
@@ -283,6 +285,59 @@ open class StubNativeCore : NativeCore {
         return out
     }
 
+    override fun pointDose(record: DoseRecord): PointDose {
+        if (record.kind == PointKind.CARB) {
+            return PointDose(record.kind, record.amount, record.gi ?: CARB_GI_DEFAULT, 0.0, 0.0)
+        }
+        val cc = record.customCurve
+        val k = record.k
+        val theta = record.theta
+        val (peak, durH) = when {
+            cc != null -> {
+                val firstMax = cc.indices.fold(0) { best, i -> if (cc[i] > cc[best]) i else best }
+                firstMax * DT_MIN to cc.size * DT_MIN / 60.0
+            }
+            record.kind == PointKind.BASAL -> {
+                val ka = record.kaPerHour ?: GLARGINE_KA
+                val ke = record.kePerHour ?: GLARGINE_KE
+                60.0 * ln(ka / ke) / (ka - ke) to record.durationMin / 60.0
+            }
+            k != null && theta != null -> maxOf(k - 1.0, 0.0) * theta to record.durationMin / 60.0
+            else -> bolusPkForDose(record.amount, 3.0, 30.0, 4.0).let {
+                maxOf(it.k - 1.0, 0.0) * it.theta to it.durationMin / 60.0
+            }
+        }
+        return PointDose(record.kind, record.amount, 0.0, peak, durH)
+    }
+
+    override fun eventChannels(events: List<CurveEvent>, gridStartMs: Long, nSteps: Int): List<List<Double>> {
+        require(nSteps >= 0) { "event_channels n_steps must be >= 0, got $nSteps" }
+        val out = List(8) { DoubleArray(nSteps) }
+        fun featOf(kind: PointKind) = when (kind) {
+            PointKind.CARB -> 0 to 1
+            PointKind.BOLUS -> 2 to 2
+            PointKind.BASAL -> 5 to 2
+        }
+        for (ev in events) {
+            val p = ev.point ?: continue
+            if (!(p.amount > 0.0)) continue
+            val i = ((ev.startMs - gridStartMs).toDouble() / STEP_MS).roundToLong()
+            if (i !in 0 until nSteps.toLong()) continue
+            val f = featOf(p.kind).first
+            val descriptors = if (p.kind == PointKind.CARB) listOf(p.gi) else listOf(p.peakMin, p.durH)
+            out[f][i.toInt()] += p.amount
+            descriptors.forEachIndexed { j, v -> out[f + 1 + j][i.toInt()] += p.amount * v }
+        }
+        for (kind in PointKind.entries) {
+            val (f, nDesc) = featOf(kind)
+            for (i in 0 until nSteps) {
+                val dose = out[f][i]
+                for (j in 0 until nDesc) out[f + 1 + j][i] = if (dose > 0.0) out[f + 1 + j][i] / dose else 0.0
+            }
+        }
+        return out.map { it.asList() }
+    }
+
     // Fail-closed empty block: the stats math is Rust-only.
     override fun advancedStats(
         samples: List<StatSample>,
@@ -351,6 +406,9 @@ open class StubNativeCore : NativeCore {
     private companion object {
         const val DT_MIN = 5.0
         const val STEP_MS = 300_000L
+        const val CARB_GI_DEFAULT = 50.0
+        const val GLARGINE_KA = 0.477
+        const val GLARGINE_KE = 0.0499
         const val MIN_MS = 60_000L
         const val DAY_MS = 86_400_000L
         const val CURVE_TAIL_CLIP_FRACTION = 1.0 / 6.0

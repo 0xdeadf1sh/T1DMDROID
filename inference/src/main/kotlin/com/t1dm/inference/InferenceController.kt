@@ -661,17 +661,10 @@ class InferenceController(
             val ch = channels.getOrPut(fw.grid) { buildDoseChannels(g.dense) }
             val ctxFrom = fw.w
             val o = ctxFrom + ctxSteps
-            val window = ModelChannels(
-                ch.carb.copyOfRange(ctxFrom, o),
-                ch.insulin.copyOfRange(ctxFrom, o),
-            )
+            val window = ch.slice(ctxFrom, o)
             val isForecastWindow = kind == MaskGeometry.FORECAST
             // Doses that ACTUALLY happened are the window's plan, not a no-event baseline.
-            val ahead = if (isForecastWindow) {
-                ModelChannels(ch.carb.copyOfRange(o, o + predSteps), ch.insulin.copyOfRange(o, o + predSteps))
-            } else {
-                null
-            }
+            val ahead = if (isForecastWindow) ch.slice(o, o + predSteps) else null
             val gi = buildGraphInput(
                 desc,
                 g.dense.mgdl.copyOfRange(ctxFrom, o),
@@ -693,16 +686,13 @@ class InferenceController(
             val hidden = steps ?: return LoraWindows(out, nAtEvent)
             val d = desc.dModel * desc.patchSize
 
-            // SAME window +1u insulin on horizon dose; FORECAST only (guard reads terminal step).
-            val stimulus = if (ahead == null) {
+            // +1u on the horizon, FORECAST only; blind never reads it: no verdict, no attach.
+            val stimulus = if (ahead == null || desc.blind) {
                 null
             } else {
-                probeInsulin?.action(PROBE_DOSE_U, ahead.insulin.size)
+                probeInsulin?.probe(PROBE_DOSE_U, ahead.size)
             }
-            val probed = if (stimulus == null || ahead == null) null else ModelChannels(
-                ahead.carb,
-                DoubleArray(ahead.insulin.size) { i -> ahead.insulin[i] + stimulus.getOrElse(i) { 0.0 } },
-            )
+            val probed = if (stimulus == null || ahead == null) null else ahead.plusProbe(stimulus, desc)
             val hiddenPert = if (probed == null) {
                 null
             } else {
@@ -1216,8 +1206,7 @@ class InferenceController(
         val src = source ?: return ModelChannels.zero(n)
         return runCatching {
             val ch = src.channels(series.gridStartMs, n)
-            if (ch.carb.size == n && ch.insulin.size == n) ch
-            else ModelChannels.zero(n)
+            if (ch.hasLength(n)) ch else ModelChannels.zero(n)
         }.getOrElse {
             Timber.tag(TAG).w(it, "context channel build failed; falling back to no-event baseline")
             ModelChannels.zero(n)
@@ -1246,7 +1235,7 @@ class InferenceController(
     private fun predSteps(desc: ModelDescriptor): Int =
         (desc.predictionHorizonHours * STEPS_PER_HOUR / desc.patchSize) * desc.patchSize
 
-    /** Null [future] seeds pred-zone to normalize(0); channel order fixed, as RollingForecaster. */
+    /** Null [future], or a blind model, fills the pred zone with normalize(0). */
     private suspend fun buildGraphInput(
         desc: ModelDescriptor,
         mgdl: DoubleArray,
@@ -1258,16 +1247,14 @@ class InferenceController(
     ): GraphInput =
         withContext(dispatchers.default) {
             val predSteps = predSteps(desc)
-            fun ann(pick: (ModelChannels) -> DoubleArray) =
-                if (!withForecast) null
-                else future?.let { f -> List(predSteps) { pick(f).getOrElse(it) { 0.0 } } }
+            val announced = future?.takeIf { withForecast && !desc.blind }?.series(desc)?.map { s ->
+                List(predSteps) { s.getOrElse(it) { 0.0 } }
+            }
             native.buildGraphInput(
                 desc,
                 mgdl.toList(),
-                ch.carb.toList(),
-                ch.insulin.toList(),
-                ann { it.carb },
-                ann { it.insulin },
+                ch.series(desc).map { it.toList() },
+                announced,
                 maskSpans,
                 withForecast = withForecast,
                 smoothingWindow = smoothingWindow,

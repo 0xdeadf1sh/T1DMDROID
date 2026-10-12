@@ -76,20 +76,18 @@ interface NativeCore {
     /** Causal one-sided SavGol smooth (§7.1); odd window, 1=pass-through; bad window degrades. */
     fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double>
 
-    /** z-score a raw `[bg, carb, insulin]` sample (bg risk-z, the rest log1p-z). */
-    fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double): List<Double>
+    /** z-score a raw `[bg, doses…]` sample in feat order (bg risk-z, each dose its transform). */
+    fun normalizeSample(desc: ModelDescriptor, raw: List<Double>): List<Double>
 
-    /** Inverse of [normalizeSample]; the 3-element `z` must carry all channels. */
+    /** Inverse of [normalizeSample]; throws on a log-ratio feat, which has none. */
     fun denormalizeSample(desc: ModelDescriptor, z: List<Double>): List<Double>
 
-    /** Fixed-shape graph input from per-step history (§7.2-7.4); throws on bad shape/window. */
+    /** §7.2-7.4; [doses]/[announced] hold one series per `desc.doses`; throws on a bad shape. */
     fun buildGraphInput(
         desc: ModelDescriptor,
         bg: List<Double>,
-        carb: List<Double>,
-        insulin: List<Double>,
-        announcedCarb: List<Double>?,
-        announcedInsulin: List<Double>?,
+        doses: List<List<Double>>,
+        announced: List<List<Double>>?,
         maskSpans: List<MaskSpan>,
         withForecast: Boolean,
         smoothingWindow: Int,
@@ -191,6 +189,12 @@ interface NativeCore {
 
     /** The Bateman events of a daily-repeating schedule whose action overlaps [fromMs, toMs). */
     fun extendBasal(schedule: BasalSchedule, fromMs: Long, toMs: Long): List<CurveEvent>
+
+    /** A row's events-layout descriptors by the training rule; a stored curve wins. */
+    fun pointDose(record: com.t1dm.core.model.DoseRecord): com.t1dm.core.model.PointDose
+
+    /** The 8 event channels over the grid, each [CurveEvent.point] at its rounded onset. */
+    fun eventChannels(events: List<CurveEvent>, gridStartMs: Long, nSteps: Int): List<List<Double>>
 
 
     /** targetLow/High are mg/dL; agpBins must divide 1440. Fail-closed to AdvancedStats.EMPTY. */

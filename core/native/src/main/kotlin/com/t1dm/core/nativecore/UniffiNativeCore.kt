@@ -45,6 +45,12 @@ import com.t1dm.core.model.TodBucket
 import com.t1dm.core.model.ChannelStat
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
+import com.t1dm.core.model.DoseChannel
+import com.t1dm.core.model.DoseRecord
+import com.t1dm.core.model.DoseTransform
+import com.t1dm.core.model.InputLayout
+import com.t1dm.core.model.PointDose
+import com.t1dm.core.model.PointKind
 import com.t1dm.core.model.BolusPk
 import com.t1dm.core.model.InsulinFamily
 import com.t1dm.core.model.InsulinPresetSpec
@@ -162,6 +168,14 @@ import uniffi.t1dm_core.BasalSchedule as UniffiBasalSchedule
 import uniffi.t1dm_core.ChannelStat as UniffiChannelStat
 import uniffi.t1dm_core.CurveEvent as UniffiCurveEvent
 import uniffi.t1dm_core.CurveKind as UniffiCurveKind
+import uniffi.t1dm_core.DoseChannel as UniffiDoseChannel
+import uniffi.t1dm_core.DoseRecord as UniffiDoseRecord
+import uniffi.t1dm_core.DoseTransform as UniffiDoseTransform
+import uniffi.t1dm_core.InputLayout as UniffiInputLayout
+import uniffi.t1dm_core.PointDose as UniffiPointDose
+import uniffi.t1dm_core.PointKind as UniffiPointKind
+import uniffi.t1dm_core.eventChannels as uniffiEventChannels
+import uniffi.t1dm_core.pointDose as uniffiPointDose
 import uniffi.t1dm_core.InsulinFamily as UniffiInsulinFamily
 import uniffi.t1dm_core.InsulinPresetSpec as UniffiInsulinPresetSpec
 import uniffi.t1dm_core.DecodedAdvert as UniffiDecodedAdvert
@@ -214,8 +228,8 @@ class UniffiNativeCore : NativeCore {
     override fun causalSmooth(series: List<Double>, clampMin: Double?, clampMax: Double?, window: Int): List<Double> =
         uniffiCausalSmooth(series, clampMin, clampMax, window)
 
-    override fun normalizeSample(desc: ModelDescriptor, bg: Double, carb: Double, insulin: Double): List<Double> =
-        uniffiNormalizeSample(desc.toUniffi(), bg, carb, insulin)
+    override fun normalizeSample(desc: ModelDescriptor, raw: List<Double>): List<Double> =
+        uniffiNormalizeSample(desc.toUniffi(), raw)
 
     override fun denormalizeSample(desc: ModelDescriptor, z: List<Double>): List<Double> =
         uniffiDenormalizeSample(desc.toUniffi(), z)
@@ -223,15 +237,13 @@ class UniffiNativeCore : NativeCore {
     override fun buildGraphInput(
         desc: ModelDescriptor,
         bg: List<Double>,
-        carb: List<Double>,
-        insulin: List<Double>,
-        announcedCarb: List<Double>?,
-        announcedInsulin: List<Double>?,
+        doses: List<List<Double>>,
+        announced: List<List<Double>>?,
         maskSpans: List<MaskSpan>,
         withForecast: Boolean,
         smoothingWindow: Int,
     ): GraphInput = uniffiBuildGraphInput(
-        desc.toUniffi(), bg, carb, insulin, announcedCarb, announcedInsulin,
+        desc.toUniffi(), bg, doses, announced,
         maskSpans.map { it.toUniffi() }, withForecast, smoothingWindow,
     ).toModel()
 
@@ -371,6 +383,20 @@ class UniffiNativeCore : NativeCore {
 
     override fun extendBasal(schedule: BasalSchedule, fromMs: Long, toMs: Long): List<CurveEvent> =
         uniffiExtendBasal(schedule.toUniffi(), fromMs, toMs).map { it.toModel() }
+
+    override fun pointDose(record: DoseRecord): PointDose =
+        uniffiPointDose(record.toUniffi()).let {
+            PointDose(it.kind.toModel(), it.amount, it.gi, it.peakMin, it.durH)
+        }
+
+    override fun eventChannels(events: List<CurveEvent>, gridStartMs: Long, nSteps: Int): List<List<Double>> =
+        uniffiEventChannels(
+            events.mapNotNull { ev ->
+                ev.point?.let { UniffiPointDose(ev.startMs, it.kind.toUniffi(), it.amount, it.gi, it.peakMin, it.durH) }
+            },
+            gridStartMs,
+            nSteps,
+        )
 
     /** Fail-closed to [AdvancedStats.EMPTY]; a malformed argument can't crash the stats screen. */
     override fun advancedStats(
@@ -862,6 +888,31 @@ private fun CurveKind.toUniffi(): UniffiCurveKind = when (this) {
     CurveKind.EXERCISE -> UniffiCurveKind.EXERCISE
 }
 
+private fun UniffiPointKind.toModel(): PointKind = when (this) {
+    UniffiPointKind.CARB -> PointKind.CARB
+    UniffiPointKind.BOLUS -> PointKind.BOLUS
+    UniffiPointKind.BASAL -> PointKind.BASAL
+}
+
+private fun PointKind.toUniffi(): UniffiPointKind = when (this) {
+    PointKind.CARB -> UniffiPointKind.CARB
+    PointKind.BOLUS -> UniffiPointKind.BOLUS
+    PointKind.BASAL -> UniffiPointKind.BASAL
+}
+
+private fun DoseRecord.toUniffi(): UniffiDoseRecord = UniffiDoseRecord(
+    startMs = startMs,
+    kind = kind.toUniffi(),
+    amount = amount,
+    gi = gi,
+    k = k,
+    theta = theta,
+    kaPerHour = kaPerHour,
+    kePerHour = kePerHour,
+    durationMin = durationMin,
+    customCurve = customCurve,
+)
+
 private fun UniffiInsulinFamily.toModel(): InsulinFamily = when (this) {
     UniffiInsulinFamily.RAPID_GAMMA -> InsulinFamily.RapidGamma
     UniffiInsulinFamily.BASAL_BATEMAN -> InsulinFamily.BasalBateman
@@ -948,10 +999,41 @@ private fun KovatchevParams.toUniffi(): UniffiKovatchevParams = UniffiKovatchevP
     bgClampMin = bgClampMin, bgClampMax = bgClampMax,
 )
 
+private fun UniffiDoseChannel.toModel(): DoseChannel = DoseChannel(
+    name = name,
+    stat = stat.toModel(),
+    transform = when (transform) {
+        UniffiDoseTransform.LOG1P -> DoseTransform.LOG1P
+        UniffiDoseTransform.LOG_RATIO -> DoseTransform.LOG_RATIO
+    },
+    reference = reference,
+)
+
+private fun DoseChannel.toUniffi(): UniffiDoseChannel = UniffiDoseChannel(
+    name = name,
+    stat = stat.toUniffi(),
+    transform = when (transform) {
+        DoseTransform.LOG1P -> UniffiDoseTransform.LOG1P
+        DoseTransform.LOG_RATIO -> UniffiDoseTransform.LOG_RATIO
+    },
+    reference = reference,
+)
+
+private fun UniffiInputLayout.toModel(): InputLayout = when (this) {
+    UniffiInputLayout.CURVES -> InputLayout.CURVES
+    UniffiInputLayout.EVENTS -> InputLayout.EVENTS
+}
+
+private fun InputLayout.toUniffi(): UniffiInputLayout = when (this) {
+    InputLayout.CURVES -> UniffiInputLayout.CURVES
+    InputLayout.EVENTS -> UniffiInputLayout.EVENTS
+}
+
 private fun UniffiModelDescriptor.toModel(): ModelDescriptor = ModelDescriptor(
     bg = bg.toModel(),
-    carb = carb.toModel(),
-    insulin = insulin.toModel(),
+    doses = doses.map { it.toModel() },
+    inputLayout = inputLayout.toModel(),
+    blind = blind,
     ropeBase = ropeBase,
     quantileSpreadMin = quantileSpreadMin,
     negFill = negFill,
@@ -974,8 +1056,9 @@ private fun UniffiModelDescriptor.toModel(): ModelDescriptor = ModelDescriptor(
 
 private fun ModelDescriptor.toUniffi(): UniffiModelDescriptor = UniffiModelDescriptor(
     bg = bg.toUniffi(),
-    carb = carb.toUniffi(),
-    insulin = insulin.toUniffi(),
+    doses = doses.map { it.toUniffi() },
+    inputLayout = inputLayout.toUniffi(),
+    blind = blind,
     ropeBase = ropeBase,
     quantileSpreadMin = quantileSpreadMin,
     negFill = negFill,

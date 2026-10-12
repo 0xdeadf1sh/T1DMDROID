@@ -3,8 +3,11 @@ package com.t1dm.inference
 import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.ChannelStat
+import com.t1dm.core.model.DoseChannel
+import com.t1dm.core.model.DoseTransform
 import com.t1dm.core.model.GraphInput
 import com.t1dm.core.model.HeadSpec
+import com.t1dm.core.model.InputLayout
 import com.t1dm.core.model.KovatchevParams
 import com.t1dm.core.model.LoraConfig
 import com.t1dm.core.model.LoraWeights
@@ -78,8 +81,11 @@ internal open class FakeXnnpack : InferenceBackend {
 
 internal fun fixtureDescriptor(head: HeadSpec? = null) = ModelDescriptor(
     bg = ChannelStat(0.0, 1.0),
-    carb = ChannelStat(0.0, 1.0),
-    insulin = ChannelStat(0.0, 1.0),
+    doses = listOf("carb_intake", "insulin_combined").map {
+        DoseChannel(it, ChannelStat(0.0, 1.0), DoseTransform.LOG1P, 0.0)
+    },
+    inputLayout = InputLayout.CURVES,
+    blind = false,
     ropeBase = 1000,
     quantileSpreadMin = 1e-3,
     negFill = -30000.0,

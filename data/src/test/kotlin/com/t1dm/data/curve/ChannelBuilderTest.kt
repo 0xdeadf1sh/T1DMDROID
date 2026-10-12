@@ -56,7 +56,7 @@ class ChannelBuilderTest {
     @Test
     fun contextChannels_separate_carb_and_insulin_by_kind() = runTest {
         val g0 = 1_000_000_000_000L
-        val carb = engine.carbEvent(grams = 40.0, startMs = g0, k = 3.0, theta = 20.0, durMin = 240.0)
+        val carb = engine.carbEvent(grams = 40.0, startMs = g0, k = 3.0, theta = 20.0, durMin = 240.0, gi = 50.0)
         val bolus = engine.rapidEvent(units = 6.0, startMs = g0, spec = aspart)
         val builder = ChannelBuilder(engine, FakeStore(carbs = listOf(carb), insulin = listOf(bolus)))
 
@@ -65,6 +65,49 @@ class ChannelBuilderTest {
         assertEquals(40.0, ch.carb.sum(), 1e-6)
         assertEquals(6.0, ch.insulin.sum(), 1e-6)
         assertTrue(ch.carb.all { it >= 0.0 } && ch.insulin.all { it >= 0.0 })
+    }
+
+    /** EVENT_CHANNELS: carb_g 0, carb_gi 1, bolus_u 2, peak 3, dur 4, basal_u 5, peak 6, dur 7. */
+    @Test
+    fun contextChannels_lay_each_logged_dose_at_its_onset_and_never_the_schedule() = runTest {
+        val g0 = 1_100_000_000_000L
+        val step = CurveEngine.STEP_MS
+        val meal = engine.carbEvent(grams = 45.0, startMs = g0 + 3 * step, k = 3.0, theta = 20.0, durMin = 240.0, gi = 70.0)
+        val bolus = engine.rapidEvent(units = 4.0, startMs = g0 + 3 * step, spec = aspart)
+        val injection = engine.rapidEvent(units = 18.0, startMs = g0 + 10 * step, spec = tresiba)
+        val scheduled = BasalDoseSpec(0, 30.0, tresiba.actionMin, tresiba.kaPerHour, tresiba.kePerHour)
+        val store = FakeStore(
+            carbs = listOf(meal),
+            insulin = listOf(bolus),
+            schedule = BasalSchedule(0, listOf(scheduled)),
+            basalInjections = listOf(injection),
+        )
+
+        val ev = ChannelBuilder(engine, store).contextChannels(g0, 72).events
+
+        assertEquals(8, ev.size)
+        assertEquals(45.0, ev[0][3], 0.0)
+        assertEquals(70.0, ev[1][3], 0.0)
+        assertEquals(4.0, ev[2][3], 0.0)
+        assertTrue("a rapid peaks inside its action", ev[3][3] in 30.0..90.0)
+        assertEquals(18.0, ev[5][10], 0.0)
+        assertEquals(tresiba.actionMin / 60.0, ev[7][10], 1e-12)
+        assertEquals("one dose per step, nothing smeared", 3, ev[0].count { it > 0.0 } + ev[2].count { it > 0.0 } + ev[5].count { it > 0.0 })
+    }
+
+    @Test
+    fun futureOverrides_events_hold_only_doses_that_start_in_the_horizon() = runTest {
+        val rollStart = 2_100_000_000_000L
+        val earlier = engine.rapidEvent(units = 5.0, startMs = rollStart - 20 * 60_000L, spec = aspart)
+        val builder = ChannelBuilder(engine, FakeStore(insulin = listOf(earlier)))
+        val candidate = listOf(engine.rapidEvent(units = 3.0, startMs = rollStart, spec = aspart))
+
+        val tailOnly = builder.futureOverrides(rollStart, 24, emptyList(), null)
+        val withCandidate = builder.futureOverrides(rollStart, 24, emptyList(), candidate)
+
+        assertTrue("a past dose has no tail as an event", tailOnly.events.all { s -> s.all { it == 0.0 } })
+        assertEquals(3.0, withCandidate.events[2][0], 0.0)
+        assertEquals(3.0, withCandidate.events[2].sum(), 0.0)
     }
 
     @Test
@@ -88,7 +131,7 @@ class ChannelBuilderTest {
     fun futureOverrides_committed_tails_land_in_correct_channel_no_swap() = runTest {
         // Channel order: carb→feat1, insulin→feat2, no swap.
         val rollStart = 4_000_000_000_000L
-        val committedMeal = engine.carbEvent(grams = 50.0, startMs = rollStart - 15 * 60_000L, k = 3.0, theta = 20.0, durMin = 240.0)
+        val committedMeal = engine.carbEvent(grams = 50.0, startMs = rollStart - 15 * 60_000L, k = 3.0, theta = 20.0, durMin = 240.0, gi = 50.0)
         val committedBolus = engine.rapidEvent(units = 4.0, startMs = rollStart - 15 * 60_000L, spec = aspart)
         val builder = ChannelBuilder(engine, FakeStore(carbs = listOf(committedMeal), insulin = listOf(committedBolus)))
 
@@ -172,7 +215,7 @@ class ChannelBuilderTest {
     fun overlayChannels_matches_the_two_calls_it_replaces() = runTest {
         val g0 = 3_000_000_000_000L
         val n = 72
-        val meal = engine.carbEvent(grams = 35.0, startMs = g0, k = 3.0, theta = 20.0, durMin = 240.0)
+        val meal = engine.carbEvent(grams = 35.0, startMs = g0, k = 3.0, theta = 20.0, durMin = 240.0, gi = 50.0)
         val bolus = engine.rapidEvent(units = 5.0, startMs = g0, spec = aspart)
         val injection = CurveEvent(
             g0, CurveEngine.STEP_MS, CurveKind.INSULIN, 14.0,

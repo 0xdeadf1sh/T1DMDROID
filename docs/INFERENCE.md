@@ -32,6 +32,24 @@ without a `kovatchev` block is rejected rather than defaulted, and the physical
 bounds it carries are what the rail-pinned degeneracy check tests against; given
 the wrong range that check cannot fire at all.
 
+## Input layouts and the blind policy
+
+The descriptor's `inputs` block picks the layout (`SPEC/inference.md` §6–7.3).
+Every logged meal and dose row becomes both a curve and a point dose, so one cycle
+serves a model of either layout.
+
+- **Events.** `curve.rs` `point_dose` gives each row its onset descriptors by the
+  converter's rule, and `event_channels` lays the window's doses at their rounded
+  onsets. Basal comes from logged injections only; a basal schedule produces no
+  event. The future zone holds only doses whose onset falls in it: announced
+  carbs, a candidate bolus, a dose logged ahead of time. A dose given before the
+  window has no event in it, however long its action.
+- **Blind.** No announced dose reaches the graph, and every masked patch carries
+  the no-dose fill. The rolling forecast still feeds each roll's doses back as
+  context for the next. The dose advisor refuses (`Model blind to future doses`),
+  the sensitivity probe withholds, and an adapter fit runs no +1 U probe, so it
+  carries no verdict and attach is refused.
+
 ## The optional BG pre-filter
 
 The reference pipeline applies no smoother. This app offers one, on the BG
@@ -48,7 +66,8 @@ live CGM feed, not part of the model contract.
   carries the largest weight and the estimate does not lag. For `w = 7` they are
   the exact rationals `[5, −3, −6, −4, 3, 15, 32] / 42`.
 - **Only BG.** Carb and insulin are reconstructed from analytic curves and are
-  already smooth by construction; they are never filtered.
+  already smooth by construction, or are single onset steps under the events
+  layout; they are never filtered.
 - **It moves the anchor.** `last_bg` is read off the last context BG cell, so the
   filter moves it too. White-noise variance falls with `Σtap²` as the window
   widens (`1.000, 0.762, 0.516, 0.386, 0.308` for the five windows), while the
@@ -267,7 +286,8 @@ Two things stand against it, and they are independent:
 - **A distillation term during the fit, under every objective.** Every forecast window is replayed twice —
   once as it happened and once with one unit of RAPID INSULIN added to the horizon,
   as the action curve the preset resolves and a logged bolus stores, not as a lump
-  in one bucket — and the term pins the ADAPTED difference between the two to the
+  in one bucket (an events model takes it as one bolus at the horizon's first step,
+  merged dose-weighted with any bolus already there) — and the term pins the ADAPTED difference between the two to the
   FROZEN model's. It is read on the assembled fan and in risk space, for the same
   two reasons the pinball term is, and on the median column alone: pinning the
   spreads would fight the pinball term's freedom to widen this patient's bands.

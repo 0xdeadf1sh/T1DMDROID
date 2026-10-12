@@ -182,6 +182,7 @@ import com.t1dm.inference.ModelChannels
 import com.t1dm.inference.FutureOverrideSource
 import com.t1dm.inference.InferenceController
 import com.t1dm.inference.InferenceControllerDefaults
+import com.t1dm.inference.ProbeDose
 import com.t1dm.inference.ProbeInsulinPort
 import com.t1dm.inference.buildInferenceController
 import com.t1dm.data.curve.GiToGamma
@@ -802,8 +803,8 @@ class AppContainer(context: Context) {
             smoothingWindowProvider = { smoothingWindow() },
             // Real rapid-insulin unit, so the guard's mg/dL-per-unit is a receivable quantity.
             probeInsulin = ProbeInsulinPort { units, steps ->
-                val curve = curveEngine.presetCurve(units, resolveRapidPreset(null))
-                DoubleArray(steps) { i -> curve.getOrElse(i) { 0.0 } }
+                val ev = curveEngine.rapidEvent(units, 0L, resolveRapidPreset(null))
+                ProbeDose(DoubleArray(steps) { i -> ev.values.getOrElse(i) { 0.0 } }, checkNotNull(ev.point))
             },
             // Read fresh each discovery, so a Settings edit takes on the next refresh.
             maxRunningProvider = { maxRunningModels() },
@@ -1873,7 +1874,7 @@ class AppContainer(context: Context) {
         builder: ChannelBuilder = channelBuilder,
     ): ModelChannels {
         val ch = builder.contextChannels(gridStartMs, nSteps)
-        return ModelChannels(ch.carb, ch.insulin)
+        return ModelChannels(ch.carb, ch.insulin, ch.events)
     }
 
     /** From `sample`, not bout records: rebuilding would re-rate every bout at today's rate. */
@@ -1926,7 +1927,7 @@ class AppContainer(context: Context) {
         builder: ChannelBuilder = channelBuilder,
     ): ModelChannels {
         val fc = builder.futureOverrides(rollStartMs, nFutureSteps, announced = emptyList(), candidate = null)
-        return ModelChannels(fc.carb, fc.insulin)
+        return ModelChannels(fc.carb, fc.insulin, fc.events)
     }
 
     /** §3.6-F provenance: logged doses only. */
@@ -1972,7 +1973,7 @@ class AppContainer(context: Context) {
 
     /** fp32 XNNPACK CPU authority (§3.6-E) or nothing; `:calc` never sees another backend. */
     private fun calcBackendInfo(info: com.t1dm.inference.InferenceController.SelectedModelInfo): BackendInfo =
-        BackendInfo(backend = info.backend)
+        BackendInfo(backend = info.backend, blind = info.descriptor.blind)
 
     /** Drives the selected fp32 model, gating each roll on the Rust degeneracy check. */
     private val rollingForecaster by lazy {
@@ -1996,7 +1997,7 @@ class AppContainer(context: Context) {
     /** Probe's meal at a pinned GI: a moving GI surfaces as the patient's own ratio changing. */
     private val probeCarbResolver = CarbResolver { grams, atMs ->
         val (k, theta, dur) = CurveEngine.Presets.carbGammaForGi(PROBE_GI)
-        listOf(curveEngine.carbEvent(grams, atMs, k, theta, dur))
+        listOf(curveEngine.carbEvent(grams, atMs, k, theta, dur, PROBE_GI))
     }
 
     private val sensitivityProbe by lazy {
@@ -2051,7 +2052,7 @@ class AppContainer(context: Context) {
         val now = System.currentTimeMillis()
         val announced: List<CurveEvent> = if (announcedCarbG > 0.0) {
             val (k, theta, dur) = CurveEngine.Presets.carbGammaForGi(announcedGi)
-            listOf(curveEngine.carbEvent(announcedCarbG, now, k, theta, dur))
+            listOf(curveEngine.carbEvent(announcedCarbG, now, k, theta, dur, announcedGi))
         } else emptyList()
         // DEATH also lifts the §3.6-B degeneracy refusal, so the advisor emits rather than refuses.
         val result = runCatching { doseAdvisor.recommendBolus(now, announced, cfg, bypassDegeneracyGate = deathModeSnapshot) }

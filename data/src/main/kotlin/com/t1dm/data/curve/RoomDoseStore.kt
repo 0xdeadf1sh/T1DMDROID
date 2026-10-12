@@ -4,7 +4,9 @@ import com.t1dm.core.model.BasalDoseSpec
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
+import com.t1dm.core.model.DoseRecord
 import com.t1dm.core.model.InsulinFamily
+import com.t1dm.core.model.PointKind
 import com.t1dm.data.db.BasalScheduleDao
 import com.t1dm.data.db.DoseKind
 import com.t1dm.data.db.BasalScheduleEntity
@@ -68,11 +70,13 @@ class RoomDoseStore(
                 theta ?: CurveEngine.Presets.carbGammaForGi(gi ?: DEFAULT_GI).second,
                 durationMin,
             ).asList()
-        return CurveEvent(tsMs, CurveEngine.STEP_MS, CurveKind.CARB, grams, values)
+        val record = DoseRecord(tsMs, PointKind.CARB, grams, gi, k, theta, null, null, durationMin, null)
+        return CurveEvent(tsMs, CurveEngine.STEP_MS, CurveKind.CARB, grams, values, engine.pointDose(record))
     }
 
     private suspend fun LoggedDoseEntity.toCurveEvent(): CurveEvent {
-        val values = customCurve?.toDoubleList()
+        val stored = customCurve?.toDoubleList()
+        val values = stored
             ?: when (kind) {
                 DoseKind.BOLUS -> if (k != null && theta != null) {
                     engine.gamma(units, k, theta, durationMin).asList()
@@ -85,7 +89,9 @@ class RoomDoseStore(
                     engine.presetCurve(units, engine.defaultPreset(InsulinFamily.BasalBateman)).asList()
                 }
             }
-        return CurveEvent(tsMs, CurveEngine.STEP_MS, CurveKind.INSULIN, units, values)
+        val pointKind = if (kind == DoseKind.BASAL) PointKind.BASAL else PointKind.BOLUS
+        val record = DoseRecord(tsMs, pointKind, units, null, k, theta, kaPerHour, kePerHour, durationMin, stored)
+        return CurveEvent(tsMs, CurveEngine.STEP_MS, CurveKind.INSULIN, units, values, engine.pointDose(record))
     }
 
     private fun List<BasalScheduleEntity>.toSchedule(): BasalSchedule = BasalSchedule(

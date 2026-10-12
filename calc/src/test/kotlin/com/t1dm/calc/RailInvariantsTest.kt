@@ -73,6 +73,16 @@ class RailInvariantsTest {
     }
 
     @Test
+    fun refuses_on_a_model_blind_to_future_doses_before_any_roll() = runTest {
+        val port = FakeForecastPort()
+        val backend = fp32Backend().copy(blind = true)
+        val advisor = advisorOf(port, anchor = fakeAnchor(now), iob = fakeIob(now), backend = backend)
+        val result = advisor.recommendBolus(now, emptyList(), CalcConfig())
+        assertEquals(AdviceResult.Refused(listOf(BLIND_MODEL_REFUSAL)), result)
+        assertEquals(0, port.rollCount)
+    }
+
+    @Test
     fun each_rail_blocks_not_passes_on_ineligible_fan() {
         for (elig in listOf(ForecastEligibility.MISSING, ForecastEligibility.DEGENERATE, ForecastEligibility.STALE)) {
             val bad = PredFan(3.0, emptyList(), STEP_MS, 24, ForecastStatus.COLLAPSED_BAND, elig)

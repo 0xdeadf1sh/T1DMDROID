@@ -218,7 +218,10 @@ pub struct InsulinPresetSpec {
     pub citation: String,
 }
 
+/// (k, θ minutes, DIA hours at 5 U); aspart, the default rapid.
 const RAPID: (f64, f64, f64) = (3.0, 30.0, 4.0);
+/// (ka, ke) per hour; glargine U100, the default basal.
+const GLARGINE_U100: (f64, f64) = (0.477, 0.0499);
 const ULTRA_RAPID: (f64, f64, f64) = (2.55, 35.0, 3.4);
 const RAPID_CITE: &str = "Simulator shape";
 const ULTRA_RAPID_CITE: &str = "Simulator shape";
@@ -259,7 +262,7 @@ pub fn insulin_preset_catalog() -> Vec<InsulinPresetSpec> {
         rapid(InsulinPreset::FiaspFasterAspart, "Faster aspart · Fiasp", ULTRA_RAPID, ULTRA_RAPID_CITE),
         rapid(InsulinPreset::LisproHumalog, "Lispro · Humalog", RAPID, RAPID_CITE),
         rapid(InsulinPreset::LisproLyumjev, "Ultra-rapid lispro · Lyumjev", ULTRA_RAPID, ULTRA_RAPID_CITE),
-        basal(InsulinPreset::GlargineU100Lantus, "Glargine U100 · Lantus", 0.477, 0.0499, 73.0),
+        basal(InsulinPreset::GlargineU100Lantus, "Glargine U100 · Lantus", GLARGINE_U100.0, GLARGINE_U100.1, 73.0),
         basal(InsulinPreset::GlargineU300Toujeo, "Glargine U300 · Toujeo", 0.156, 0.0377, 101.0),
         basal(InsulinPreset::DegludecTresiba, "Degludec · Tresiba", 0.187, 0.0277, 133.0),
     ]
@@ -341,6 +344,154 @@ pub fn on_board(events: Vec<CurveEvent>, at_ms: i64, kind: CurveKind) -> f64 {
     acc
 }
 
+/// The events layout's dose feats, in feat order: g, GI, U, min, h, U, min, h.
+pub const EVENT_CHANNELS: [&str; 8] = [
+    "carb_g",
+    "carb_gi",
+    "bolus_u",
+    "bolus_peak_min",
+    "bolus_dur_h",
+    "basal_u",
+    "basal_peak_min",
+    "basal_dur_h",
+];
+/// GI of a meal that stores none, every food-builder meal among them.
+pub const CARB_GI_DEFAULT: f64 = 50.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PointKind {
+    Carb,
+    Bolus,
+    Basal,
+}
+
+/// A logged row as stored; `None` where the row stores nothing.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct DoseRecord {
+    pub start_ms: i64,
+    pub kind: PointKind,
+    /// Grams for a carb, units for insulin.
+    pub amount: f64,
+    pub gi: Option<f64>,
+    pub k: Option<f64>,
+    /// Minutes.
+    pub theta: Option<f64>,
+    pub ka_per_hour: Option<f64>,
+    pub ke_per_hour: Option<f64>,
+    pub duration_min: f64,
+    /// Absolute amount per step.
+    pub custom_curve: Option<Vec<f64>>,
+}
+
+/// One dose at its onset: a carb's GI, or an insulin's peak minutes and duration hours; rest 0.
+#[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
+pub struct PointDose {
+    pub start_ms: i64,
+    pub kind: PointKind,
+    pub amount: f64,
+    pub gi: f64,
+    pub peak_min: f64,
+    pub dur_h: f64,
+}
+
+/// `simulator.gamma_peak_min`.
+fn gamma_peak_min(k: f64, theta: f64) -> f64 {
+    (k - 1.0).max(0.0) * theta
+}
+
+/// `simulator.bateman_peak_min`: minutes to the peak of `exp(-ke t) − exp(-ka t)`.
+fn bateman_peak_min(ka_per_hour: f64, ke_per_hour: f64) -> f64 {
+    60.0 * (ka_per_hour / ke_per_hour).ln() / (ka_per_hour - ke_per_hour)
+}
+
+/// The training rule, `t1dmdroid_converter.dose_peak_dur` / `meal_gi`: a stored curve wins.
+#[uniffi::export]
+pub fn point_dose(record: DoseRecord) -> PointDose {
+    let mut p = PointDose {
+        start_ms: record.start_ms,
+        kind: record.kind,
+        amount: record.amount,
+        gi: 0.0,
+        peak_min: 0.0,
+        dur_h: 0.0,
+    };
+    if record.kind == PointKind::Carb {
+        p.gi = record.gi.unwrap_or(CARB_GI_DEFAULT);
+        return p;
+    }
+    let stored_h = record.duration_min / 60.0;
+    (p.peak_min, p.dur_h) = match (&record.custom_curve, record.kind, record.k, record.theta) {
+        (Some(cc), ..) => {
+            // np.argmax: the first of equal maxima.
+            let first_max = (0..cc.len()).fold(0, |best, i| if cc[i] > cc[best] { i } else { best });
+            (first_max as f64 * DT_MINUTES, cc.len() as f64 * DT_MINUTES / 60.0)
+        }
+        (None, PointKind::Basal, ..) => {
+            let ka = record.ka_per_hour.unwrap_or(GLARGINE_U100.0);
+            let ke = record.ke_per_hour.unwrap_or(GLARGINE_U100.1);
+            (bateman_peak_min(ka, ke), stored_h)
+        }
+        (None, _, Some(k), Some(theta)) => (gamma_peak_min(k, theta), stored_h),
+        _ => {
+            let pk = bolus_pk_for_dose(record.amount, RAPID.0, RAPID.1, RAPID.2);
+            (gamma_peak_min(pk.k, pk.theta), pk.duration_min / 60.0)
+        }
+    };
+    p
+}
+
+/// [`EVENT_CHANNELS`] over `[grid_start_ms, +n_steps·STEP_MS)`, each dose at its rounded onset.
+#[uniffi::export]
+pub fn event_channels(
+    doses: Vec<PointDose>,
+    grid_start_ms: i64,
+    n_steps: i32,
+) -> Result<Vec<Vec<f64>>, CoreError> {
+    if !(0..=MAX_GRID_STEPS).contains(&n_steps) {
+        return Err(CoreError::Internal {
+            reason: format!("event_channels n_steps {n_steps} outside [0, {MAX_GRID_STEPS}]"),
+        });
+    }
+    let n = n_steps as usize;
+    let mut out = vec![vec![0.0f64; n]; EVENT_CHANNELS.len()];
+    // (dose feat, descriptor count): each dose's descriptors follow it.
+    let feat_of = |kind: PointKind| match kind {
+        PointKind::Carb => (0, 1),
+        PointKind::Bolus => (2, 2),
+        PointKind::Basal => (5, 2),
+    };
+    for d in &doses {
+        if !(d.amount > 0.0) {
+            continue;
+        }
+        let i = (((d.start_ms - grid_start_ms) as f64) / STEP_MS as f64).round() as i64;
+        if i < 0 || i as usize >= n {
+            continue;
+        }
+        let i = i as usize;
+        let (f, _) = feat_of(d.kind);
+        let descriptors: &[f64] = match d.kind {
+            PointKind::Carb => &[d.gi],
+            _ => &[d.peak_min, d.dur_h],
+        };
+        out[f][i] += d.amount;
+        for (j, v) in descriptors.iter().enumerate() {
+            out[f + 1 + j][i] += d.amount * v;
+        }
+    }
+    // Same-step doses: summed, descriptors dose-weighted (`simulator.EventLog`).
+    for kind in [PointKind::Carb, PointKind::Bolus, PointKind::Basal] {
+        let (f, n_desc) = feat_of(kind);
+        for i in 0..n {
+            let dose = out[f][i];
+            for j in 0..n_desc {
+                out[f + 1 + j][i] = if dose > 0.0 { out[f + 1 + j][i] / dose } else { 0.0 };
+            }
+        }
+    }
+    Ok(out)
+}
+
 const DAY_MS: i64 = 86_400_000;
 const MIN_MS: i64 = 60_000;
 
@@ -396,9 +547,77 @@ mod tests {
     use serde_json::Value;
 
     const GOLDEN: &str = include_str!("testdata/curve_golden.json");
+    /// `dose_events`: app-shaped rows through `t1dmdroid_converter`, the events training data.
+    const PIPELINE_EVENTS: &str = include_str!("testdata/pipeline_golden_events.json");
 
     fn golden() -> Value {
         serde_json::from_str(GOLDEN).unwrap()
+    }
+
+    fn dose_events() -> Value {
+        let v: Value = serde_json::from_str(PIPELINE_EVENTS).unwrap();
+        v["dose_events"].clone()
+    }
+
+    fn record(r: &Value) -> DoseRecord {
+        let opt = |k: &str| r.get(k).and_then(Value::as_f64);
+        DoseRecord {
+            start_ms: r["start_ms"].as_i64().unwrap(),
+            kind: match r["kind"].as_str().unwrap() {
+                "meal" => PointKind::Carb,
+                "bolus" => PointKind::Bolus,
+                _ => PointKind::Basal,
+            },
+            amount: r["amount"].as_f64().unwrap(),
+            gi: opt("gi"),
+            k: opt("k"),
+            theta: opt("theta"),
+            ka_per_hour: opt("ka_per_hour"),
+            ke_per_hour: opt("ke_per_hour"),
+            duration_min: r["duration_min"].as_f64().unwrap(),
+            custom_curve: r.get("custom_curve").map(f64s),
+        }
+    }
+
+    #[test]
+    fn point_dose_follows_the_converter() {
+        for r in dose_events()["records"].as_array().unwrap() {
+            let p = point_dose(record(r));
+            let want = &r["want"];
+            for (name, got) in [("gi", p.gi), ("peak_min", p.peak_min), ("dur_h", p.dur_h)] {
+                if let Some(w) = want.get(name).and_then(Value::as_f64) {
+                    assert!((got - w).abs() <= 1e-9 * w.abs().max(1.0), "{name}: {got} vs {w} in {r}");
+                }
+            }
+        }
+    }
+
+    /// Onset rounding, window edges and a same-step collision, against the training data.
+    #[test]
+    fn event_channels_follow_the_converter() {
+        let g = dose_events();
+        let doses: Vec<PointDose> =
+            g["records"].as_array().unwrap().iter().map(|r| point_dose(record(r))).collect();
+        let n = g["n_steps"].as_i64().unwrap() as i32;
+        let got = event_channels(doses, g["grid_start_ms"].as_i64().unwrap(), n).unwrap();
+        let names: Vec<&str> =
+            g["channel_names"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(names, EVENT_CHANNELS);
+        let tol = g["rel_tolerance"].as_f64().unwrap();
+        for (k, want) in g["channels"].as_array().unwrap().iter().enumerate() {
+            let want = f64s(want);
+            assert_eq!(got[k].len(), want.len());
+            for (i, (a, b)) in got[k].iter().zip(&want).enumerate() {
+                assert!((a - b).abs() <= tol * b.abs().max(1.0), "{}[{i}]: {a} vs {b}", names[k]);
+            }
+        }
+    }
+
+    #[test]
+    fn event_channels_refuse_a_hostile_size() {
+        assert!(event_channels(vec![], 0, -1).is_err());
+        assert!(event_channels(vec![], 0, MAX_GRID_STEPS + 1).is_err());
+        assert_eq!(event_channels(vec![], 0, 0).unwrap().len(), EVENT_CHANNELS.len());
     }
 
     fn f64s(v: &Value) -> Vec<f64> {

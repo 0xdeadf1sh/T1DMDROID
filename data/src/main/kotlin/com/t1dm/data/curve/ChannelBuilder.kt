@@ -3,6 +3,7 @@ package com.t1dm.data.curve
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
+import com.t1dm.core.model.InputLayout
 
 /** Events keyed on start time; callers pad fromMs by [ChannelBuilder.PAD_MS] to reach each tail. */
 interface DoseStore {
@@ -23,12 +24,36 @@ interface DoseStore {
         insulinEvents(fromMs, toMs) to basalInjectionEvents(fromMs, toMs)
 }
 
-data class ContextChannels(val carb: DoubleArray, val insulin: DoubleArray) {
+/** [events]: `EVENT_CHANNELS` order, each logged dose at its onset step. */
+data class ContextChannels(
+    val carb: DoubleArray,
+    val insulin: DoubleArray,
+    val events: List<DoubleArray> = emptyList(),
+) {
     override fun equals(other: Any?): Boolean =
         other is ContextChannels && carb.contentEquals(other.carb) &&
-            insulin.contentEquals(other.insulin)
+            insulin.contentEquals(other.insulin) && events.contentDeepEquals(other.events)
 
-    override fun hashCode(): Int = 31 * carb.contentHashCode() + insulin.contentHashCode()
+    override fun hashCode(): Int =
+        31 * (31 * carb.contentHashCode() + insulin.contentHashCode()) + events.contentDeepHash()
+
+    /** The series a [layout] model reads, in its feat order. */
+    fun series(layout: InputLayout): List<DoubleArray> = doseSeries(layout, carb, insulin, events)
+}
+
+internal fun List<DoubleArray>.contentDeepEquals(other: List<DoubleArray>): Boolean =
+    size == other.size && indices.all { this[it].contentEquals(other[it]) }
+
+internal fun List<DoubleArray>.contentDeepHash(): Int = fold(1) { h, e -> 31 * h + e.contentHashCode() }
+
+private fun doseSeries(
+    layout: InputLayout,
+    carb: DoubleArray,
+    insulin: DoubleArray,
+    events: List<DoubleArray>,
+): List<DoubleArray> = when (layout) {
+    InputLayout.CURVES -> listOf(carb, insulin)
+    InputLayout.EVENTS -> events
 }
 
 /** Grams of carbohydrate equivalent per bucket. Unwired ⇒ zeros, not a fabricated curve. */
@@ -42,18 +67,25 @@ data class FutureChannels(
     val insulin: DoubleArray,
     val iobAtStart: Double,
     val cobAtStart: Double,
+    /** `EVENT_CHANNELS`: doses with an onset in the horizon only; a past dose has no tail here. */
+    val events: List<DoubleArray> = emptyList(),
 ) {
     override fun equals(other: Any?): Boolean =
         other is FutureChannels && carb.contentEquals(other.carb) && insulin.contentEquals(other.insulin) &&
-            iobAtStart == other.iobAtStart && cobAtStart == other.cobAtStart
+            iobAtStart == other.iobAtStart && cobAtStart == other.cobAtStart &&
+            events.contentDeepEquals(other.events)
 
     override fun hashCode(): Int {
         var h = carb.contentHashCode()
         h = 31 * h + insulin.contentHashCode()
         h = 31 * h + iobAtStart.hashCode()
         h = 31 * h + cobAtStart.hashCode()
+        h = 31 * h + events.contentDeepHash()
         return h
     }
+
+    /** The series a [layout] model reads, in its feat order. */
+    fun series(layout: InputLayout): List<DoubleArray> = doseSeries(layout, carb, insulin, events)
 }
 
 data class InsulinOnBoard(val iobU: Double, val zeroMs: Long?)
@@ -97,7 +129,15 @@ class ChannelBuilder(
 
         val carbCh = engine.bucketize(carbs, gridStartMs, nSteps, CurveKind.CARB)
         val insulinCh = engine.bucketize(insulin.combined, gridStartMs, nSteps, CurveKind.INSULIN)
-        return ContextChannels(carbCh, insulinCh)
+        val events = loggedEvents(carbs + insulin.bolus, gridStartMs, nSteps)
+        return ContextChannels(carbCh, insulinCh, events)
+    }
+
+    /** Basal from logged injections only, never the schedule: training saw what was logged. */
+    private suspend fun loggedEvents(doses: List<CurveEvent>, gridStartMs: Long, nSteps: Int): List<DoubleArray> {
+        val endMs = gridStartMs + nSteps * CurveEngine.STEP_MS
+        val basal = store.basalInjectionEvents(gridStartMs - CurveEngine.STEP_MS, endMs)
+        return engine.eventChannels(doses + basal, gridStartMs, nSteps)
     }
 
     /** contextChannels plus the basal sub-series, one gather; byte-for-byte the same arrays. */
@@ -151,7 +191,12 @@ class ChannelBuilder(
         // Logged doses only, never announced or candidate.
         val iob = engine.onBoard(storeInsulin + basal, rollStartMs, CurveKind.INSULIN)
         val cob = engine.onBoard(storeCarbs, rollStartMs, CurveKind.CARB)
-        return FutureChannels(carbCh, insulinCh, iob, cob)
+        val events = loggedEvents(
+            storeCarbs + storeInsulin + annCarbs + annInsulin + candCarbs + candInsulin,
+            rollStartMs,
+            nSteps,
+        )
+        return FutureChannels(carbCh, insulinCh, iob, cob, events)
     }
 
     /** Logged store doses only; exercise is READ from wide sample, nothing here to integrate. */

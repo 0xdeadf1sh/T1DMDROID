@@ -83,8 +83,7 @@ class RefusedModelNoteTest {
 
     private companion object {
         const val CRATE_REASON =
-            "n_input_features 5 != 4; this build reads the four-feature masked-BG input and " +
-                "cannot run another architecture"
+            "n_input_features 5 != 4; inputs.channels names 3 normalized channels plus the mask bit"
 
         const val FIVE_FEATURE_DESCRIPTOR =
             """{"id":"wide","artifact":"wide.xnnpack.pte","arch_version":"risk-v5",""" +

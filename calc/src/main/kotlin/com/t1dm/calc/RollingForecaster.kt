@@ -102,6 +102,10 @@ class RollingForecaster(
         val model = selected.current()
             ?: return Rolled(null, emptyList(), ForecastStatus.OK, ForecastEligibility.MISSING, "no selected model", 0, 0)
         val desc = model.descriptor
+        // Every dose would draw the same fan; refused rather than shown as a response.
+        if (desc.blind && (request.candidate != null || request.announced.isNotEmpty())) {
+            return Rolled(null, emptyList(), ForecastStatus.OK, ForecastEligibility.MISSING, BLIND_MODEL_REFUSAL, 0, 0)
+        }
         // PREDICTION_PATCHES isn't a descriptor field; derive it from the validated horizon.
         val predPatches = desc.predictionHorizonHours * HorizonPolicy.STEPS_PER_HOUR / desc.patchSize
         val predSteps = predPatches * desc.patchSize
@@ -124,10 +128,10 @@ class RollingForecaster(
         val future = channels.futureOverrides(predZoneStartMs, request.fullRollSteps, request.announced, shiftedCandidate)
         val ctx0 = channels.contextChannels(series.gridStartMs, nCtx)
 
-        // mg/dL BG; raw carb/insulin per step.
+        // mg/dL BG; raw dose series per step, in the model's feat order.
         val bg = ArrayDeque<Double>(series.mgdl.toList())
-        val carb = ArrayDeque<Double>(ctx0.carb.toList())
-        val insulin = ArrayDeque<Double>(ctx0.insulin.toList())
+        val doses = ctx0.series(desc.inputLayout).map { ArrayDeque<Double>(it.toList()) }
+        val futureDoses = future.series(desc.inputLayout)
 
         val outSteps = ArrayList<FanStep>(request.fullRollSteps)
         var carrySpread = emptyList<Double>()
@@ -141,14 +145,13 @@ class RollingForecaster(
 
         for (r in 0 until nRolls) {
             val base = r * predSteps
-            val predCarb = sliceOrPad(future.carb, base, predSteps)
-            val predInsulin = sliceOrPad(future.insulin, base, predSteps)
+            val pred = futureDoses.map { sliceOrPad(it, base, predSteps) }
 
             val forecast: Forecast = try {
                 withContext(dispatchers.default) {
                     val built = native.buildGraphInput(
-                        desc, bg.toList(), carb.toList(), insulin.toList(),
-                        predCarb, predInsulin, emptyList(), true, smoothingWindow,
+                        desc, bg.toList(), doses.map { it.toList() },
+                        pred.takeUnless { desc.blind }, emptyList(), true, smoothingWindow,
                     )
                     val out = withContext(dispatchers.inference) { model.run(GraphIo.tensors(built)) }
                     // Not a fallback: `adapt` throws if an attached adapter cannot be applied.
@@ -171,13 +174,14 @@ class RollingForecaster(
 
             appendWindow(forecast, predSteps, outSteps, desc.patchSize, predPatches)
 
+            // A blind model reads these doses here, as context, once their roll is past.
             repeat(predSteps) { i ->
                 if (bg.isNotEmpty()) {
-                    bg.removeFirst(); carb.removeFirst(); insulin.removeFirst()
+                    bg.removeFirst()
+                    doses.forEach { it.removeFirst() }
                 }
                 bg.addLast(forecast.medianBg.getOrElse(i) { forecast.medianBg.lastOrNull() ?: 120.0 })
-                carb.addLast(predCarb.getOrElse(i) { 0.0 })
-                insulin.addLast(predInsulin.getOrElse(i) { 0.0 })
+                doses.forEachIndexed { k, q -> q.addLast(pred[k].getOrElse(i) { 0.0 }) }
             }
             // REPLACES carrySpread; folding would double-count the carry (SPEC/inference.md §9).
             carrySpread = terminalOffsets(forecast)

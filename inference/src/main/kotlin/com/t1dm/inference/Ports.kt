@@ -1,8 +1,11 @@
 package com.t1dm.inference
 
+import com.t1dm.core.model.InputLayout
 import com.t1dm.core.model.LoraSample
 import com.t1dm.core.model.LoraWeights
+import com.t1dm.core.model.ModelDescriptor
 import com.t1dm.core.model.ModelPrediction
+import com.t1dm.core.model.PointDose
 
 /** mg/dL per 5-min step; anchorTsMs is the last MEASURED sample, never reset by carry-forward. */
 data class BgSeries(
@@ -26,9 +29,11 @@ data class BgSeries(
 
 /** Null port: counterfactual branch doesn't run — no verdict, ABSENT, attach refused. */
 fun interface ProbeInsulinPort {
-    /** Absolute rapid-insulin action per 5-min step, steps long, zero-padded past curve end. */
-    suspend fun action(units: Double, steps: Int): DoubleArray
+    suspend fun probe(units: Double, steps: Int): ProbeDose
 }
+
+/** A rapid dose at the zone's first step: [action] absolute U per step, zero-padded to steps. */
+class ProbeDose(val action: DoubleArray, val point: PointDose)
 
 interface BgHistoryProvider {
     /** Newest-last mg/dL, ≤maxSteps steps, null under minSteps. May splice reconstructed gaps. */
@@ -81,15 +86,52 @@ fun interface ContextChannelSource {
     suspend fun channels(gridStartMs: Long, nSteps: Int): ModelChannels
 }
 
-/** Grid-aligned per-5-min amounts: carb grams and insulin action, the model's only two signals. */
+/** Grid-aligned per-5-min doses: carb and insulin action curves, and the 8 event series. */
 data class ModelChannels(
     val carb: DoubleArray,
     val insulin: DoubleArray,
+    /** `EVENT_CHANNELS` order, each dose at its onset step; empty reads as no dose. */
+    val events: List<DoubleArray> = emptyList(),
 ) {
-    override fun equals(other: Any?): Boolean =
-        other is ModelChannels && carb.contentEquals(other.carb) && insulin.contentEquals(other.insulin)
+    val size: Int get() = carb.size
 
-    override fun hashCode(): Int = carb.contentHashCode() * 31 + insulin.contentHashCode()
+    /** Every series [n] steps long. */
+    fun hasLength(n: Int): Boolean = carb.size == n && insulin.size == n && events.all { it.size == n }
+
+    /** The series [desc] reads, in its feat order. */
+    fun series(desc: ModelDescriptor): List<DoubleArray> = when (desc.inputLayout) {
+        InputLayout.CURVES -> listOf(carb, insulin)
+        InputLayout.EVENTS -> events.ifEmpty { List(desc.doses.size) { DoubleArray(size) } }
+    }
+
+    fun slice(from: Int, to: Int) = ModelChannels(
+        carb.copyOfRange(from, to),
+        insulin.copyOfRange(from, to),
+        events.map { it.copyOfRange(from, to) },
+    )
+
+    /** [probe] at step 0: its curve onto insulin, its bolus merged dose-weighted into events. */
+    fun plusProbe(probe: ProbeDose, desc: ModelDescriptor): ModelChannels {
+        val ins = DoubleArray(insulin.size) { insulin[it] + probe.action.getOrElse(it) { 0.0 } }
+        if (desc.inputLayout != InputLayout.EVENTS || size == 0) return ModelChannels(carb, ins, events)
+        val ev = series(desc).map { it.copyOf() }
+        val at = { name: String -> desc.doses.indexOfFirst { it.name == name } }
+        val (u, peak, dur) = Triple(at("bolus_u"), at("bolus_peak_min"), at("bolus_dur_h"))
+        val p = probe.point
+        val old = ev[u][0]
+        val total = old + p.amount
+        ev[peak][0] = (old * ev[peak][0] + p.amount * p.peakMin) / total
+        ev[dur][0] = (old * ev[dur][0] + p.amount * p.durH) / total
+        ev[u][0] = total
+        return ModelChannels(carb, ins, ev)
+    }
+
+    override fun equals(other: Any?): Boolean =
+        other is ModelChannels && carb.contentEquals(other.carb) && insulin.contentEquals(other.insulin) &&
+            events.size == other.events.size && events.indices.all { events[it].contentEquals(other.events[it]) }
+
+    override fun hashCode(): Int =
+        events.fold(carb.contentHashCode() * 31 + insulin.contentHashCode()) { h, e -> h * 31 + e.contentHashCode() }
 
     companion object {
         fun zero(n: Int) = ModelChannels(DoubleArray(n), DoubleArray(n))

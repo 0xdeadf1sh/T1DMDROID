@@ -24,8 +24,9 @@ class MealCurveResolver(private val engine: CurveEngine) {
                 values = shape.map { it * scale },
             )
         } else {
-            val g = GiToGamma.paramsForGiOrDefault(component.giOrNull)
-            engine.carbEvent(carbs, startMs, g.k, g.theta, g.durationMin)
+            val gi = component.giOrNull ?: GiToGamma.DEFAULT_GI
+            val g = GiToGamma.paramsForGi(gi)
+            engine.carbEvent(carbs, startMs, g.k, g.theta, g.durationMin, gi)
         }
     }
 

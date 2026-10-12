@@ -19,3 +19,6 @@ interface SelectedModelHandle {
 fun interface SelectedModelProvider {
     suspend fun current(): SelectedModelHandle?
 }
+
+/** Why a blind model ([ModelDescriptor.blind]) weighs no dose: every candidate draws one fan. */
+const val BLIND_MODEL_REFUSAL = "Model blind to future doses"

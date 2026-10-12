@@ -6,8 +6,11 @@ import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.BolusPk
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
+import com.t1dm.core.model.DoseRecord
 import com.t1dm.core.model.InsulinFamily
 import com.t1dm.core.model.InsulinPresetSpec
+import com.t1dm.core.model.PointDose
+import com.t1dm.core.model.PointKind
 import kotlinx.coroutines.withContext
 
 /** JNI bridge over t1dm-core::curve; carbs feed as Ra, insulin as PK ACTION, not IOB. */
@@ -54,12 +57,43 @@ class CurveEngine(
     suspend fun extendBasal(schedule: BasalSchedule, fromMs: Long, toMs: Long): List<CurveEvent> =
         withContext(dispatchers.default) { native.extendBasal(schedule, fromMs, toMs) }
 
-    suspend fun rapidEvent(units: Double, startMs: Long, spec: InsulinPresetSpec): CurveEvent =
-        CurveEvent(startMs, STEP_MS, CurveKind.INSULIN, units, presetCurve(units, spec).asList())
+    /** A basal [spec] gives a basal: its curve and its point are the Bateman's. */
+    suspend fun rapidEvent(units: Double, startMs: Long, spec: InsulinPresetSpec): CurveEvent {
+        val record = when (spec.family) {
+            InsulinFamily.RapidGamma -> bolusPk(units, spec).let {
+                DoseRecord(startMs, PointKind.BOLUS, units, null, it.k, it.theta, null, null, it.durationMin, null)
+            }
+            InsulinFamily.BasalBateman -> DoseRecord(
+                startMs, PointKind.BASAL, units, null, null, null, spec.kaPerHour, spec.kePerHour, spec.actionMin, null,
+            )
+        }
+        val curve = presetCurve(units, spec).asList()
+        return CurveEvent(startMs, STEP_MS, CurveKind.INSULIN, units, curve, pointDose(record))
+    }
 
-    suspend fun carbEvent(grams: Double, startMs: Long, k: Double, theta: Double, durMin: Double): CurveEvent =
+    /** [k], [theta], [durMin] lay the curve; [gi] is what an events-layout model reads. */
+    suspend fun carbEvent(
+        grams: Double,
+        startMs: Long,
+        k: Double,
+        theta: Double,
+        durMin: Double,
+        gi: Double,
+    ): CurveEvent {
+        val record = DoseRecord(startMs, PointKind.CARB, grams, gi, null, null, null, null, durMin, null)
+        return withContext(dispatchers.default) {
+            val curve = native.gamma(grams, k, theta, durMin)
+            CurveEvent(startMs, STEP_MS, CurveKind.CARB, grams, curve, native.pointDose(record))
+        }
+    }
+
+    suspend fun pointDose(record: DoseRecord): PointDose =
+        withContext(dispatchers.default) { native.pointDose(record) }
+
+    /** `EVENT_CHANNELS` over `[gridStartMs, +nSteps·STEP_MS)`; an event with no point is absent. */
+    suspend fun eventChannels(evs: List<CurveEvent>, gridStartMs: Long, nSteps: Int): List<DoubleArray> =
         withContext(dispatchers.default) {
-            CurveEvent(startMs, STEP_MS, CurveKind.CARB, grams, native.gamma(grams, k, theta, durMin))
+            native.eventChannels(evs, gridStartMs, nSteps).map { it.toDoubleArray() }
         }
 
     companion object {

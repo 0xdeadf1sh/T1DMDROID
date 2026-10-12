@@ -35,6 +35,9 @@ class DoseAdvisor(
         if (backend == null) {
             return AdviceResult.Refused(listOf("No selected model — refusing to recommend a dose."))
         }
+        if (backend.blind) {
+            return AdviceResult.Refused(listOf(BLIND_MODEL_REFUSAL))
+        }
         if (!backend.trustworthy) {
             return AdviceResult.Refused(
                 listOf(

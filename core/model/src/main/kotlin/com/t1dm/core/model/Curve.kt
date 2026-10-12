@@ -11,6 +11,34 @@ data class CurveEvent(
     val kind: CurveKind,
     val total: Double,
     val values: List<Double>,
+    /** This dose for an events-layout model, onset [startMs]; null ⇒ that model never sees it. */
+    val point: PointDose? = null,
+)
+
+enum class PointKind { CARB, BOLUS, BASAL }
+
+/** One dose at its onset: a carb's [gi], or an insulin's [peakMin] and [durH]; the rest 0. */
+data class PointDose(
+    val kind: PointKind,
+    val amount: Double,
+    val gi: Double,
+    val peakMin: Double,
+    val durH: Double,
+)
+
+/** A logged row as stored, null where it stores nothing; [customCurve] is absolute per step. */
+data class DoseRecord(
+    val startMs: Long,
+    val kind: PointKind,
+    val amount: Double,
+    val gi: Double?,
+    val k: Double?,
+    /** Minutes. */
+    val theta: Double?,
+    val kaPerHour: Double?,
+    val kePerHour: Double?,
+    val durationMin: Double,
+    val customCurve: List<Double>?,
 )
 
 /** durationMin is the Bateman action window; each occurrence expands to Bateman. */

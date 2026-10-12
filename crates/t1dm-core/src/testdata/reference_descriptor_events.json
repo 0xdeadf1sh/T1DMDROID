@@ -1,0 +1,395 @@
+{
+  "schema_version": 1,
+  "id": "t1dm_events_blind",
+  "engine": "executorch_xnnpack_fp32",
+  "executorch_version": "1.3.1+cpu",
+  "artifact": "t1dm_events_blind.xnnpack.pte",
+  "precision": "fp32",
+  "arch_version": "risk-v5",
+  "io": {
+    "input_patches": {
+      "name": "patches",
+      "shape": [
+        1,
+        100,
+        60
+      ],
+      "dtype": "fp32",
+      "layout": "step-major: flat = t*N_INPUT_FEATURES + feat",
+      "note": "already-normalized; graph starts from z-space patches"
+    },
+    "input_mask": {
+      "name": "attn_mask",
+      "shape": [
+        100,
+        100
+      ],
+      "dtype": "fp32",
+      "kind": "additive-float struct",
+      "attend": 0.0,
+      "block": -30000.0,
+      "note": "the sole additive term on the attention logits; position enters through RoPE alone, so nothing is pre-combined here"
+    },
+    "input_slot_sel": {
+      "name": "slot_sel",
+      "shape": [
+        12,
+        100
+      ],
+      "dtype": "fp32",
+      "kind": "one-hot selection",
+      "note": "row j is one-hot at the patch head slot j reads, in ascending patch order; surplus slots repeat patch 0 and their outputs are discarded. A selection matmul, not a gather, so no int64 tensor crosses the runtime boundary."
+    },
+    "output_head_raw": {
+      "name": "head_raw",
+      "output_index": 0,
+      "shape": [
+        1,
+        12,
+        6,
+        7
+      ],
+      "dtype": "fp32",
+      "space": "kovatchev-risk",
+      "note": "(B, M, S, 1+2*N_SPREADS): col0 median delta; 1..3 tau>.5 spreads .75/.9/.95; 4..6 tau<.5 spreads .25/.1/.05. One row per head slot, in slot_sel order."
+    },
+    "output_time_logits": {
+      "name": "time_logits",
+      "output_index": 1,
+      "shape": [
+        1,
+        12,
+        12
+      ],
+      "dtype": "fp32",
+      "space": "raw-logits",
+      "note": "(B, M, N_BINS): per-slot hour-of-day bin logits from the co-trained time probe; softmax over the N_BINS hour-of-day circle downstream (Rust). Present iff the time section below is present."
+    },
+    "output_hidden": {
+      "name": "hidden",
+      "output_index": 2,
+      "shape": [
+        1,
+        100,
+        32
+      ],
+      "dtype": "fp32",
+      "space": "trunk-hidden",
+      "note": "(B, T, D_MODEL) final-normed hidden state per PATCH \u2014 the adapter seam. A span's spline nodes are its masked patches plus the visible neighbour on each side, so the seam carries the whole window: gather the nodes, build the step weights, and feed the head block's weights to reproduce head_raw, with or without a low-rank adapter."
+    }
+  },
+  "time": {
+    "output_index": 1,
+    "output_name": "time_logits",
+    "shape": [
+      1,
+      12,
+      12
+    ],
+    "n_bins": 12,
+    "bin_hours": 2.0,
+    "layout": "per head slot: row j = the hour-of-day bin logits of the patch slot_sel row j selected",
+    "value_kind": "raw logits (softmax over the N_BINS-bin hour-of-day circle)",
+    "bin_centers_hours": [
+      1.0,
+      3.0,
+      5.0,
+      7.0,
+      9.0,
+      11.0,
+      13.0,
+      15.0,
+      17.0,
+      19.0,
+      21.0,
+      23.0
+    ],
+    "circle": "bin k center angle th_k = 2*pi*center_hour_k/24; hour 0 at angle 0, increasing with hour",
+    "reduction": "origin_slot",
+    "reduction_detail": {
+      "slot_index": "the slot holding the FIRST forecast patch \u2014 with an infill span in the masked set that is no longer slot 0",
+      "steps": [
+        "probs = softmax(time_logits[0, origin_slot, :])",
+        "res = sum_k probs[k] * (cos th_k, sin th_k)   # th_k = 2*pi*center_hour_k/24",
+        "hour = (atan2(res.sin, res.cos) mod 2*pi) * 24/(2*pi)",
+        "R = hypot(res.cos, res.sin)   # in [0,1], concentration/confidence"
+      ],
+      "note": "R in [0,1]: R->1 a concentrated (confident) phase belief, R->0 diffuse/ambiguous."
+    },
+    "alt_reduction": {
+      "name": "aggregate_origin_belief",
+      "advance_hours_per_patch": 0.5
+    },
+    "detach": false,
+    "co_trains_trunk": true
+  },
+  "geometry": {
+    "T": 100,
+    "PATCH_SIZE": 6,
+    "N_INPUT_FEATURES": 10,
+    "PATCH_DIM": 60,
+    "PREDICTION_PATCHES": 4,
+    "MIN_CONTEXT_PATCHES": 48,
+    "MAX_CONTEXT_PATCHES": 96,
+    "ARCH_MAX_CONTEXT_PATCHES": 96,
+    "MAX_MASKED_PATCHES": 12,
+    "MASK_MAX_SPANS": 3,
+    "MASK_SPAN_LENGTHS": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "D_MODEL": 32,
+    "N_LAYERS": 4,
+    "N_HEADS": 2,
+    "HEAD_DIM": 16,
+    "CHANNEL_NAMES": [
+      "bg_absolute",
+      "carb_g",
+      "carb_gi",
+      "bolus_u",
+      "bolus_peak_min",
+      "bolus_dur_h",
+      "basal_u",
+      "basal_peak_min",
+      "basal_dur_h"
+    ],
+    "CHANNEL_TO_FEAT": {
+      "0": 1,
+      "1": 2,
+      "2": 3,
+      "3": 4,
+      "4": 5,
+      "5": 6,
+      "6": 7,
+      "7": 8
+    },
+    "NON_MASKABLE_FEATS": [
+      0
+    ],
+    "MASKABLE_FEATS": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ]
+  },
+  "inputs": {
+    "layout": "events",
+    "masked_channel_policy": "blind",
+    "channels": [
+      {
+        "name": "bg_absolute",
+        "transform": "kovatchev"
+      },
+      {
+        "name": "carb_g",
+        "transform": "log1p"
+      },
+      {
+        "name": "carb_gi",
+        "transform": "log_ratio",
+        "ref": 50.0
+      },
+      {
+        "name": "bolus_u",
+        "transform": "log1p"
+      },
+      {
+        "name": "bolus_peak_min",
+        "transform": "log_ratio",
+        "ref": 60.0
+      },
+      {
+        "name": "bolus_dur_h",
+        "transform": "log_ratio",
+        "ref": 5.0
+      },
+      {
+        "name": "basal_u",
+        "transform": "log1p"
+      },
+      {
+        "name": "basal_peak_min",
+        "transform": "log_ratio",
+        "ref": 60.0
+      },
+      {
+        "name": "basal_dur_h",
+        "transform": "log_ratio",
+        "ref": 5.0
+      }
+    ]
+  },
+  "normalization_stats": {
+    "bg_absolute": {
+      "mean": -0.1376192126080616,
+      "std": 0.8937314407798215
+    },
+    "carb_g": {
+      "mean": 0.0703276096576477,
+      "std": 0.4757211963478511
+    },
+    "carb_gi": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "bolus_u": {
+      "mean": 0.026858181185601338,
+      "std": 0.2338629302392179
+    },
+    "bolus_peak_min": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "bolus_dur_h": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "basal_u": {
+      "mean": 0.008666695272255288,
+      "std": 0.23537888739866342
+    },
+    "basal_peak_min": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "basal_dur_h": {
+      "mean": 0.0,
+      "std": 1.0
+    }
+  },
+  "constants": {
+    "ROPE_BASE": 1000,
+    "RMSNORM_EPS": 1e-06,
+    "NORMALIZE_STD_FLOOR": 1e-08,
+    "BG_QUANTILE_SPREAD_MIN": 0.001,
+    "N_SPREADS": 3,
+    "N_QUANTILES": 7,
+    "QUANTILE_LEVELS": [
+      0.05,
+      0.1,
+      0.25,
+      0.5,
+      0.75,
+      0.9,
+      0.95
+    ],
+    "MEDIAN_IDX": 3,
+    "neg_fill": -30000.0,
+    "PREDICTION_HORIZON_HOURS": 2
+  },
+  "kovatchev": {
+    "SCALE": 2.2211457449985317,
+    "POWER": 1.084,
+    "OFFSET": 5.540076976170212,
+    "BG_CLAMP_MIN": 1.0,
+    "BG_CLAMP_MAX": 400.0,
+    "RISK_CLAMP_MIN": -12.305318402584799,
+    "RISK_CLAMP_MAX": 3.1622776601683804
+  },
+  "conformal": {
+    "enabled": false,
+    "note": "simulator-fit delta omitted for real CGM; raw bands are bit-identical (INFERENCE.md \u00a78.4)"
+  },
+  "head": {
+    "file": "t1dm_events_blind.head.bin",
+    "dtype": "fp32",
+    "byte_order": "little",
+    "layout": "flat C-contiguous tensors concatenated in the order listed below",
+    "activation": "silu",
+    "sha256": "61f6691621fe49784d6d28bd9fb0834544d44302783452a4cc91081ed6a55c46",
+    "bytes": 9372,
+    "d_model": 32,
+    "hidden": 32,
+    "out_dim": 7,
+    "tensors": [
+      {
+        "name": "l0.weight",
+        "shape": [
+          32,
+          32
+        ]
+      },
+      {
+        "name": "l0.bias",
+        "shape": [
+          32
+        ]
+      },
+      {
+        "name": "l1.weight",
+        "shape": [
+          32,
+          32
+        ]
+      },
+      {
+        "name": "l1.bias",
+        "shape": [
+          32
+        ]
+      },
+      {
+        "name": "l2.weight",
+        "shape": [
+          7,
+          32
+        ]
+      },
+      {
+        "name": "l2.bias",
+        "shape": [
+          7
+        ]
+      }
+    ],
+    "note": "head_raw[b,m,s,:] = l2(silu(l1(silu(l0(H[b,m,s]))))), H the step state at the centre of step s of masked patch m: the cubic B-spline over that span's node states, gathered from hidden",
+    "decoder": "bspline-centre-nodes"
+  },
+  "model_card": {
+    "param_count": 34835,
+    "val_step": 2300,
+    "reference_metrics": {
+      "source": "sim-validation",
+      "note": "held-out simulator validation at the exported checkpoint (T1DMAI train.py); reference only, not on-device realized accuracy",
+      "horizons_min": [
+        30,
+        60,
+        120
+      ],
+      "rmse_mgdl": [
+        null,
+        null,
+        null
+      ],
+      "mard_pct": [
+        null,
+        null,
+        null
+      ],
+      "clarke_a_pct": [
+        null,
+        null,
+        null
+      ],
+      "coverage90": [
+        null,
+        null,
+        null
+      ],
+      "clarke_ab_pct": null,
+      "tod_mae_h": null,
+      "tod_mae_hiconf_h": null
+    }
+  }
+}

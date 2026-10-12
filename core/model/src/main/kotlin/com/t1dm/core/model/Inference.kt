@@ -2,8 +2,22 @@ package com.t1dm.core.model
 
 /** Model pre/post-processing types crossing the Rust `t1dm-core` seam (INFERENCE.md §§6-8). */
 
-/** bg in risk space; the other three in log1p space. */
+/** bg in risk space; a dose feat in its [DoseTransform]'s space. */
 data class ChannelStat(val mean: Double, val std: Double)
+
+/** How a dose feat reaches z (SPEC/inference.md §6). */
+enum class DoseTransform { LOG1P, LOG_RATIO }
+
+/** Dose feat `1 + i` of the patch row; [reference] is read by [DoseTransform.LOG_RATIO] only. */
+data class DoseChannel(
+    val name: String,
+    val stat: ChannelStat,
+    val transform: DoseTransform,
+    val reference: Double,
+)
+
+/** [CURVES]: carb and insulin action curves. [EVENTS]: each dose at its onset, with descriptors. */
+enum class InputLayout { CURVES, EVENTS }
 
 /** Named and shaped in FILE order. */
 data class HeadTensorSpec(val name: String, val shape: List<Int>)
@@ -38,8 +52,11 @@ data class KovatchevParams(
 /** Parsed from a model `descriptor.json` — SPEC §2.4. */
 data class ModelDescriptor(
     val bg: ChannelStat,
-    val carb: ChannelStat,
-    val insulin: ChannelStat,
+    /** Feats `1..doses.size`, in this order; the mask bit follows them. */
+    val doses: List<DoseChannel>,
+    val inputLayout: InputLayout,
+    /** Every masked patch carries the no-dose fill: no future dose reaches the forecast. */
+    val blind: Boolean,
     val ropeBase: Int,
     val quantileSpreadMin: Double,
     val negFill: Double,
