@@ -95,7 +95,7 @@ class ZooInput(
     val doses: RawDoseSource,
 )
 
-/** Display and backtest only (SPEC/zoo.md §5): nothing here selects, advises or alarms. */
+/** SPEC/zoo.md §5: forecasts and backtests; selection lives in [InferenceController.onZoo]. */
 class ZooController(
     private val native: NativeCore,
     private val dispatchers: T1dmDispatchers,

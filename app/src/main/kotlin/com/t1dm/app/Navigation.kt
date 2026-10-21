@@ -1243,7 +1243,7 @@ private fun T1dmNavHost(
                 onCancelCompare = { container.cancelComparison() },
                 onSelect = { id ->
                     scope.launch {
-                        container.inferenceController.selectModel(id)
+                        container.selectModel(id)
                         // The figures belong to the model, and the panel is not composed to notice.
                         container.refreshSensitivityIfStale()
                     }

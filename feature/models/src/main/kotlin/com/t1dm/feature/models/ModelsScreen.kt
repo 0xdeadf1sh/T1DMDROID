@@ -53,7 +53,7 @@ fun ModelsScreen(
     onOpenAdapters: (String) -> Unit = {},
     importStatus: String? = null,
     onImport: () -> Unit = {},
-    /** SPEC/zoo.md models: id to family; display and backtest only, never selectable. */
+    /** SPEC/zoo.md models: id to family; selectable, never for dosing. */
     zooModels: List<Pair<String, String>> = emptyList(),
     zooPredictions: List<ModelPrediction> = emptyList(),
     comparison: ModelComparison? = null,
@@ -89,7 +89,9 @@ fun ModelsScreen(
                 ZooRow(
                     id = id,
                     family = family,
+                    selected = state.selectedModelId == id,
                     prediction = zooPredictions.firstOrNull { it.modelId == id },
+                    onSelect = onSelect,
                     onOpen = onOpen,
                     onRequestDelete = { confirmDelete = it },
                 )
@@ -207,7 +209,9 @@ private fun ModelRow(
 private fun ZooRow(
     id: String,
     family: String,
+    selected: Boolean,
     prediction: ModelPrediction?,
+    onSelect: (String) -> Unit,
     onOpen: (String) -> Unit,
     onRequestDelete: (String) -> Unit,
 ) {
@@ -219,11 +223,17 @@ private fun ZooRow(
             .padding(vertical = 8.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(
+                selected = selected,
+                onClick = { haptics.perform(HapticEvent.SegmentTick); onSelect(id) },
+                modifier = Modifier.size(28.dp),
+            )
             Text(
                 id,
                 style = MaterialTheme.typography.bodyLarge,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
                 fontFamily = FontFamily.Monospace,
-                modifier = Modifier.weight(1f).padding(start = 36.dp),
+                modifier = Modifier.weight(1f).padding(start = 8.dp),
             )
             Text(statusLabel(prediction), style = MaterialTheme.typography.labelMedium, color = statusColor(prediction))
             IconButton(
@@ -234,7 +244,7 @@ private fun ZooRow(
             }
         }
         Text(
-            "zoo · $family · display only" + (prediction?.medianBg?.getOrNull(5)?.let { " · 30 min ${it.toInt()} mg/dL" } ?: ""),
+            "zoo · $family · no dosing" + (prediction?.medianBg?.getOrNull(5)?.let { " · 30 min ${it.toInt()} mg/dL" } ?: ""),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = 36.dp),

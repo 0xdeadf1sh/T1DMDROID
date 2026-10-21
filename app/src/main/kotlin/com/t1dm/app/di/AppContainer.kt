@@ -865,17 +865,32 @@ class AppContainer(context: Context) {
         builder.rawDoseSlots(g, n).let { (ins, carb) -> RawDoses(ins, carb) }
     }
 
-    /** SPEC/zoo.md §5: display only; the transformer's gates and selection never see these. */
+    /** SPEC/zoo.md §5: a selected zoo model drives display and alarms, never a dose. */
     suspend fun runZoo(nowMs: Long) {
         val steps = zooController.historySteps().takeIf { it > 0 } ?: return
         val series = RoomBgHistoryProvider(repository, registry).fitBgSeries(steps, 1) ?: return
         val input = ZooInput(nowMs, series.anchorTsMs, series.sourceId, series.mgdl, zooDoses(channelBuilder))
         zooController.runLive(input, nowMs, InferenceControllerDefaults.FRESHNESS_MS)
+        publishZoo()
+    }
+
+    private suspend fun publishZoo() {
+        inferenceController.onZoo(
+            zooController.models.value.mapTo(HashSet()) { it.id },
+            zooController.predictions.value,
+        )
     }
 
     suspend fun refreshZoo(nowMs: Long = System.currentTimeMillis()) {
         runCatching { zooController.refresh() }
+        runCatching { publishZoo() }
         runCatching { runZoo(nowMs) }
+    }
+
+    /** A zoo selection takes effect at once; its forecast arrives with the next zoo run. */
+    suspend fun selectModel(id: String) {
+        inferenceController.selectModel(id)
+        if (zooController.descriptorOf(id) != null) runCatching { runZoo(System.currentTimeMillis()) }
     }
 
     /** Serialised with the FGS cycles by the controller's own mutex; never bypasses a §3.6 gate. */

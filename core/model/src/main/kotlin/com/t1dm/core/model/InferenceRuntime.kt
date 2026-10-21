@@ -161,6 +161,8 @@ data class InferenceState(
     /** Distinguishes no-time-section empty state from decode-failed; defaults true until set. */
     val selectedHasTimeSection: Boolean = true,
     val note: String? = null,
+    /** A transformer's or a SPEC/zoo.md model's id; null when nothing is selected. */
+    val selectedModelId: String? = null,
 ) {
     val selectedPrediction: ModelPrediction? get() = predictions.firstOrNull { it.selected }
 

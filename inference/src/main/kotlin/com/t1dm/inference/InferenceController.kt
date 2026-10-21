@@ -114,6 +114,13 @@ class InferenceController(
     /** Written under [cycleMutex] on inference; read unlocked in [runFromHistory]'s preamble. */
     @Volatile
     private var selectedId: String? = null
+
+    /** SPEC/zoo.md models: selectable for display and alarms, never for dosing. */
+    private var zooIds: Set<String> = emptySet()
+    private var zooKnown = false
+    private var zooSelected: ModelPrediction? = null
+
+    private fun zooSelectedNow(): ModelPrediction? = zooSelected?.takeIf { it.modelId == selectedId }
     private val latencySamples = HashMap<String, ArrayDeque<Double>>()
     /** Durable via [telemetryStore]; loaded once, then in-memory. */
     private val cumulative = HashMap<String, CumulativeTelemetry>()
@@ -176,7 +183,8 @@ class InferenceController(
 
         val cap = runCatching { maxRunningProvider() }.getOrNull()?.coerceAtLeast(1) ?: DEFAULT_MAX_RUNNING
         val runningIds = installed.keys.take(cap).toList()
-        selectedId = selectedId?.takeIf { it in runningIds } ?: runningIds.firstOrNull()
+        // Until the zoo has reported, a zoo selection restored from the store is kept, not dropped.
+        selectedId = selectedId?.takeIf { it in runningIds || it in zooIds || !zooKnown } ?: runningIds.firstOrNull()
 
         for (id in runningIds) loaded[id] = loadModel(id)
 
@@ -205,7 +213,7 @@ class InferenceController(
             note = note,
             // A restored fan carries the flag of the run that stored it.
             predictions = if (noModel) {
-                emptyList()
+                listOfNotNull(zooSelectedNow())
             } else {
                 _state.value.predictions
                     .filterNot { it.modelId in replaced }
@@ -215,6 +223,7 @@ class InferenceController(
             circadianTime = if (noModel) null else _state.value.circadianTime,
             circadianAnchorMs = if (noModel) null else _state.value.circadianAnchorMs,
             circadianLowContext = if (noModel) false else _state.value.circadianLowContext,
+            selectedModelId = selectedId,
         )
         Timber.tag(TAG).i(
             "refreshModels models=%s active=%s",
@@ -780,11 +789,38 @@ class InferenceController(
 
     fun descriptorOf(modelId: String): ModelDescriptor? = loaded[modelId]?.bundle?.descriptor
 
-    /** No-op if [id] isn't running; selection governs only DISPLAYED forecast/belief/authority. */
+    /** The zoo's models and forecasts; a selected one joins [InferenceState.predictions]. */
+    suspend fun onZoo(ids: Set<String>, preds: List<ModelPrediction>) {
+        val persist = cycleMutex.withLock {
+            zooIds = ids
+            zooKnown = true
+            if (selectedId != null && selectedId !in loaded.keys && selectedId !in ids) {
+                selectedId = loaded.keys.firstOrNull()
+            }
+            zooSelected = preds.firstOrNull { it.modelId == selectedId }?.copy(selected = true)
+            val sel = zooSelectedNow()
+            _state.value = _state.value.copy(
+                running = runningModels(),
+                predictions = listOfNotNull(sel) + _state.value.predictions
+                    .filterNot { it.modelId in ids }
+                    .map { it.copy(selected = it.modelId == selectedId) }
+                    .sortedByDescending { it.selected },
+                selectedModelId = selectedId,
+                selectedHasTimeSection = loaded[selectedId]?.bundle?.descriptor?.time != null,
+            )
+            sel
+        }
+        persist?.let { p ->
+            runCatching { predictionStore.persist(p.cycleTsMs, listOf(p)) }
+                .onFailure { Timber.tag(TAG).w(it, "zoo prediction persist failed") }
+        }
+    }
+
+    /** No-op unless [id] runs or is a zoo model; governs displayed forecast, belief, authority. */
     suspend fun selectModel(id: String) {
         // Write/re-flag race refreshModelsLocked; release BEFORE refreshModels() (non-reentrant).
         cycleMutex.withLock {
-            if (id !in loaded.keys) return
+            if (id !in loaded.keys && id !in zooIds) return
             selectedId = id
             val hasTime = loaded[id]?.bundle?.descriptor?.time != null
             val sel = _state.value.predictions.firstOrNull { it.modelId == id }
@@ -802,6 +838,7 @@ class InferenceController(
                 },
                 circadianLowContext = hasTime && _state.value.circadianLowContext,
                 selectedHasTimeSection = hasTime,
+                selectedModelId = id,
             )
         }
         runCatching { selectionStore?.save(id) }.onFailure { Timber.tag(TAG).w(it, "selection persist failed") }
@@ -1017,6 +1054,7 @@ class InferenceController(
         }
 
         preds.sortByDescending { it.selected }
+        val published = listOfNotNull(zooSelectedNow()) + preds
 
         val durationMs = ((System.nanoTime() - t0) / 1_000_000.0).toLong()
         val selPred = preds.firstOrNull { it.selected }
@@ -1024,7 +1062,8 @@ class InferenceController(
         val selHasTime = loaded[selectedId]?.bundle?.descriptor?.time != null
         _state.value = _state.value.copy(
             running = runningModels(),
-            predictions = preds,
+            predictions = published,
+            selectedModelId = selectedId,
             latencies = latencySnapshot(),
             metas = metasSnapshot(),
             telemetry = telemetrySnapshot(),
