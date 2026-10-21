@@ -43,7 +43,7 @@ class RefusedModelNoteTest {
         controller.refreshModels()
 
         assertEquals(
-            "no model — adb push a .pte and its descriptor.json",
+            "no model — import a model zip",
             controller.state.value.note,
         )
     }

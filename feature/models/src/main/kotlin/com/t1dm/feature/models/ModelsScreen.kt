@@ -50,6 +50,8 @@ fun ModelsScreen(
     onOpen: (String) -> Unit,
     onDelete: (String) -> Unit = {},
     onOpenAdapters: (String) -> Unit = {},
+    importStatus: String? = null,
+    onImport: () -> Unit = {},
 ) {
     // Hoisted to the screen: a row recycling out of the viewport would drop a per-row confirmation.
     var confirmDelete by remember { mutableStateOf<String?>(null) }
@@ -69,6 +71,8 @@ fun ModelsScreen(
                 state.note?.let {
                     Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
+                OutlinedButton(onClick = { haptics.perform(HapticEvent.Tap); onImport() }) { Text("Import zip") }
+                importStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                 HorizontalDivider(Modifier.padding(top = 8.dp))
             }
 

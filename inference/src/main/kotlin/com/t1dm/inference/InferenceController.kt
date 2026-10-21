@@ -44,6 +44,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
+import java.io.InputStream
 import java.security.MessageDigest
 import kotlin.math.max
 
@@ -193,7 +194,7 @@ class InferenceController(
                 "refused ${first.file}: ${first.reason}" + if (rest > 0) " (+$rest more)" else ""
             }
             discovered.isEmpty() ->
-                "no model — adb push a .pte and its descriptor.json"
+                "no model — import a model zip"
             else -> listOfNotNull(noPteNote(), truncated).joinToString(" · ").ifEmpty { null }
         }
         // runFromHistory returns at descAny == null before its own clear; nothing else drops these.
@@ -817,6 +818,12 @@ class InferenceController(
         refreshModelsLocked() // already under cycleMutex; refreshModels would self-deadlock
         _state.value = _state.value.copy(predictions = _state.value.predictions.filterNot { it.modelId == id })
         removed
+    }
+
+    suspend fun importModel(input: InputStream): ModelImport = cycleMutex.withLock {
+        val result = withContext(dispatchers.io) { store.importZip(input) }
+        if (result is ModelImport.Imported) refreshModelsLocked()
+        result
     }
 
     /** Banner while BLOCKED, else null. Same [cycleNowMs] reuses verdict: one read, one latch. */

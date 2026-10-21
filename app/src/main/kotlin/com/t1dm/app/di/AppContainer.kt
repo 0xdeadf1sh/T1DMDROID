@@ -182,6 +182,8 @@ import com.t1dm.inference.ModelChannels
 import com.t1dm.inference.FutureOverrideSource
 import com.t1dm.inference.InferenceController
 import com.t1dm.inference.InferenceControllerDefaults
+import com.t1dm.inference.ModelImport
+import android.net.Uri
 import com.t1dm.inference.ProbeDose
 import com.t1dm.inference.ProbeInsulinPort
 import com.t1dm.inference.buildInferenceController
@@ -1750,6 +1752,18 @@ class AppContainer(context: Context) {
         val note = runCatching { labController.import(modelId) }.getOrElse { it.message ?: "Import failed" }
         val adapters = runCatching { labController.adaptersOf(modelId) }.getOrElse { emptyList() }
         _loraPanel.update { it.copy(lastReport = note, adapters = adapters) }
+    }
+
+    suspend fun importModel(uri: Uri): String {
+        val result = runCatching {
+            withContext(dispatchers.io) {
+                appContext.contentResolver.openInputStream(uri)?.use { inferenceController.importModel(it) }
+            } ?: ModelImport.Refused("could not open file")
+        }.getOrElse { ModelImport.Refused(it.message ?: "import failed") }
+        return when (result) {
+            is ModelImport.Imported -> { reevaluateInferenceNow(); "Imported ${result.id}" }
+            is ModelImport.Refused -> result.reason
+        }
     }
 
     suspend fun removeModel(modelId: String) {

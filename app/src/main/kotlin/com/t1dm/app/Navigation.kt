@@ -1225,8 +1225,14 @@ private fun T1dmNavHost(
         composable("models") {
             val inference by container.inferenceState.collectAsState(InferenceState())
             val scope = rememberCoroutineScope()
+            var importStatus by remember { mutableStateOf<String?>(null) }
+            val importLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.OpenDocument(),
+            ) { uri -> uri?.let { scope.launch { importStatus = container.importModel(it) } } }
             ModelsScreen(
                 state = inference,
+                importStatus = importStatus,
+                onImport = { importLauncher.launch(arrayOf("application/zip", "application/octet-stream")) },
                 onSelect = { id ->
                     scope.launch {
                         container.inferenceController.selectModel(id)

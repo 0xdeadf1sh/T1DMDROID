@@ -8,6 +8,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import timber.log.Timber
 import java.io.File
+import java.io.IOException
+import java.io.InputStream
+import java.util.zip.ZipInputStream
 
 data class ModelBundle(
     val id: String,
@@ -39,7 +42,7 @@ class ModelStore(
             f.isFile && (f.name == "descriptor.json" || f.name.endsWith(".descriptor.json"))
         }?.sortedBy { it.name } ?: emptyList()
         if (descriptors.isEmpty()) {
-            Timber.tag(TAG).i("no descriptors in %s (adb push a descriptor.json + .pte)", dir.absolutePath)
+            Timber.tag(TAG).i("no descriptors in %s (import a model zip)", dir.absolutePath)
             return emptyList()
         }
         return descriptors.mapNotNull { bundleOf(it, dir) }
@@ -118,6 +121,76 @@ class ModelStore(
     private fun resolveId(descriptorFile: File, obj: JSONObject): String =
         obj.optString("id").ifBlank { descriptorFile.name.removeSuffix(".descriptor.json").ifBlank { "model" } }
 
+    /** All-or-nothing; the descriptor moves last so [discover] never sees it artifact-less. */
+    fun importZip(input: InputStream): ModelImport {
+        val dir = ensureDir()
+        // A dot-dir: discover lists top-level files only, so a half-extracted zip is never seen.
+        val staging = File(dir, ".import-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            extract(input, staging)?.let { return ModelImport.Refused(it) }
+            val files = staging.listFiles()?.filter { it.isFile }.orEmpty()
+            val descriptors = files.filter { it.name == "descriptor.json" || it.name.endsWith(".descriptor.json") }
+            val descriptorFile = descriptors.singleOrNull()
+                ?: return ModelImport.Refused("${descriptors.size} descriptors in zip (need 1)")
+            val json = descriptorFile.readText()
+            val obj = runCatching { JSONObject(json) }.getOrElse { return ModelImport.Refused("descriptor not valid JSON") }
+            val parsed = native.parseDescriptorOrRefusal(json)
+            val desc = parsed.descriptor ?: return ModelImport.Refused(firstClause(parsed.reason))
+            val engine = obj.optString("engine", "executorch_xnnpack_fp32")
+            if (!isXnnpack(engine)) return ModelImport.Refused("engine $engine not supported")
+            val id = resolveId(descriptorFile, obj)
+            val artifact = obj.optString("artifact").ifBlank { "$id.xnnpack.pte" }
+            if (!File(staging, artifact).isFile) return ModelImport.Refused("$artifact missing from zip")
+            val headName = desc.head?.file
+            if (headName != null && !File(staging, headName).isFile) {
+                return ModelImport.Refused("$headName missing from zip")
+            }
+            if (discover().any { it.id == id }) return ModelImport.Refused("$id already installed")
+            val wanted = listOfNotNull(artifact, headName, descriptorFile.name)
+            wanted.firstOrNull { File(dir, it).exists() }?.let { return ModelImport.Refused("$it already present") }
+            for (name in wanted) {
+                if (!File(staging, name).renameTo(File(dir, name))) {
+                    wanted.forEach { File(dir, it).delete() }
+                    return ModelImport.Refused("could not move $name")
+                }
+            }
+            return ModelImport.Imported(id)
+        } catch (e: IOException) {
+            Timber.tag(TAG).w(e, "model import failed")
+            return ModelImport.Refused(e.message ?: "unreadable zip")
+        } finally {
+            staging.deleteRecursively()
+        }
+    }
+
+    /** Null on success, else the refusal. Entries flatten to base names, so none escapes [into]. */
+    private fun extract(input: InputStream, into: File): String? {
+        var total = 0L
+        var count = 0
+        ZipInputStream(input.buffered()).use { zip ->
+            while (true) {
+                val entry = zip.nextEntry ?: break
+                if (entry.isDirectory) continue
+                val name = entry.name.substringAfterLast('/').substringAfterLast('\\')
+                if (name.isEmpty() || name.startsWith(".")) continue
+                if (++count > MAX_ZIP_ENTRIES) return "over $MAX_ZIP_ENTRIES files in zip"
+                val out = File(into, name)
+                if (out.exists()) return "$name twice in zip"
+                out.outputStream().use { sink ->
+                    val buf = ByteArray(1 shl 16)
+                    while (true) {
+                        val n = zip.read(buf)
+                        if (n < 0) break
+                        total += n
+                        if (total > MAX_ZIP_BYTES) return "zip over ${MAX_ZIP_BYTES shr 20} MB unpacked"
+                        sink.write(buf, 0, n)
+                    }
+                }
+            }
+        }
+        return if (count == 0) "empty zip" else null
+    }
+
     /** Every pair sharing modelId, head file included. */
     fun delete(modelId: String): Boolean {
         val dir = ensureDir()
@@ -191,7 +264,14 @@ class ModelStore(
 
     private companion object {
         const val TAG = "ModelStore"
+        const val MAX_ZIP_ENTRIES = 16
+        const val MAX_ZIP_BYTES = 1L shl 30
     }
+}
+
+sealed interface ModelImport {
+    data class Imported(val id: String) : ModelImport
+    data class Refused(val reason: String) : ModelImport
 }
 
 private fun JSONObject.optLongOrNull(key: String): Long? = if (has(key) && !isNull(key)) optLong(key) else null
