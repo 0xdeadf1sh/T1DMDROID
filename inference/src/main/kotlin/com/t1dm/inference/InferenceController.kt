@@ -55,8 +55,7 @@ class InferenceController(
     private val store: ModelStore,
     private val history: BgHistoryProvider,
     private val predictionStore: PredictionStore,
-    /** Last MEASURED older than this ⇒ forecast STALE (§3.6-D). */
-    private val freshnessThresholdMs: Long = 15 * 60_000L,
+    private val freshnessThresholdMs: Long = InferenceControllerDefaults.FRESHNESS_MS,
     /** Read FRESH each discovery; coerced to ≥1. */
     private val maxRunningProvider: suspend () -> Int = { DEFAULT_MAX_RUNNING },
     /** Reconstructed carb/insulin context channels (SPEC §3.3); null ⇒ `normalize(0)` baseline. */

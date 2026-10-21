@@ -3,6 +3,8 @@ package com.t1dm.data.curve
 import com.t1dm.core.model.BasalSchedule
 import com.t1dm.core.model.CurveEvent
 import com.t1dm.core.model.CurveKind
+import com.t1dm.core.model.PointDose
+import com.t1dm.core.model.PointKind
 import com.t1dm.core.model.InputLayout
 
 /** Events keyed on start time; callers pad fromMs by [ChannelBuilder.PAD_MS] to reach each tail. */
@@ -138,6 +140,18 @@ class ChannelBuilder(
         val endMs = gridStartMs + nSteps * CurveEngine.STEP_MS
         val basal = store.basalInjectionEvents(gridStartMs - CurveEngine.STEP_MS, endMs)
         return engine.eventChannels(doses + basal, gridStartMs, nSteps)
+    }
+
+    /** SPEC/zoo.md §3: per-slot U and g, schedule basal included, each at its rounded onset. */
+    suspend fun rawDoseSlots(gridStartMs: Long, nSteps: Int): Pair<DoubleArray, DoubleArray> {
+        val endMs = gridStartMs + nSteps * CurveEngine.STEP_MS
+        val from = gridStartMs - CurveEngine.STEP_MS
+        val insulin = insulinEventsIn(from, endMs)
+        val basal = insulin.basal.map {
+            if (it.point != null) it else it.copy(point = PointDose(PointKind.BASAL, it.total, 0.0, 0.0, 0.0))
+        }
+        val ev = engine.eventChannels(store.carbEvents(from, endMs) + insulin.bolus + basal, gridStartMs, nSteps)
+        return DoubleArray(nSteps) { ev[2][it] + ev[5][it] } to ev[0]
     }
 
     /** contextChannels plus the basal sub-series, one gather; byte-for-byte the same arrays. */

@@ -37,6 +37,7 @@ import com.t1dm.core.design.hapticClickable
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.InferenceState
+import com.t1dm.core.model.ModelComparison
 import com.t1dm.core.model.ModelMeta
 import com.t1dm.core.model.ModelPrediction
 import com.t1dm.core.model.RunningModel
@@ -52,6 +53,12 @@ fun ModelsScreen(
     onOpenAdapters: (String) -> Unit = {},
     importStatus: String? = null,
     onImport: () -> Unit = {},
+    /** SPEC/zoo.md models: id to family; display and backtest only, never selectable. */
+    zooModels: List<Pair<String, String>> = emptyList(),
+    zooPredictions: List<ModelPrediction> = emptyList(),
+    comparison: ModelComparison? = null,
+    onCompare: (days: Int?) -> Unit = {},
+    onCancelCompare: () -> Unit = {},
 ) {
     // Hoisted to the screen: a row recycling out of the viewport would drop a per-row confirmation.
     var confirmDelete by remember { mutableStateOf<String?>(null) }
@@ -76,7 +83,20 @@ fun ModelsScreen(
                 HorizontalDivider(Modifier.padding(top = 8.dp))
             }
 
-            if (state.running.isEmpty()) {
+            item { CompareSection(comparison, onCompare, onCancelCompare) }
+
+            items(zooModels, key = { "zoo:" + it.first }) { (id, family) ->
+                ZooRow(
+                    id = id,
+                    family = family,
+                    prediction = zooPredictions.firstOrNull { it.modelId == id },
+                    onOpen = onOpen,
+                    onRequestDelete = { confirmDelete = it },
+                )
+                HorizontalDivider()
+            }
+
+            if (state.running.isEmpty() && zooModels.isEmpty()) {
                 item {
                     Text(
                         "No models loaded",
@@ -182,6 +202,114 @@ private fun ModelRow(
         ) { Text("Adapters") }
     }
 }
+
+@Composable
+private fun ZooRow(
+    id: String,
+    family: String,
+    prediction: ModelPrediction?,
+    onOpen: (String) -> Unit,
+    onRequestDelete: (String) -> Unit,
+) {
+    val haptics = rememberT1dmHaptics()
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .hapticClickable(HapticEvent.NavSwitch) { onOpen(id) }
+            .padding(vertical = 8.dp),
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                id,
+                style = MaterialTheme.typography.bodyLarge,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.weight(1f).padding(start = 36.dp),
+            )
+            Text(statusLabel(prediction), style = MaterialTheme.typography.labelMedium, color = statusColor(prediction))
+            IconButton(
+                onClick = { haptics.perform(HapticEvent.Tap); onRequestDelete(id) },
+                modifier = Modifier.size(40.dp),
+            ) {
+                Text("✕", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
+            }
+        }
+        Text(
+            "zoo · $family · display only" + (prediction?.medianBg?.getOrNull(5)?.let { " · 30 min ${it.toInt()} mg/dL" } ?: ""),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 36.dp),
+        )
+    }
+}
+
+@Composable
+private fun CompareSection(comparison: ModelComparison?, onCompare: (Int?) -> Unit, onCancel: () -> Unit) {
+    val haptics = rememberT1dmHaptics()
+    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Compare", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            if (comparison is ModelComparison.Running) {
+                TextButton(onClick = { haptics.perform(HapticEvent.Reject); onCancel() }) { Text("Stop") }
+            } else {
+                for (d in COMPARE_DAYS) {
+                    OutlinedButton(onClick = { haptics.perform(HapticEvent.Tap); onCompare(d) }) { Text("$d d") }
+                }
+            }
+        }
+        when (comparison) {
+            null -> {}
+            is ModelComparison.Running -> Text(
+                "${comparison.model}/${comparison.models} · ${comparison.modelId}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            is ModelComparison.Refused -> Text(
+                comparison.refusal.name.lowercase().replace('_', ' '),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+            is ModelComparison.Done -> CompareTable(comparison)
+        }
+    }
+}
+
+@Composable
+private fun CompareTable(done: ModelComparison.Done) {
+    Text(
+        "${done.nShared} shared windows · RMSE mg/dL, Clarke A %",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    fun at(r: ModelComparison.Row, min: Int) = r.metrics.suite.horizons.firstOrNull { it.horizonMin == min }
+    val rows = done.rows.sortedBy { r -> at(r, 30)?.medianLine?.rmsePoint?.takeIf { it.isFinite() } ?: Double.MAX_VALUE }
+    val header = listOf("model") + COMPARE_HORIZONS.map { "$it" } + listOf("A 30")
+    CompareLine(header, bold = true)
+    for (r in rows) {
+        val cells = COMPARE_HORIZONS.map { h -> at(r, h)?.medianLine?.rmsePoint.fmt1() }
+        CompareLine(listOf(r.modelId + if (r.zoo) "" else " *") + cells + at(r, 30)?.medianLine?.clarkeA.fmt1(), bold = false)
+    }
+    Text("* transformer", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@Composable
+private fun CompareLine(cells: List<String>, bold: Boolean) {
+    Row(Modifier.fillMaxWidth()) {
+        cells.forEachIndexed { i, c ->
+            Text(
+                c,
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
+                maxLines = 1,
+                modifier = if (i == 0) Modifier.weight(2.4f) else Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+private fun Double?.fmt1(): String = if (this == null || !isFinite()) "—" else "%.1f".format(this)
+
+private val COMPARE_DAYS = listOf(7, 30)
+private val COMPARE_HORIZONS = listOf(30, 60, 120)
 
 internal fun metaLine(m: ModelMeta): String {
     val parts = buildList {

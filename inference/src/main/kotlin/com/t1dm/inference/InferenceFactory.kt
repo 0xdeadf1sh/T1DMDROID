@@ -57,6 +57,9 @@ fun buildInferenceController(
 object InferenceControllerDefaults {
     const val WARMUP_HOURS = 24.0
 
+    /** Last MEASURED older than this ⇒ forecast STALE (§3.6-D). */
+    const val FRESHNESS_MS = 15 * 60_000L
+
     /** Kept well under each descriptor's own MIN_CONTEXT, so the setting never binds first. */
     const val MIN_WARMUP_HOURS = 8
 

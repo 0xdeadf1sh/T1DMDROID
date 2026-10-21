@@ -1229,10 +1229,18 @@ private fun T1dmNavHost(
             val importLauncher = rememberLauncherForActivityResult(
                 ActivityResultContracts.OpenDocument(),
             ) { uri -> uri?.let { scope.launch { importStatus = container.importModel(it) } } }
+            val zooModels by container.zooController.models.collectAsState()
+            val zooPredictions by container.zooController.predictions.collectAsState()
+            val comparison by container.comparison.collectAsState()
             ModelsScreen(
                 state = inference,
                 importStatus = importStatus,
                 onImport = { importLauncher.launch(arrayOf("application/zip", "application/octet-stream")) },
+                zooModels = zooModels.map { it.id to it.model },
+                zooPredictions = zooPredictions,
+                comparison = comparison,
+                onCompare = { days -> container.startComparison(days) },
+                onCancelCompare = { container.cancelComparison() },
                 onSelect = { id ->
                     scope.launch {
                         container.inferenceController.selectModel(id)

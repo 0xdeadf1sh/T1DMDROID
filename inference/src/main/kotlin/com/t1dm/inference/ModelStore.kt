@@ -67,6 +67,7 @@ class ModelStore(
             Timber.tag(TAG).w(it, "descriptor %s is not valid JSON", descriptorFile.name)
             return refuse(descriptorFile, "not valid JSON")
         }
+        if (ZooDescriptor.claims(obj)) return null
         val id = resolveId(descriptorFile, obj)
         // No projection step: a second transcription drops keys until a bad decode surfaces.
         val parsed = native.parseDescriptorOrRefusal(json)
@@ -134,18 +135,29 @@ class ModelStore(
                 ?: return ModelImport.Refused("${descriptors.size} descriptors in zip (need 1)")
             val json = descriptorFile.readText()
             val obj = runCatching { JSONObject(json) }.getOrElse { return ModelImport.Refused("descriptor not valid JSON") }
-            val parsed = native.parseDescriptorOrRefusal(json)
-            val desc = parsed.descriptor ?: return ModelImport.Refused(firstClause(parsed.reason))
-            val engine = obj.optString("engine", "executorch_xnnpack_fp32")
-            if (!isXnnpack(engine)) return ModelImport.Refused("engine $engine not supported")
-            val id = resolveId(descriptorFile, obj)
-            val artifact = obj.optString("artifact").ifBlank { "$id.xnnpack.pte" }
+            val id: String
+            val artifact: String
+            val headName: String?
+            if (ZooDescriptor.claims(obj)) {
+                val zoo = runCatching { ZooDescriptor.parse(obj) }
+                    .getOrElse { return ModelImport.Refused(it.message ?: "zoo descriptor refused") }
+                id = zoo.id
+                artifact = zoo.artifact
+                headName = null
+            } else {
+                val parsed = native.parseDescriptorOrRefusal(json)
+                val desc = parsed.descriptor ?: return ModelImport.Refused(firstClause(parsed.reason))
+                val engine = obj.optString("engine", "executorch_xnnpack_fp32")
+                if (!isXnnpack(engine)) return ModelImport.Refused("engine $engine not supported")
+                id = resolveId(descriptorFile, obj)
+                artifact = obj.optString("artifact").ifBlank { "$id.xnnpack.pte" }
+                headName = desc.head?.file
+            }
             if (!File(staging, artifact).isFile) return ModelImport.Refused("$artifact missing from zip")
-            val headName = desc.head?.file
             if (headName != null && !File(staging, headName).isFile) {
                 return ModelImport.Refused("$headName missing from zip")
             }
-            if (discover().any { it.id == id }) return ModelImport.Refused("$id already installed")
+            if (id in installedIds()) return ModelImport.Refused("$id already installed")
             val wanted = listOfNotNull(artifact, headName, descriptorFile.name)
             wanted.firstOrNull { File(dir, it).exists() }?.let { return ModelImport.Refused("$it already present") }
             for (name in wanted) {
@@ -190,6 +202,13 @@ class ModelStore(
         }
         return if (count == 0) "empty zip" else null
     }
+
+    /** Ids of every descriptor on disk, either kind, loadable or not. */
+    private fun installedIds(): Set<String> =
+        ensureDir().listFiles { f -> f.isFile && (f.name == "descriptor.json" || f.name.endsWith(".descriptor.json")) }
+            .orEmpty()
+            .mapNotNull { f -> runCatching { resolveId(f, JSONObject(f.readText())) }.getOrNull() }
+            .toSet()
 
     /** Every pair sharing modelId, head file included. */
     fun delete(modelId: String): Boolean {

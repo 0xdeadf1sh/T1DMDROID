@@ -36,7 +36,7 @@ An Android testbed for biohackers and researchers who run and test machine-learn
 
 ## Your own model
 
-Export an ExecuTorch `.pte` for the XNNPACK backend and its descriptor, as [T1DMAI](https://github.com/0xdeadf1sh/T1DMAI) does. Zip the descriptor, the `.pte` and the head file the descriptor names, and pick the zip under **Models → Import zip**. A zip holds one model. Or push the files:
+Export an ExecuTorch `.pte` for the XNNPACK backend and its descriptor, as [T1DMAI](https://github.com/0xdeadf1sh/T1DMAI) does. Zip the descriptor, the `.pte` and the head file the descriptor names, and pick the zip under **Models → Import zip**. A zip holds one model. T1DMAI's zoo bundles (classical baselines, LSTM, PatchTST, Chronos-Bolt and others) import the same way; they forecast for display and backtest only, and **Models → Compare** ranks every loaded model on the same windows. Or push the files:
 
 ```sh
 adb push my.xnnpack.pte my.descriptor.json /sdcard/Android/data/com.t1dm.app.pub/files/models/

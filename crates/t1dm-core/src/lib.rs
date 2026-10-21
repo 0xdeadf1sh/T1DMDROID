@@ -30,6 +30,9 @@ pub use conformal::*;
 /// CG-EGA on dotXem's grid, not Kovatchev 2004's (SPEC/invariants.md §6.3).
 mod cg_ega;
 
+mod zoo;
+pub use zoo::*;
+
 /// CGM.md §4–§7.
 mod aidex_session;
 pub use aidex_session::*;

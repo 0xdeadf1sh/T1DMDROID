@@ -183,6 +183,17 @@ import com.t1dm.inference.FutureOverrideSource
 import com.t1dm.inference.InferenceController
 import com.t1dm.inference.InferenceControllerDefaults
 import com.t1dm.inference.ModelImport
+import com.t1dm.inference.RawDoseSource
+import com.t1dm.inference.RawDoses
+import com.t1dm.inference.ZooController
+import com.t1dm.inference.ZooDescriptor
+import com.t1dm.data.curve.DoseSnapshot
+import com.t1dm.data.db.BgInfillEntity
+import com.t1dm.core.model.ModelPrediction
+import com.t1dm.core.model.BacktestStop
+import com.t1dm.core.model.ModelComparison
+import com.t1dm.inference.ZooInput
+import com.t1dm.inference.backend.ExecuTorchZooRunner
 import android.net.Uri
 import com.t1dm.inference.ProbeDose
 import com.t1dm.inference.ProbeInsulinPort
@@ -846,6 +857,27 @@ class AppContainer(context: Context) {
 
     val inferenceState: StateFlow<InferenceState> get() = inferenceController.state
 
+    val zooController: ZooController by lazy {
+        ZooController(nativeCore, dispatchers, modelsDir) { d, pte -> ExecuTorchZooRunner(d, pte) }
+    }
+
+    private fun zooDoses(builder: ChannelBuilder) = RawDoseSource { g, n ->
+        builder.rawDoseSlots(g, n).let { (ins, carb) -> RawDoses(ins, carb) }
+    }
+
+    /** SPEC/zoo.md §5: display only; the transformer's gates and selection never see these. */
+    suspend fun runZoo(nowMs: Long) {
+        val steps = zooController.historySteps().takeIf { it > 0 } ?: return
+        val series = RoomBgHistoryProvider(repository, registry).fitBgSeries(steps, 1) ?: return
+        val input = ZooInput(nowMs, series.anchorTsMs, series.sourceId, series.mgdl, zooDoses(channelBuilder))
+        zooController.runLive(input, nowMs, InferenceControllerDefaults.FRESHNESS_MS)
+    }
+
+    suspend fun refreshZoo(nowMs: Long = System.currentTimeMillis()) {
+        runCatching { zooController.refresh() }
+        runCatching { runZoo(nowMs) }
+    }
+
     /** Serialised with the FGS cycles by the controller's own mutex; never bypasses a §3.6 gate. */
     fun reevaluateInferenceNow() {
         appScope.launch {
@@ -1010,6 +1042,65 @@ class AppContainer(context: Context) {
         }
     }
 
+    private val _comparison = MutableStateFlow<ModelComparison?>(null)
+
+    /** This process only. */
+    val comparison: StateFlow<ModelComparison?> = _comparison.asStateFlow()
+
+    /** Shares the one-at-a-time slot with [startBacktest]. */
+    fun startComparison(days: Int?) {
+        if (!backtestRunning.compareAndSet(false, true)) {
+            _comparison.value = ModelComparison.Refused(days, BacktestRefusal.BUSY)
+            return
+        }
+        backtestJob = appScope.launch(dispatchers.default) {
+            try {
+                _comparison.value = runComparison(days)
+            } catch (e: CancellationException) {
+                _comparison.value = null
+                throw e
+            } catch (e: Exception) {
+                Timber.w(e, "comparison failed")
+                _comparison.value = ModelComparison.Refused(days, BacktestRefusal.FAILED)
+            } finally {
+                backtestRunning.set(false)
+            }
+        }
+    }
+
+    fun cancelComparison() {
+        if (_comparison.value is ModelComparison.Running) backtestJob?.cancel()
+    }
+
+    private suspend fun runComparison(days: Int?): ModelComparison {
+        val zoo = zooController.models.value
+        val transformers = inferenceController.state.value.running.map { it.modelId }
+            .filter { inferenceController.descriptorOf(it) != null }
+        val ids = transformers + zoo.map { it.id }
+        if (ids.isEmpty()) return ModelComparison.Refused(days, BacktestRefusal.NOT_LOADED)
+        val ctx = maxOf(
+            zoo.maxOfOrNull { it.ctxSteps + it.interpMaxSteps } ?: 0,
+            transformers.mapNotNull { inferenceController.descriptorOf(it) }
+                .maxOfOrNull { it.maxContextPatches * it.patchSize } ?: 0,
+        )
+        val (plan, refused) = backtestPlan(days, ctx, ACCURACY_HORIZONS_MIN.max() * 60_000L)
+        if (plan == null) return ModelComparison.Refused(days, refused ?: BacktestRefusal.FAILED)
+        val raws = LinkedHashMap<String, BacktestRaw>()
+        ids.forEachIndexed { i, id ->
+            _comparison.value = ModelComparison.Running(days, id, i + 1, ids.size)
+            rawFor(id, plan) { _, _ -> }.first?.let { raws[id] = it }
+        }
+        fun key(p: ModelPrediction) = p.sourceId to p.cycleTsMs
+        val shared = raws.values.map { r -> r.forecasts.filter { it.eligible }.mapTo(HashSet(), ::key) }
+            .reduceOrNull { a, b -> a.apply { retainAll(b) } }.orEmpty()
+        val zooIds = zoo.mapTo(HashSet()) { it.id }
+        val rows = raws.map { (id, r) ->
+            val kept = BacktestRaw(r.forecasts.filter { key(it) in shared }, r.adapterAttached, r.stopped)
+            ModelComparison.Row(id, id in zooIds, backtestDone(days, plan, kept, System.nanoTime()).metrics)
+        }
+        return ModelComparison.Done(days, shared.size, rows)
+    }
+
     fun cancelBacktest(modelId: String) {
         if (_backtests.value[modelId] is ModelBacktest.Running) backtestJob?.cancel()
     }
@@ -1029,22 +1120,48 @@ class AppContainer(context: Context) {
 
     private class BacktestOrigin(val stream: BacktestStream, val tsMs: Long)
 
-    private suspend fun runBacktest(
-        modelId: String,
+    /** What every model of one run is scored against: the same origins, rows and dose snapshot. */
+    private class BacktestPlan(
+        val streams: List<BacktestStream>,
+        val origins: List<BacktestOrigin>,
+        val doses: DoseSnapshot,
+        val infills: List<BgInfillEntity>,
+        val since: Long,
+        val now: Long,
+    ) {
+        private val infillCreatedAt = infills.associate { it.ts to it.createdAtMs }
+
+        /** On the phone when the anchor arrived; a promoted reconstruction counts from its slot. */
+        fun known(r: CgmReading, asOfMs: Long): Boolean =
+            if (r.provenance == ReadingProvenance.RECONSTRUCTED) {
+                (infillCreatedAt[r.tsMs] ?: Long.MAX_VALUE) <= asOfMs
+            } else {
+                r.rxWallMs <= asOfMs
+            }
+
+        fun asOf(o: BacktestOrigin): Long =
+            maxOf(o.tsMs, o.stream.newestFirst[o.stream.indexOf.getValue(o.tsMs)].rxWallMs)
+    }
+
+    /** The forecasts of one model over a plan, before any scoring. */
+    private class BacktestRaw(
+        val forecasts: List<ModelPrediction>,
+        val adapterAttached: Boolean,
+        val stopped: BacktestStop?,
+    )
+
+    private suspend fun backtestPlan(
         days: Int?,
-        onProgress: (done: Int, total: Int) -> Unit,
-    ): ModelBacktest {
-        val t0 = System.nanoTime()
+        contextSteps: Int,
+        horizonMs: Long,
+    ): Pair<BacktestPlan?, BacktestRefusal?> {
         val now = System.currentTimeMillis()
-        val desc = inferenceController.descriptorOf(modelId)
-            ?: return ModelBacktest.Refused(days, BacktestRefusal.NOT_LOADED)
         val sourceIds = repository.allSourceIds()
-        if (sourceIds.isEmpty()) return ModelBacktest.Refused(days, BacktestRefusal.NO_SENSOR)
+        if (sourceIds.isEmpty()) return null to BacktestRefusal.NO_SENSOR
         // Fills live in the authoritative sensor's stream only, as the live cycle reads them.
         val authoritative = repository.authoritativeSourceId()
-        val horizonMaxMin = ACCURACY_HORIZONS_MIN.max()
         val since = days?.let { now - it.toLong() * 86_400_000L } ?: 0L
-        val lastOrigin = now - horizonMaxMin * 60_000L
+        val lastOrigin = now - ACCURACY_HORIZONS_MIN.max() * 60_000L
         val inWindow = sourceIds.filter { (repository.readingExtent(it)?.newestMs ?: -1L) >= since }
         val streams = inWindow.map { id ->
             BacktestStream(id, repository.readingsInRange(id, 0L, now).asReversed(), withFills = id == authoritative)
@@ -1054,23 +1171,105 @@ class AppContainer(context: Context) {
                 .filter { it.bgMgdl != null && isRealMeasurement(it.provenance, it.flag) && it.tsMs in since..lastOrigin }
                 .map { BacktestOrigin(s, it.tsMs) }
         }
-        if (origins.isEmpty()) return ModelBacktest.Refused(days, BacktestRefusal.NO_HISTORY)
+        if (origins.isEmpty()) return null to BacktestRefusal.NO_HISTORY
+        val contextFrom = origins.minOf { it.tsMs } - contextSteps * CurveEngine.STEP_MS
+        val horizonEnd = origins.maxOf { it.tsMs } + horizonMs + CurveEngine.STEP_MS
+        val doses = doseStore.snapshot(contextFrom - ChannelBuilder.PAD_MS, horizonEnd)
+        return BacktestPlan(streams, origins, doses, repository.infillInRange(0L, now), since, now) to null
+    }
 
+    /** A zoo model's plan, or a transformer's; one model of either kind per run. */
+    private suspend fun planFor(modelId: String, days: Int?): Pair<BacktestPlan?, BacktestRefusal?> {
+        zooController.descriptorOf(modelId)?.let { z ->
+            return backtestPlan(days, z.ctxSteps + z.interpMaxSteps, z.zoneSteps * CurveEngine.STEP_MS)
+        }
+        val d = inferenceController.descriptorOf(modelId) ?: return null to BacktestRefusal.NOT_LOADED
+        return backtestPlan(days, d.maxContextPatches * d.patchSize, d.predictionHorizonHours * 3_600_000L)
+    }
+
+    private suspend fun rawFor(
+        modelId: String,
+        plan: BacktestPlan,
+        onProgress: (done: Int, total: Int) -> Unit,
+    ): Pair<BacktestRaw?, BacktestRefusal?> {
+        zooController.descriptorOf(modelId)?.let { return zooBacktestRaw(modelId, it, plan, onProgress) to null }
+        val d = inferenceController.descriptorOf(modelId) ?: return null to BacktestRefusal.NOT_LOADED
+        return transformerBacktestRaw(modelId, d, plan, onProgress)
+    }
+
+    private suspend fun runBacktest(
+        modelId: String,
+        days: Int?,
+        onProgress: (done: Int, total: Int) -> Unit,
+    ): ModelBacktest {
+        val t0 = System.nanoTime()
+        val (plan, refused) = planFor(modelId, days)
+        if (plan == null) return ModelBacktest.Refused(days, refused ?: BacktestRefusal.FAILED)
+        val (raw, why) = rawFor(modelId, plan, onProgress)
+        if (raw == null) return ModelBacktest.Refused(days, why ?: BacktestRefusal.FAILED)
+        return backtestDone(days, plan, raw, t0)
+    }
+
+    private suspend fun zooBacktestRaw(
+        modelId: String,
+        desc: ZooDescriptor,
+        plan: BacktestPlan,
+        onProgress: (done: Int, total: Int) -> Unit,
+    ): BacktestRaw {
+        val steps = desc.ctxSteps + desc.interpMaxSteps
+        val inputAt: suspend (BacktestOrigin) -> ZooInput? = { o ->
+            val newestFirst = o.stream.newestFirst
+            val asOf = plan.asOf(o)
+            val start = o.tsMs - (steps - 1) * CurveEngine.STEP_MS
+            val hist = DoubleArray(steps) { Double.NaN }
+            var j = o.stream.indexOf.getValue(o.tsMs)
+            while (j < newestFirst.size && newestFirst[j].tsMs >= start) {
+                val r = newestFirst[j]
+                val bg = r.bgMgdl
+                if (bg != null && isRealMeasurement(r.provenance, r.flag) && plan.known(r, asOf)) {
+                    hist[((r.tsMs - start) / CurveEngine.STEP_MS).toInt()] = bg.toDouble()
+                }
+                j++
+            }
+            val builder = ChannelBuilder(curveEngine, plan.doses.at(asOf))
+            ZooInput(o.tsMs, o.tsMs, o.stream.source.value, hist, zooDoses(builder))
+        }
+        return BacktestRaw(zooController.backtest(modelId, plan.origins, inputAt, onProgress), false, null)
+    }
+
+    private suspend fun backtestDone(days: Int?, plan: BacktestPlan, raw: BacktestRaw, t0: Long): ModelBacktest.Done {
+        // Newest first, as `forecastWindows` hands the suite its rows.
+        val newestFirst = raw.forecasts.sortedByDescending { it.cycleTsMs }
+        val sources = plan.streams.mapTo(HashSet()) { it.source }
+        val set = repository.forecastWindowsOf(newestFirst, sources, ACCURACY_HORIZONS_MIN.max(), plan.since, plan.now)
+        val bySource = raw.forecasts.groupingBy { it.sourceId }.eachCount()
+        return ModelBacktest.Done(
+            days = days,
+            metrics = metricsOf(set, ACCURACY_MIN_SAMPLES, includeCgEga = true),
+            nForecasts = raw.forecasts.size,
+            nOrigins = plan.origins.size,
+            forecastsBySource = plan.streams.mapNotNull { s ->
+                bySource[s.source.value]?.let { s.source.value to it }
+            }.toMap(),
+            adapterAttached = raw.adapterAttached,
+            stopped = raw.stopped,
+            elapsedMs = (System.nanoTime() - t0) / 1_000_000L,
+            finishedAtMs = System.currentTimeMillis(),
+            examples = pickBacktestExamples(set, BACKTEST_EXAMPLE_CONTEXT_MS, BACKTEST_EXAMPLES_PER_LIST),
+        )
+    }
+
+    private suspend fun transformerBacktestRaw(
+        modelId: String,
+        desc: ModelDescriptor,
+        plan: BacktestPlan,
+        onProgress: (done: Int, total: Int) -> Unit,
+    ): Pair<BacktestRaw?, BacktestRefusal?> {
         val maxSteps = desc.maxContextPatches * desc.patchSize
         val minSteps = desc.minContextPatches * desc.patchSize
-        val contextFrom = origins.minOf { it.tsMs } - maxSteps * CurveEngine.STEP_MS
-        val horizonEnd = origins.maxOf { it.tsMs } + desc.predictionHorizonHours * 3_600_000L + CurveEngine.STEP_MS
-        val doses = doseStore.snapshot(contextFrom - ChannelBuilder.PAD_MS, horizonEnd)
-        val infills = repository.infillInRange(0L, now)
-        val infillCreatedAt = infills.associate { it.ts to it.createdAtMs }
-
-        // What the phone held when the anchor arrived; a promoted reconstruction's rx is its slot.
-        fun known(r: CgmReading, asOfMs: Long): Boolean =
-            if (r.provenance == ReadingProvenance.RECONSTRUCTED) {
-                (infillCreatedAt[r.tsMs] ?: Long.MAX_VALUE) <= asOfMs
-            } else {
-                r.rxWallMs <= asOfMs
-            }
+        val infills = plan.infills
+        val doses = plan.doses
+        fun known(r: CgmReading, asOfMs: Long) = plan.known(r, asOfMs)
 
         val inputAt: suspend (BacktestOrigin, ModelDescriptor) -> InferenceController.BacktestInput? = { o, _ ->
             val newestFirst = o.stream.newestFirst
@@ -1101,25 +1300,9 @@ class AppContainer(context: Context) {
                 )
             }
         }
-        val run = inferenceController.backtest(modelId, origins, inputAt, onProgress)
-        run.refusal?.let { return ModelBacktest.Refused(days, it) }
-
-        // Newest first, as `forecastWindows` hands the suite its rows.
-        val newestFirst = run.forecasts.sortedByDescending { it.cycleTsMs }
-        val set = repository.forecastWindowsOf(newestFirst, streams.mapTo(HashSet()) { it.source }, horizonMaxMin, since, now)
-        val bySource = run.forecasts.groupingBy { it.sourceId }.eachCount()
-        return ModelBacktest.Done(
-            days = days,
-            metrics = metricsOf(set, ACCURACY_MIN_SAMPLES, includeCgEga = true),
-            nForecasts = run.forecasts.size,
-            nOrigins = origins.size,
-            forecastsBySource = streams.mapNotNull { s -> bySource[s.source.value]?.let { s.source.value to it } }.toMap(),
-            adapterAttached = run.adapterAttached,
-            stopped = run.stopped,
-            elapsedMs = (System.nanoTime() - t0) / 1_000_000L,
-            finishedAtMs = System.currentTimeMillis(),
-            examples = pickBacktestExamples(set, BACKTEST_EXAMPLE_CONTEXT_MS, BACKTEST_EXAMPLES_PER_LIST),
-        )
+        val run = inferenceController.backtest(modelId, plan.origins, inputAt, onProgress)
+        run.refusal?.let { return null to it }
+        return BacktestRaw(run.forecasts, run.adapterAttached, run.stopped) to null
     }
 
     /** False when [modelId] has no finished backtest in this process. */
@@ -1761,7 +1944,11 @@ class AppContainer(context: Context) {
             } ?: ModelImport.Refused("could not open file")
         }.getOrElse { ModelImport.Refused(it.message ?: "import failed") }
         return when (result) {
-            is ModelImport.Imported -> { reevaluateInferenceNow(); "Imported ${result.id}" }
+            is ModelImport.Imported -> {
+                refreshZoo()
+                reevaluateInferenceNow()
+                "Imported ${result.id}"
+            }
             is ModelImport.Refused -> result.reason
         }
     }
@@ -1777,6 +1964,7 @@ class AppContainer(context: Context) {
             runCatching { repository.deleteLorasForModel(modelId) }
             runCatching { repository.clearInfillForModel(modelId) }
         }
+        refreshZoo()
         reevaluateInferenceNow()
     }
 

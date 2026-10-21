@@ -36,6 +36,20 @@ sealed interface ModelBacktest {
     data class Refused(override val days: Int?, val refusal: BacktestRefusal) : ModelBacktest
 }
 
+/** Every loaded model over one plan, each scored on only the origins all of them forecast. */
+sealed interface ModelComparison {
+    val days: Int?
+
+    data class Running(override val days: Int?, val modelId: String, val model: Int, val models: Int) : ModelComparison
+
+    data class Done(override val days: Int?, val nShared: Int, val rows: List<Row>) : ModelComparison
+
+    data class Refused(override val days: Int?, val refusal: BacktestRefusal) : ModelComparison
+
+    /** [zoo]: a SPEC/zoo.md model, display and backtest only. */
+    data class Row(val modelId: String, val zoo: Boolean, val metrics: ModelMetrics)
+}
+
 /** Drawn before each example's origin; plus the scored span, the minimum gap between two picks. */
 const val BACKTEST_EXAMPLE_CONTEXT_MS: Long = 12L * 3_600_000L
 

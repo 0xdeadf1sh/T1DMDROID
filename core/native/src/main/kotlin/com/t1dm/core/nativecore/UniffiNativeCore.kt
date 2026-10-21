@@ -175,6 +175,8 @@ import uniffi.t1dm_core.InputLayout as UniffiInputLayout
 import uniffi.t1dm_core.PointDose as UniffiPointDose
 import uniffi.t1dm_core.PointKind as UniffiPointKind
 import uniffi.t1dm_core.eventChannels as uniffiEventChannels
+import uniffi.t1dm_core.zooBgWindow as uniffiZooBgWindow
+import uniffi.t1dm_core.zooFan as uniffiZooFan
 import uniffi.t1dm_core.pointDose as uniffiPointDose
 import uniffi.t1dm_core.InsulinFamily as UniffiInsulinFamily
 import uniffi.t1dm_core.InsulinPresetSpec as UniffiInsulinPresetSpec
@@ -397,6 +399,12 @@ class UniffiNativeCore : NativeCore {
             gridStartMs,
             nSteps,
         )
+
+    override fun zooBgWindow(history: DoubleArray, ctx: Int, interpMaxSteps: Int): FloatArray? =
+        uniffiZooBgWindow(history.toList(), ctx.toUInt(), interpMaxSteps.toUInt())?.toFloatArray()
+
+    override fun zooFan(median: List<Double>, offsets: List<List<Double>>, clampMin: Double, clampMax: Double) =
+        uniffiZooFan(median, offsets, clampMin, clampMax)
 
     /** Fail-closed to [AdvancedStats.EMPTY]; a malformed argument can't crash the stats screen. */
     override fun advancedStats(

@@ -196,6 +196,11 @@ interface NativeCore {
     /** The 8 event channels over the grid, each [CurveEvent.point] at its rounded onset. */
     fun eventChannels(events: List<CurveEvent>, gridStartMs: Long, nSteps: Int): List<List<Double>>
 
+    /** SPEC/zoo.md §3; [history] ends at the latest measured reading, NaN where unmeasured. */
+    fun zooBgWindow(history: DoubleArray, ctx: Int, interpMaxSteps: Int): FloatArray?
+
+    /** SPEC/zoo.md §4; step-major `[steps × levels]`; throws on a shape mismatch. */
+    fun zooFan(median: List<Double>, offsets: List<List<Double>>, clampMin: Double, clampMax: Double): List<Double>
 
     /** targetLow/High are mg/dL; agpBins must divide 1440. Fail-closed to AdvancedStats.EMPTY. */
     fun advancedStats(

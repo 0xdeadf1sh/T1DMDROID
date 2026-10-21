@@ -285,6 +285,7 @@ class CgmScanService : LifecycleService() {
         // Forecast-cadence driver, sibling of the alarm path (§3.6-A); drives runFromHistory only.
         lifecycleScope.launch(container.dispatchers.default) {
             container.inferenceController.refreshModels()
+            container.refreshZoo()
             val adaptiveTicks = readingBus
                 .filter { container.forecastModeSnapshot == SettingsStore.FORECAST_MODE_ADAPTIVE }
                 .map { System.currentTimeMillis() }
@@ -305,6 +306,8 @@ class CgmScanService : LifecycleService() {
             merge(adaptiveTicks, timedTicks).conflate().collect { nowMs ->
                 runCatching { container.inferenceController.runFromHistory(InferenceCause.GRID_TICK, nowMs) }
                     .onFailure { Timber.tag(TAG).w(it, "inference cycle failed (alarm path unaffected)") }
+                runCatching { container.runZoo(nowMs) }
+                    .onFailure { Timber.tag(TAG).w(it, "zoo cycle failed (alarm path unaffected)") }
             }
         }
 

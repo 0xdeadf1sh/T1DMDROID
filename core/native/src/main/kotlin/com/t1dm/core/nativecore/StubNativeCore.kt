@@ -310,6 +310,12 @@ open class StubNativeCore : NativeCore {
         return PointDose(record.kind, record.amount, 0.0, peak, durH)
     }
 
+    override fun zooBgWindow(history: DoubleArray, ctx: Int, interpMaxSteps: Int): FloatArray? =
+        TODO("native zoo_bg_window")
+
+    override fun zooFan(median: List<Double>, offsets: List<List<Double>>, clampMin: Double, clampMax: Double):
+        List<Double> = TODO("native zoo_fan")
+
     override fun eventChannels(events: List<CurveEvent>, gridStartMs: Long, nSteps: Int): List<List<Double>> {
         require(nSteps >= 0) { "event_channels n_steps must be >= 0, got $nSteps" }
         val out = List(8) { DoubleArray(nSteps) }
