@@ -175,6 +175,8 @@ pub struct ModelDescriptor {
     pub rope_base: i32,
     /// Additive floor on each softplus spread.
     pub quantile_spread_min: f64,
+    /// β of the span-tied spreads, SPEC/inference.md §8.1; required.
+    pub spread_tie_beta: f64,
     /// Blocked-position fill, fp16-safe.
     pub neg_fill: f64,
     pub prediction_horizon_hours: i32,
@@ -369,6 +371,8 @@ struct ConstantsDto {
     rope_base: i32,
     #[serde(rename = "BG_QUANTILE_SPREAD_MIN")]
     quantile_spread_min: f64,
+    #[serde(rename = "SPREAD_TIE_BETA")]
+    spread_tie_beta: f64,
     neg_fill: f64,
     #[serde(rename = "PREDICTION_HORIZON_HOURS")]
     prediction_horizon_hours: i32,
@@ -484,6 +488,7 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
         blind: inputs.blind,
         rope_base: c.rope_base,
         quantile_spread_min: c.quantile_spread_min,
+        spread_tie_beta: c.spread_tie_beta,
         neg_fill: c.neg_fill,
         prediction_horizon_hours: c.prediction_horizon_hours,
         max_context_patches: g.max_context_patches,
@@ -556,6 +561,11 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
                 "quantile_spread_min {} must be finite and >= 0",
                 desc.quantile_spread_min
             ),
+        });
+    }
+    if !(desc.spread_tie_beta.is_finite() && desc.spread_tie_beta >= 0.0) {
+        return Err(CoreError::Decode {
+            reason: format!("spread_tie_beta {} must be finite and >= 0", desc.spread_tie_beta),
         });
     }
     if !(desc.min_context_patches > 0 && desc.min_context_patches <= desc.max_context_patches) {
@@ -1280,13 +1290,36 @@ pub fn assemble_decode(
     }
     let kov = desc.kovatchev;
     let floor = desc.quantile_spread_min;
+    let beta = desc.spread_tie_beta;
     let n_steps = n_masked * PATCH_SIZE;
 
-    // Pointwise: anchor plus the head's per-step delta; spans entered earlier, in the spline.
     let mut median = vec![0.0f64; n_steps];
     for (i, mi) in median.iter_mut().enumerate() {
         let anchor = kov.f(anchors[i / PATCH_SIZE].clamp(kov.bg_clamp_min, kov.bg_clamp_max));
         *mi = anchor + head_raw[i * N_QUANTILES];
+    }
+
+    // SPEC/inference.md §8.1: each level's spread is its span mean, scaled by 1 + β·|delta|.
+    let mut span_mean = vec![[0.0f64; 2 * N_SPREADS]; n_masked];
+    let mut start = 0usize;
+    while start < n_masked {
+        let mut end = start + 1;
+        while end < n_masked && slot_patch[end] == slot_patch[end - 1] + 1 {
+            end += 1;
+        }
+        let mut sum = [0.0f64; 2 * N_SPREADS];
+        for i in start * PATCH_SIZE..end * PATCH_SIZE {
+            for (k, s) in sum.iter_mut().enumerate() {
+                *s += softplus(head_raw[i * N_QUANTILES + 1 + k]) + floor;
+            }
+        }
+        let n = ((end - start) * PATCH_SIZE) as f64;
+        for slot in span_mean.iter_mut().take(end).skip(start) {
+            for (k, s) in sum.iter().enumerate() {
+                slot[k] = s / n;
+            }
+        }
+        start = end;
     }
 
     let mut median_risk = vec![0.0f64; n_steps];
@@ -1299,9 +1332,11 @@ pub fn assemble_decode(
         let mut dn = [0.0f64; N_SPREADS];
         let mut cs_up = 0.0f64;
         let mut cs_dn = 0.0f64;
+        let mean = &span_mean[i / PATCH_SIZE];
+        let scale = 1.0 + beta * head_raw[i * N_QUANTILES].abs();
         for k in 0..N_SPREADS {
-            cs_up += softplus(head_raw[i * N_QUANTILES + 1 + k]) + floor;
-            cs_dn += softplus(head_raw[i * N_QUANTILES + 1 + N_SPREADS + k]) + floor;
+            cs_up += mean[k] * scale;
+            cs_dn += mean[N_SPREADS + k] * scale;
             // Independent increments add variances; zero-skip keeps single-window decode exact.
             let (c_up, c_dn) = (carry[k], carry[N_SPREADS + k]);
             up[k] = mi + if c_up == 0.0 { cs_up } else { c_up.hypot(cs_up) };
@@ -1931,6 +1966,49 @@ mod tests {
         assert!(is_decode(bad("geometry", "MAX_CONTEXT_PATCHES", serde_json::json!(8))));
         assert!(is_decode(bad("constants", "PREDICTION_HORIZON_HOURS", serde_json::json!(0))));
         assert!(is_decode(bad("constants", "ROPE_BASE", serde_json::json!(0))));
+        assert!(is_decode(bad("constants", "SPREAD_TIE_BETA", serde_json::json!(-0.5))));
+    }
+
+    /// An untied model's fan would decode finite and wrong here, so a descriptor without β is out.
+    #[test]
+    fn parse_descriptor_refuses_an_untied_model() {
+        let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
+        v["constants"].as_object_mut().unwrap().remove("SPREAD_TIE_BETA");
+        assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
+    }
+
+    /// §8.1: per span, every edge offset is the span-mean spread cumsum times 1 + β·|delta|.
+    #[test]
+    fn spreads_are_span_means_scaled_by_the_median_excursion() {
+        let d = ModelDescriptor { spread_tie_beta: 0.7, ..test_descriptor() };
+        let slots = vec![10, 11, 20];
+        let mut head = vec![0.0f64; 3 * PATCH_SIZE * N_QUANTILES];
+        for (i, h) in head.iter_mut().enumerate() {
+            *h = ((i * 37 % 23) as f64 - 11.0) / 7.0;
+        }
+        let f = assemble_decode(&d, head.clone(), vec![120.0; 3], slots, 3, vec![]).unwrap();
+        for (span, lo, hi) in [(0, 0, 2 * PATCH_SIZE), (1, 2 * PATCH_SIZE, 3 * PATCH_SIZE)] {
+            let mut mean = [0.0f64; 2 * N_SPREADS];
+            for i in lo..hi {
+                for (k, m) in mean.iter_mut().enumerate() {
+                    *m += (softplus(head[i * N_QUANTILES + 1 + k]) + d.quantile_spread_min)
+                        / (hi - lo) as f64;
+                }
+            }
+            for i in lo..hi {
+                let scale = 1.0 + 0.7 * head[i * N_QUANTILES].abs();
+                let row = i * N_QUANTILES;
+                let m = f.q_tau_risk[row + 3];
+                let (mut up, mut dn) = (0.0, 0.0);
+                for k in 0..N_SPREADS {
+                    up += mean[k] * scale;
+                    dn += mean[N_SPREADS + k] * scale;
+                    let (got_up, got_dn) = (f.q_tau_risk[row + 4 + k] - m, m - f.q_tau_risk[row + 2 - k]);
+                    assert!((got_up - up).abs() < 1e-12, "span {span} step {i} up {k}");
+                    assert!((got_dn - dn).abs() < 1e-12, "span {span} step {i} dn {k}");
+                }
+            }
+        }
     }
 
     /// risk-v4 decodes finite/plausible/wrong here: its median was a per-span DCT projection.

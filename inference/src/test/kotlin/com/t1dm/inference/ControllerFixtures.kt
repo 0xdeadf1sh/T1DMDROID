@@ -88,6 +88,7 @@ internal fun fixtureDescriptor(head: HeadSpec? = null) = ModelDescriptor(
     blind = false,
     ropeBase = 1000,
     quantileSpreadMin = 1e-3,
+    spreadTieBeta = 1.0,
     negFill = -30000.0,
     predictionHorizonHours = 2,
     maxContextPatches = 8,

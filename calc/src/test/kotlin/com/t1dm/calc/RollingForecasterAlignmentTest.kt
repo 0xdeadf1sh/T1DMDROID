@@ -48,6 +48,7 @@ class RollingForecasterAlignmentTest {
         blind = false,
         ropeBase = 1000,
         quantileSpreadMin = 1e-3,
+        spreadTieBeta = 1.0,
         negFill = -30000.0,
         predictionHorizonHours = 2,   // predSteps = 24
         maxContextPatches = 8,        // maxSteps = 48

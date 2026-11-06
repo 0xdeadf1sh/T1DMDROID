@@ -1597,18 +1597,24 @@ fn sample_loss_and_grad(
         // Pinball's median moves all seven levels; the spreads-only term holds it.
         let dm: f64 = if median_moves_levels { dq[row..row + N_QUANTILES].iter().sum() } else { 0.0 };
         d_head_raw[row] = dm + d_med[i] + c_distill * err[i];
-        // up_j (levels 4..6) = m + Σ_{t<=j} d_up_t ; dn_j (levels 2−j) = m − Σ_{t<=j} d_dn_t
+    }
+    // §8.1, one span: spread_k(i) = mean_k·(1 + β|delta_i|), the scale holding no gradient.
+    let mut d_mean = [0.0f64; 2 * N_SPREADS];
+    for i in 0..n_steps {
+        let row = i * N_QUANTILES;
+        let scale = 1.0 + desc.spread_tie_beta * head_raw[row].abs();
+        // up_j (levels 4..6) = m + Σ_{t<=j} spread_t ; dn_j (level 2−j) = m − Σ_{t<=j} spread_3+t
         for t in 0..N_SPREADS {
-            let mut d_up = 0.0;
-            let mut d_dn = 0.0;
             for j in t..N_SPREADS {
-                d_up += dq[row + 4 + j];
-                d_dn -= dq[row + 2 - j];
+                d_mean[t] += dq[row + 4 + j] * scale;
+                d_mean[N_SPREADS + t] -= dq[row + 2 - j] * scale;
             }
-            let raw_up = head_raw[row + 1 + t];
-            let raw_dn = head_raw[row + 1 + N_SPREADS + t];
-            d_head_raw[row + 1 + t] = d_up * sigmoid(raw_up);
-            d_head_raw[row + 1 + N_SPREADS + t] = d_dn * sigmoid(raw_dn);
+        }
+    }
+    for i in 0..n_steps {
+        let row = i * N_QUANTILES;
+        for (k, dm) in d_mean.iter().enumerate() {
+            d_head_raw[row + 1 + k] = dm / n_steps as f64 * sigmoid(head_raw[row + 1 + k]);
         }
     }
 
@@ -1727,6 +1733,33 @@ mod tests {
 
     fn desc() -> ModelDescriptor {
         parse_descriptor(REFERENCE_DESCRIPTOR.to_string()).expect("reference descriptor")
+    }
+
+    /// β = 0: the backward detaches 1 + β·|delta| as training does, which a finite difference sees.
+    fn untied_scale_desc() -> ModelDescriptor {
+        ModelDescriptor { spread_tie_beta: 0.0, ..desc() }
+    }
+
+    /// β > 0 keeps the gradient finite and moves it off the β = 0 one.
+    #[test]
+    fn the_tie_scale_carries_no_median_gradient() {
+        let (head, spec) = synthetic_head(8, 6);
+        let s = sample(8, 4, 3);
+        let mut w = lora_new(cfg(), spec.sha256.clone(), spec.d_model, spec.hidden, spec.out_dim, 17).unwrap();
+        let mut rng = Rng::new(23);
+        for p in w.params.iter_mut() {
+            *p = rng.normal() * 0.2;
+        }
+        let lora = Lora::from_weights(&w, 8, 6, 7).unwrap();
+        let grad = |d: &ModelDescriptor| {
+            let mut g = vec![0.0f64; w.params.len()];
+            sample_loss_and_grad(&head, d, &s, Some(&lora), TrainLoss::Pinball, Some(&mut g), None, None)
+                .unwrap();
+            g
+        };
+        let (g0, g1) = (grad(&untied_scale_desc()), grad(&desc()));
+        assert!(g0.iter().all(|v| v.is_finite()) && g1.iter().all(|v| v.is_finite()));
+        assert!(g0.iter().zip(&g1).any(|(a, b)| (a - b).abs() > 1e-9), "β must move the gradient");
     }
 
     /// A small head in the shipped file format; small so the gradient checks stay quick.
@@ -1904,7 +1937,7 @@ mod tests {
     /// The analytic gradient against central finite differences, through the whole chain.
     #[test]
     fn gradient_matches_finite_differences() {
-        let d = desc();
+        let d = untied_scale_desc();
         let (head, spec) = synthetic_head(8, 6);
         let s = sample(8, 4, 3);
         let mut w = lora_new(cfg(), spec.sha256.clone(), spec.d_model, spec.hidden, spec.out_dim, 17).unwrap();
@@ -1944,7 +1977,7 @@ mod tests {
     /// The distillation term's own gradient, checked the same way.
     #[test]
     fn the_distillation_gradient_matches_finite_differences() {
-        let d = desc();
+        let d = untied_scale_desc();
         let (head, spec) = synthetic_head(8, 6);
         let s = sample_paired(8, 4, 3, 77);
         let mut w = lora_new(cfg(), spec.sha256.clone(), spec.d_model, spec.hidden, spec.out_dim, 17).unwrap();

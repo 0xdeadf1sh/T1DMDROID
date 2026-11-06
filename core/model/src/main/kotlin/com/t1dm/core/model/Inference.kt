@@ -59,6 +59,8 @@ data class ModelDescriptor(
     val blind: Boolean,
     val ropeBase: Int,
     val quantileSpreadMin: Double,
+    /** β of the span-tied spreads, SPEC/inference.md §8.1. */
+    val spreadTieBeta: Double,
     val negFill: Double,
     val predictionHorizonHours: Int,
     val maxContextPatches: Int,
