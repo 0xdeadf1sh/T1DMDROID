@@ -809,7 +809,7 @@ class SettingsStore(
         /** No default label: catalogue's first entry is the fallback, no dropped-insulin name. */
         internal const val K_LAST_RAPID_PRESET = "insulin.last_rapid_preset"
         internal const val K_LAST_BASAL_PRESET = "insulin.last_basal_preset"
-        const val DEFAULT_THEME = "tron"
-        const val DEFAULT_FONT = "system"
+        const val DEFAULT_THEME = com.t1dm.core.design.ThemeIds.POLYPHEMUS
+        const val DEFAULT_FONT = "polyphemus"
     }
 }

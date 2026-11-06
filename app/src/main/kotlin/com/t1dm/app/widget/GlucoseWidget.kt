@@ -49,6 +49,7 @@ import com.t1dm.app.notify.BgGlance
 import com.t1dm.core.design.T1dmActivePalette
 import com.t1dm.core.design.T1dmPalette
 import com.t1dm.core.design.applyWidgetPalette
+import com.t1dm.core.design.isSystemDark
 import com.t1dm.core.design.resolvePalette
 import com.t1dm.core.model.AlertBand
 import timber.log.Timber
@@ -69,7 +70,7 @@ class GlucoseWidget : GlanceAppWidget() {
 
         // Before composing: palette holders read at composition time; nothing known writes nothing.
         themeOf(live, cached)?.let { (themeId, customThemeJson) ->
-            runCatching { applyWidgetPalette(resolvePalette(themeId, customThemeJson)) }
+            runCatching { applyWidgetPalette(resolvePalette(themeId, customThemeJson, context.isSystemDark())) }
                 .onFailure { Timber.tag(TAG).w(it, "widget palette seed failed — keeping the current palette") }
         }
 

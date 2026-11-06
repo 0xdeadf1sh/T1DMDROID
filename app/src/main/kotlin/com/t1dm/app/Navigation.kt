@@ -1813,7 +1813,8 @@ private fun T1dmNavHost(
                 }
             }
             val themeOptions = remember {
-                BundledPalettes.map { it.id to it.displayName } + (ThemeIds.CUSTOM to "Custom")
+                BundledPalettes.distinctBy { it.id }.map { it.id to it.displayName } +
+                    (ThemeIds.CUSTOM to "Custom")
             }
             val fontOptions = remember { T1dmFontId.entries.map { it.storageKey to it.displayName } }
             val hapticOptions = remember { HapticStrength.entries.map { it.name to it.displayName } }

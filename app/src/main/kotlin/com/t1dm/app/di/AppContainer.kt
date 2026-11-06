@@ -109,6 +109,7 @@ import com.t1dm.app.exercise.AppExerciseSource
 import com.t1dm.app.service.ExerciseService
 import com.t1dm.core.design.LogEdit
 import com.t1dm.core.design.exerciseKindLabel
+import com.t1dm.core.design.isSystemDark
 import com.t1dm.core.model.ActiveExercise
 import com.t1dm.core.model.ExerciseSession
 import com.t1dm.app.stats.AppStatsSource
@@ -521,7 +522,7 @@ class AppContainer(context: Context) {
 
     // The notification presenters run outside Compose and cannot read `LocalT1dmSemantics`.
     @Volatile
-    var themeIdSnapshot: String = com.t1dm.core.design.ThemeIds.TRON
+    var themeIdSnapshot: String = com.t1dm.core.design.ThemeIds.POLYPHEMUS
         private set
 
     @Volatile
@@ -529,7 +530,9 @@ class AppContainer(context: Context) {
         private set
 
     val notificationAccentArgb: Int
-        get() = com.t1dm.app.notify.NotificationIcons.accentArgb(themeIdSnapshot, customThemeJsonSnapshot)
+        get() = com.t1dm.app.notify.NotificationIcons.accentArgb(
+            themeIdSnapshot, customThemeJsonSnapshot, appContext.isSystemDark(),
+        )
 
     // DEATH: total-silence override, read synchronously by the FGS alarm; never exported.
     @Volatile
@@ -3113,6 +3116,7 @@ class AppContainer(context: Context) {
         val p = com.t1dm.core.design.resolvePalette(
             settingsStore.currentThemeId(),
             settingsStore.currentCustomThemeJson(),
+            appContext.isSystemDark(),
         )
         val t = alarmConfig.thresholds
         val range = graphSettings.currentRange()

@@ -184,8 +184,8 @@ class WidgetStateStoreTest {
             nowMs,
         )
 
-        assertEquals(ThemeIds.TRON, WidgetStateStore.read(prefs, nowMs)!!.themeId)
-        assertEquals(ThemeIds.TRON, WidgetStateStore.themeOf(prefs).first)
+        assertEquals(ThemeIds.POLYPHEMUS, WidgetStateStore.read(prefs, nowMs)!!.themeId)
+        assertEquals(ThemeIds.POLYPHEMUS, WidgetStateStore.themeOf(prefs).first)
     }
 
     @Test
@@ -193,7 +193,7 @@ class WidgetStateStoreTest {
         val unknown = WidgetStateStore.unknown(1_700_000_000_000L)
         assertFalse(unknown.glance.hasReading)
         assertEquals(UnitSpace.MgDl, unknown.unit)
-        assertEquals(ThemeIds.TRON, unknown.themeId)
+        assertEquals(ThemeIds.POLYPHEMUS, unknown.themeId)
         assertEquals(GlyKind.VOID, unknown.glyKind)
         assertFalse(unknown.death)
     }

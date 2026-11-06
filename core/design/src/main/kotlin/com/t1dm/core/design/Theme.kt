@@ -10,7 +10,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 
 /** The glucose-band and grid roles Material's [ColorScheme] cannot express. */
-val LocalT1dmSemantics = staticCompositionLocalOf { TronPalette }
+val LocalT1dmSemantics = staticCompositionLocalOf { PolyphemusDark }
 
 val LocalAnimationsEnabled = staticCompositionLocalOf { true }
 
@@ -19,11 +19,11 @@ val LocalDeathMode = staticCompositionLocalOf { false }
 
 /** Written only by [applyWidgetPalette], from widget-render; Activity writing races the FGS. */
 @Volatile
-var T1dmColorScheme: ColorScheme = TronPalette.toColorScheme()
+var T1dmColorScheme: ColorScheme = PolyphemusDark.toColorScheme()
     private set
 
 @Volatile
-var T1dmActivePalette: T1dmPalette = TronPalette
+var T1dmActivePalette: T1dmPalette = PolyphemusDark
     private set
 
 /** The SOLE writer of [T1dmActivePalette] / [T1dmColorScheme]; needs no composition. */
@@ -36,8 +36,8 @@ fun applyWidgetPalette(palette: T1dmPalette) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun T1dmTheme(
-    palette: T1dmPalette = TronPalette,
-    font: T1dmFontId = T1dmFontId.SYSTEM,
+    palette: T1dmPalette = PolyphemusDark,
+    font: T1dmFontId = T1dmFontId.POLYPHEMUS,
     animationsEnabled: Boolean = true,
     deathMode: Boolean = false,
     hapticStrength: HapticStrength = HapticStrength.DEFAULT,
@@ -57,7 +57,7 @@ fun T1dmTheme(
     ) {
         MaterialTheme(
             colorScheme = scheme,
-            typography = typographyWith(fontFamilyFor(font)),
+            typography = typographyFor(font),
             content = content,
         )
     }

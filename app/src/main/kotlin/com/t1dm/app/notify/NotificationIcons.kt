@@ -16,6 +16,6 @@ object NotificationIcons {
     fun icon(context: Context): Icon = Icon.createWithResource(context, res())
 
     /** Needing the palette too, resolve once: each call here is a fresh JSON parse. */
-    fun accentArgb(themeId: String?, customThemeJson: String?): Int =
-        resolvePalette(themeId, customThemeJson).primary.toArgb()
+    fun accentArgb(themeId: String?, customThemeJson: String?, systemDark: Boolean): Int =
+        resolvePalette(themeId, customThemeJson, systemDark).primary.toArgb()
 }

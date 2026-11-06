@@ -1,30 +1,37 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- The polyphemus.health eye on its 32-unit grid, scaled 1.5x into the 66dp safe zone. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:strokeWidth="6.5"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:fillColor="#00000000"
-        android:pathData="M0,62 C6,61 13,61 20,59 C31,55 32,30 43,29 C55,28 57,62 66,74 C70,79 76,78 82,72 C91,63 100,58 108,55">
-        <aapt:attr name="android:strokeColor">
-            <!-- y 22..86 spans the plotted range: the peak clamps to red, the trough to blue. -->
-            <gradient
-                android:type="linear"
-                android:startX="54"
-                android:startY="22"
-                android:endX="54"
-                android:endY="86">
-                <item android:offset="0.0" android:color="#FF2D2D" />
-                <item android:offset="0.3" android:color="#FF9E80" />
-                <item android:offset="0.5" android:color="#FFFFFF" />
-                <item android:offset="0.7" android:color="#7FC4FF" />
-                <item android:offset="1.0" android:color="#2D8CFF" />
-            </gradient>
-        </aapt:attr>
-    </path>
+    <group
+        android:translateX="30"
+        android:translateY="30"
+        android:scaleX="1.5"
+        android:scaleY="1.5">
+        <path
+            android:strokeWidth="1.4"
+            android:strokeColor="#FFFFFF"
+            android:fillColor="#00000000"
+            android:pathData="M1,4 V1 H5 M27,1 H31 V5 M31,28 V31 H27 M5,31 H1 V28" />
+        <path
+            android:strokeWidth="1.6"
+            android:strokeColor="#FFFFFF"
+            android:strokeLineJoin="miter"
+            android:fillColor="#00000000"
+            android:pathData="M2,16 L9,9 H23 L30,16 L23,23 H9 Z" />
+        <group>
+            <clip-path android:pathData="M2,16 L9,9 H23 L30,16 L23,23 H9 Z" />
+            <path
+                android:fillColor="#FFFFFF"
+                android:fillAlpha="0.18"
+                android:pathData="M2,10 H30 V11 H2 Z M2,12 H30 V13 H2 Z M2,14 H30 V15 H2 Z M2,16 H30 V17 H2 Z M2,18 H30 V19 H2 Z M2,20 H30 V21 H2 Z M2,22 H30 V23 H2 Z" />
+            <!-- Slit as an even-odd hole, so the monochrome layer keeps it. -->
+            <path
+                android:fillColor="#FFFFFF"
+                android:fillType="evenOdd"
+                android:pathData="M10.8,16 A5.2,5.2 0 1 0 21.2,16 A5.2,5.2 0 1 0 10.8,16 Z M15.1,11.6 H16.9 V20.4 H15.1 Z" />
+        </group>
+    </group>
 </vector>

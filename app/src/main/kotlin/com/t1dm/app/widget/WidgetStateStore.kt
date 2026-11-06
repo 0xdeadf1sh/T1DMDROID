@@ -140,7 +140,7 @@ internal object WidgetStateStore {
         bgAlphaPct = SettingsStore.DEFAULT_BG_ALPHA_PCT,
         rssi = null,
         death = false,
-        themeId = ThemeIds.TRON,
+        themeId = ThemeIds.POLYPHEMUS,
         customThemeJson = null,
         nowMs = nowMs,
     )

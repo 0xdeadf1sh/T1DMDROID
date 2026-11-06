@@ -142,6 +142,6 @@ class WidgetGlanceTest {
         assertFalse(rendered.glance.hasReading)
         assertEquals(GlyKind.VOID, rendered.glyKind)
         assertEquals(UnitSpace.MgDl, rendered.unit)
-        assertEquals(ThemeIds.TRON, rendered.themeId)
+        assertEquals(ThemeIds.POLYPHEMUS, rendered.themeId)
     }
 }

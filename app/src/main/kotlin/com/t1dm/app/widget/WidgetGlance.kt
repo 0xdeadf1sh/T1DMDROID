@@ -77,7 +77,7 @@ internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
         val animationsEnabled = runCatching { container.settingsStore.currentAnimationsEnabled() }.getOrDefault(true)
         val bgAlphaPct = runCatching { container.settingsStore.currentBackgroundAlphaPct() }
             .getOrDefault(com.t1dm.app.settings.SettingsStore.DEFAULT_BG_ALPHA_PCT)
-        val themeId = runCatching { container.settingsStore.currentThemeId() }.getOrDefault(ThemeIds.TRON)
+        val themeId = runCatching { container.settingsStore.currentThemeId() }.getOrDefault(ThemeIds.POLYPHEMUS)
         val customThemeJson = runCatching { container.settingsStore.currentCustomThemeJson() }.getOrNull()
         val state = container.inferenceState.value
         val onBoard = runCatching { container.iobCobNow() }.getOrNull()

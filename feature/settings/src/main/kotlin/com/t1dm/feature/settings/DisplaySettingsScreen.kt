@@ -149,7 +149,7 @@ private val displayTheme = SettingsKnob(
     subtitle = "Recolours the whole app",
     synonyms = listOf(
         "theme", "colour", "color", "colours", "colors", "palette", "skin", "appearance", "look",
-        "dark", "light", "tron", "umbrella", "hello kitty", "accent", "style", "recolour",
+        "dark", "light", "polyphemus", "night", "tron", "umbrella", "hello kitty", "accent", "style", "recolour",
     ),
 )
 

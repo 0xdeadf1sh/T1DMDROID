@@ -9,6 +9,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -16,6 +19,7 @@ import androidx.lifecycle.lifecycleScope
 import com.t1dm.app.di.AppContainer
 import com.t1dm.app.service.BackgroundControls
 import com.t1dm.app.service.CgmScanService
+import com.t1dm.app.settings.SettingsStore
 import com.t1dm.core.design.HapticStrength
 import com.t1dm.core.design.T1dmFontId
 import com.t1dm.core.design.T1dmTheme
@@ -48,13 +52,22 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val ss = container.settingsStore
-            val themeId by ss.themeId.collectAsState("tron")
-            val fontKey by ss.fontId.collectAsState("system")
+            val themeId by ss.themeId.collectAsState(SettingsStore.DEFAULT_THEME)
+            val fontKey by ss.fontId.collectAsState(SettingsStore.DEFAULT_FONT)
             val animations by ss.animationsEnabled.collectAsState(true)
             val death by ss.deathMode.collectAsState(false)
             val hapticsKey by ss.hapticsLevel.collectAsState(HapticStrength.DEFAULT.name)
             val customJson by ss.customThemeJson.collectAsState(null)
-            val palette = remember(themeId, customJson) { resolvePalette(themeId, customJson) }
+            val systemDark = isSystemInDarkTheme()
+            val palette = remember(themeId, customJson, systemDark) {
+                resolvePalette(themeId, customJson, systemDark)
+            }
+            SideEffect {
+                WindowCompat.getInsetsController(window, window.decorView).apply {
+                    isAppearanceLightStatusBars = !palette.dark
+                    isAppearanceLightNavigationBars = !palette.dark
+                }
+            }
             T1dmTheme(
                 palette = palette,
                 font = T1dmFontId.forKey(fontKey),

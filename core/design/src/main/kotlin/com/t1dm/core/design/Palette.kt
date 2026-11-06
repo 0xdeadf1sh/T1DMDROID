@@ -1,5 +1,7 @@
 package com.t1dm.core.design
 
+import android.content.Context
+import android.content.res.Configuration
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -57,6 +59,7 @@ data class T1dmPalette(
 
 /** The stable ids the selection persists as. */
 object ThemeIds {
+    const val POLYPHEMUS = "polyphemus"
     const val TRON = "tron"
     const val UMBRELLA = "umbrella"
     const val HELLO_KITTY = "hello_kitty"
@@ -64,6 +67,52 @@ object ThemeIds {
     const val MATRIX = "matrix"
     const val CUSTOM = "custom"
 }
+
+/** polyphemus.health light; shares its id with [PolyphemusDark], picked by system night mode. */
+val PolyphemusLight = T1dmPalette(
+    id = ThemeIds.POLYPHEMUS,
+    displayName = "Polyphemus",
+    dark = false,
+    background = Color(0xFFFFFFFF),
+    surface = Color(0xFFF6F6F6),
+    surfaceVariant = Color(0xFFEBEBEB),
+    primary = Color(0xFF0A0A0A),
+    onPrimary = Color(0xFFFFFFFF),
+    secondary = Color(0xFF555555),
+    onSecondary = Color(0xFFFFFFFF),
+    ink = Color(0xFF0A0A0A),
+    inkMuted = Color(0xFF555555),
+    grid = Color(0xFFE4E4E4),
+    urgentLow = Color(0xFFC4262E),
+    low = Color(0xFF8A5800),
+    inRange = Color(0xFF286B41),
+    high = Color(0xFFA04B08),
+    urgentHigh = Color(0xFF9E1B1B),
+)
+
+val PolyphemusDark = T1dmPalette(
+    id = ThemeIds.POLYPHEMUS,
+    displayName = "Polyphemus",
+    dark = true,
+    background = Color(0xFF0A0A0A),
+    surface = Color(0xFF111111),
+    surfaceVariant = Color(0xFF1A1A1A),
+    primary = Color(0xFFF2F2F2),
+    onPrimary = Color(0xFF0A0A0A),
+    secondary = Color(0xFFA0A0A0),
+    onSecondary = Color(0xFF0A0A0A),
+    ink = Color(0xFFF2F2F2),
+    inkMuted = Color(0xFFA0A0A0),
+    grid = Color(0xFF232323),
+    urgentLow = Color(0xFFFF5A5F),
+    low = Color(0xFFE5B04C),
+    inRange = Color(0xFF5FBF80),
+    high = Color(0xFFF08A3C),
+    urgentHigh = Color(0xFFFF453A),
+)
+
+fun polyphemusPalette(systemDark: Boolean): T1dmPalette =
+    if (systemDark) PolyphemusDark else PolyphemusLight
 
 val TronPalette = T1dmPalette(
     id = ThemeIds.TRON,
@@ -172,25 +221,34 @@ val MatrixPalette = T1dmPalette(
     urgentHigh = Color(0xFFFF5040),
 )
 
-/** In selector order; Tron first is the default. */
-val BundledPalettes: List<T1dmPalette> =
-    listOf(TronPalette, UmbrellaPalette, HelloKittyPalette, EInkPalette, MatrixPalette)
+/** In selector order, Polyphemus first as the default; its two variants share one entry. */
+val BundledPalettes: List<T1dmPalette> = listOf(
+    PolyphemusLight, PolyphemusDark,
+    TronPalette, UmbrellaPalette, HelloKittyPalette, EInkPalette, MatrixPalette,
+)
 
-fun paletteForId(id: String?): T1dmPalette =
-    BundledPalettes.firstOrNull { it.id == id } ?: TronPalette
+fun paletteForId(id: String?, systemDark: Boolean): T1dmPalette =
+    if (id == ThemeIds.POLYPHEMUS) {
+        polyphemusPalette(systemDark)
+    } else {
+        BundledPalettes.firstOrNull { it.id == id } ?: polyphemusPalette(systemDark)
+    }
 
 fun isKnownThemeId(id: String?): Boolean = id == ThemeIds.CUSTOM || BundledPalettes.any { it.id == id }
 
 /** Retired theme ids survive in kv rows/exports/aliases; caller can notice and rewrite it. */
-fun normalizeThemeId(id: String?): String = if (isKnownThemeId(id)) id!! else ThemeIds.TRON
+fun normalizeThemeId(id: String?): String = if (isKnownThemeId(id)) id!! else ThemeIds.POLYPHEMUS
 
 /** The one place a custom theme decodes, so Activity, FGS notification and widget agree. */
-fun resolvePalette(themeId: String?, customThemeJson: String?): T1dmPalette =
+fun resolvePalette(themeId: String?, customThemeJson: String?, systemDark: Boolean): T1dmPalette =
     if (themeId == ThemeIds.CUSTOM && !customThemeJson.isNullOrBlank()) {
-        runCatching { parseThemeJson(customThemeJson) }.getOrDefault(TronPalette)
+        runCatching { parseThemeJson(customThemeJson) }.getOrDefault(polyphemusPalette(systemDark))
     } else {
-        paletteForId(themeId)
+        paletteForId(themeId, systemDark)
     }
+
+fun Context.isSystemDark(): Boolean =
+    (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
 
 /** Imported file: format="t1dm.theme" tag, name, dark, colors block of #RRGGBB strings. */
 fun parseThemeJson(text: String): T1dmPalette {
