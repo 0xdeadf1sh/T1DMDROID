@@ -107,6 +107,9 @@ data class GraphInput(
     val anchors: List<Double>,
     val slotPatch: List<Int>,
     val firstForecastPatch: Int,
+    /** Per masked slot: its span reads a neighbour left / right (§8.2); shapes §8.1's growth. */
+    val slotHasLeft: List<Boolean>,
+    val slotHasRight: List<Boolean>,
 ) {
     override fun equals(other: Any?): Boolean =
         other is GraphInput &&
@@ -114,7 +117,8 @@ data class GraphInput(
             mSlots == other.mSlots && nMasked == other.nMasked &&
             patches.contentEquals(other.patches) && attnMask.contentEquals(other.attnMask) &&
             slotSel.contentEquals(other.slotSel) && anchors == other.anchors &&
-            slotPatch == other.slotPatch && firstForecastPatch == other.firstForecastPatch
+            slotPatch == other.slotPatch && firstForecastPatch == other.firstForecastPatch &&
+            slotHasLeft == other.slotHasLeft && slotHasRight == other.slotHasRight
 
     override fun hashCode(): Int =
         (((nCtx * 31 + t) * 31 + nMasked) * 31 + patches.contentHashCode()) * 31 + slotPatch.hashCode()
@@ -166,6 +170,9 @@ data class LoraSample(
     val probeDoseU: Double = 0.0,
     /** True for the trailing-forecast geometry — the only one the guard measures on. */
     val isForecast: Boolean = true,
+    /** The span's readable neighbours (§8.2), which shape its band's growth (§8.1). */
+    val hasLeft: Boolean,
+    val hasRight: Boolean,
 )
 
 /** What a fit minimises, picks its epoch on, and calls `improved`; stored by name. */

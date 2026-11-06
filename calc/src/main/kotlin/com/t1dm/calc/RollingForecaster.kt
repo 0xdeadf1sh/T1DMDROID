@@ -158,6 +158,7 @@ class RollingForecaster(
                     val head = model.adapt(out, built) ?: out.headRaw.map { it.toDouble() }
                     val all = native.assembleDecode(
                         desc, head, built.anchors, built.slotPatch, built.nMasked, carrySpread,
+                        built.slotHasLeft, built.slotHasRight,
                     )
                     native.forecastSlice(all, built.firstForecastPatch, built.t)
                 }

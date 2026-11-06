@@ -94,6 +94,8 @@ open class StubNativeCore : NativeCore {
         slotPatch: List<Int>,
         nMasked: Int,
         carrySpread: List<Double>,
+        hasLeft: List<Boolean>,
+        hasRight: List<Boolean>,
     ): Forecast = TODO("Phase 2: native assemble_decode")
 
     override fun stepStates(

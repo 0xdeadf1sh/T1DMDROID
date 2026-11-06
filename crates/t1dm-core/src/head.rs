@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 
 use crate::accuracy::{dts_abs_risk_grad, dts_risk, dts_zone_of_abs_risk, horizon_step, DtsZone};
 use crate::curve::DT_MINUTES;
-use crate::preproc::{assemble_decode, HeadSpec, ModelDescriptor, QUANTILE_LEVELS};
+use crate::preproc::{assemble_decode, spread_growth, HeadSpec, ModelDescriptor, QUANTILE_LEVELS};
 use crate::CoreError;
 
 /// Timesteps per slot.
@@ -743,6 +743,9 @@ pub struct LoraSample {
     pub probe_dose_u: f64,
     /// Trailing-forecast geometry: the only one the guard measures on.
     pub is_forecast: bool,
+    /// The span's readable neighbours (§8.2), which shape its band's growth (§8.1).
+    pub has_left: bool,
+    pub has_right: bool,
 }
 
 /// What a fit minimises; it also picks the returned epoch and decides `improved`.
@@ -1514,6 +1517,8 @@ fn sample_loss_and_grad(
         slot_patch,
         n as i32,
         vec![],
+        vec![sample.has_left; n],
+        vec![sample.has_right; n],
     )?;
     let kov = desc.kovatchev;
     // d loss / d q_tau_risk, and d loss / d median risk from a median-only term.
@@ -1598,11 +1603,12 @@ fn sample_loss_and_grad(
         let dm: f64 = if median_moves_levels { dq[row..row + N_QUANTILES].iter().sum() } else { 0.0 };
         d_head_raw[row] = dm + d_med[i] + c_distill * err[i];
     }
-    // §8.1, one span: spread_k(i) = mean_k·(1 + β|delta_i|), the scale holding no gradient.
+    // §8.1, one span: spread_k(i) = mean_k·g_i·(1 + β|delta_i|), the scale holding no gradient.
+    let growth = spread_growth(n_steps, sample.has_left, sample.has_right);
     let mut d_mean = [0.0f64; 2 * N_SPREADS];
     for i in 0..n_steps {
         let row = i * N_QUANTILES;
-        let scale = 1.0 + desc.spread_tie_beta * head_raw[row].abs();
+        let scale = growth[i] * (1.0 + desc.spread_tie_beta * head_raw[row].abs());
         // up_j (levels 4..6) = m + Σ_{t<=j} spread_t ; dn_j (level 2−j) = m − Σ_{t<=j} spread_3+t
         for t in 0..N_SPREADS {
             for j in t..N_SPREADS {
@@ -1810,6 +1816,8 @@ mod tests {
             hidden_pert: Vec::new(),
             probe_dose_u: 0.0,
             is_forecast: true,
+            has_left: true,
+            has_right: false,
         }
     }
 
@@ -2347,7 +2355,11 @@ mod tests {
             raw[i * N_QUANTILES] = r;
         }
         let n = s.n_slots as usize;
-        let fan = assemble_decode(d, raw, s.anchors.clone(), (0..n as i32).collect(), n as i32, vec![]).unwrap();
+        let fan = assemble_decode(
+            d, raw, s.anchors.clone(), (0..n as i32).collect(), n as i32, vec![],
+            vec![s.has_left; n], vec![s.has_right; n],
+        )
+        .unwrap();
         let mut sink = vec![0.0f64; fan.q_tau_risk.len()];
         pinball(d, &fan.q_tau_risk, &s.target_bg, n * PATCH_SIZE, &SPREAD_LEVELS, 1.0, &mut sink)
     }

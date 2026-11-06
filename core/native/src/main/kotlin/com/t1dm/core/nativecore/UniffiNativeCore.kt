@@ -256,8 +256,11 @@ class UniffiNativeCore : NativeCore {
         slotPatch: List<Int>,
         nMasked: Int,
         carrySpread: List<Double>,
-    ): Forecast =
-        uniffiAssembleDecode(desc.toUniffi(), headRaw, anchors, slotPatch, nMasked, carrySpread).toModel()
+        hasLeft: List<Boolean>,
+        hasRight: List<Boolean>,
+    ): Forecast = uniffiAssembleDecode(
+        desc.toUniffi(), headRaw, anchors, slotPatch, nMasked, carrySpread, hasLeft, hasRight,
+    ).toModel()
 
     override fun stepStates(
         desc: ModelDescriptor,
@@ -1101,6 +1104,8 @@ private fun UniffiGraphInput.toModel(): GraphInput = GraphInput(
     anchors = anchors,
     slotPatch = slotPatch,
     firstForecastPatch = firstForecastPatch,
+    slotHasLeft = slotHasLeft,
+    slotHasRight = slotHasRight,
 )
 
 private fun MaskSpan.toUniffi(): UniffiMaskSpan = UniffiMaskSpan(startPatch, length)
@@ -1148,7 +1153,7 @@ private fun UniffiLoraWeights.toModel(): LoraWeights =
     LoraWeights(config.toModel(), headSha256, dModel, hidden, outDim, params)
 
 private fun LoraSample.toUniffi(): UniffiLoraSample =
-    UniffiLoraSample(hidden, anchors, targetBg, nSlots, hiddenPert, probeDoseU, isForecast)
+    UniffiLoraSample(hidden, anchors, targetBg, nSlots, hiddenPert, probeDoseU, isForecast, hasLeft, hasRight)
 
 private fun LoraObjective.toUniffi(): UniffiLoraObjective = when (this) {
     LoraObjective.MEAN_RMSE -> UniffiLoraObjective.MEAN_RMSE

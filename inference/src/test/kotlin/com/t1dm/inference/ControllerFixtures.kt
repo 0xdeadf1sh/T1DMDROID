@@ -149,6 +149,8 @@ internal fun emptyGraphInput() = GraphInput(
     anchors = emptyList(),
     slotPatch = emptyList(),
     firstForecastPatch = 0,
+    slotHasLeft = emptyList(),
+    slotHasRight = emptyList(),
 )
 
 internal fun emptyTensors() = GraphTensors(

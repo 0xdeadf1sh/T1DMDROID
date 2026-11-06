@@ -439,7 +439,10 @@ class InferenceController(
         val latMs = (System.nanoTime() - t0) / 1_000_000.0
         val headRaw = verifiedHeadRaw(entry, gi, out, lora)
         val forecast = withContext(dispatchers.default) {
-            native.assembleDecode(desc, headRaw, gi.anchors, gi.slotPatch, gi.nMasked, CARRY_SPREAD)
+            native.assembleDecode(
+                desc, headRaw, gi.anchors, gi.slotPatch, gi.nMasked, CARRY_SPREAD,
+                gi.slotHasLeft, gi.slotHasRight,
+            )
         }
         val status = withContext(dispatchers.default) { native.forecastDegeneracyCheck(desc, forecast) }
         MaskedRun(
@@ -737,6 +740,8 @@ class InferenceController(
                     },
                     probeDoseU = PROBE_DOSE_U,
                     isForecast = isForecastWindow,
+                    hasLeft = gi.slotHasLeft.first(),
+                    hasRight = gi.slotHasRight.first(),
                 ),
             )
             if (fw.atEvent) nAtEvent++
@@ -1192,7 +1197,10 @@ class InferenceController(
     private suspend fun decode(desc: ModelDescriptor, headRaw: List<Double>, gi: GraphInput): Decoded {
         // Slice by patch, not count: an added infill span can't shift which rows panel/calc read.
         val forecast: Forecast = withContext(dispatchers.default) {
-            val all = native.assembleDecode(desc, headRaw, gi.anchors, gi.slotPatch, gi.nMasked, CARRY_SPREAD)
+            val all = native.assembleDecode(
+                desc, headRaw, gi.anchors, gi.slotPatch, gi.nMasked, CARRY_SPREAD,
+                gi.slotHasLeft, gi.slotHasRight,
+            )
             native.forecastSlice(all, gi.firstForecastPatch, gi.t)
         }
         val anchorBg = gi.anchors.getOrElse(gi.slotPatch.indexOf(gi.firstForecastPatch)) { Double.NaN }

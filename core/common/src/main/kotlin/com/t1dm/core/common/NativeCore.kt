@@ -101,6 +101,8 @@ interface NativeCore {
         slotPatch: List<Int>,
         nMasked: Int,
         carrySpread: List<Double>,
+        hasLeft: List<Boolean>,
+        hasRight: List<Boolean>,
     ): Forecast
 
     /** Head per-step input, splined from hidden over span nodes (§8.2); attnMask excludes pads. */

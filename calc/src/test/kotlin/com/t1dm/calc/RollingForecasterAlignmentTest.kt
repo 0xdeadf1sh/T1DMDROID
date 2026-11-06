@@ -390,6 +390,8 @@ class RollingForecasterAlignmentTest {
                 anchors = List(m) { bg.lastOrNull() ?: 120.0 },
                 slotPatch = List(m) { if (it < predPatches) patches + it else -1 },
                 firstForecastPatch = patches,
+                slotHasLeft = List(predPatches) { true },
+                slotHasRight = List(predPatches) { false },
             )
         }
 
@@ -407,6 +409,8 @@ class RollingForecasterAlignmentTest {
             slotPatch: List<Int>,
             nMasked: Int,
             carrySpread: List<Double>,
+            hasLeft: List<Boolean>,
+            hasRight: List<Boolean>,
         ): Forecast {
             carryCalls.add(carrySpread)
             val steps = nMasked * desc.patchSize

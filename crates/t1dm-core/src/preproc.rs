@@ -20,6 +20,8 @@ const LOG_RATIO_FLOOR: f64 = 1e-6;
 const N_SPREADS: usize = 3;
 /// The only architecture this build decodes.
 const ARCH_VERSION: &str = "risk-v5";
+/// SPEC/inference.md §8.1's spread growth profile.
+const SPREAD_GROWTH: &str = "sqrt-side-distance";
 /// The only `head.decoder` this build implements — the spline of INFERENCE.md §8.2.
 const HEAD_DECODER: &str = "bspline-centre-nodes";
 const N_QUANTILES: usize = 1 + 2 * N_SPREADS;
@@ -373,6 +375,8 @@ struct ConstantsDto {
     quantile_spread_min: f64,
     #[serde(rename = "SPREAD_TIE_BETA")]
     spread_tie_beta: f64,
+    #[serde(rename = "SPREAD_GROWTH")]
+    spread_growth: String,
     neg_fill: f64,
     #[serde(rename = "PREDICTION_HORIZON_HOURS")]
     prediction_horizon_hours: i32,
@@ -481,6 +485,14 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
         .and_then(|p| p.shape.last().copied());
     let g = d.geometry;
     let c = d.constants;
+    if c.spread_growth != SPREAD_GROWTH {
+        return Err(CoreError::Decode {
+            reason: format!(
+                "SPREAD_GROWTH {:?} is not {SPREAD_GROWTH:?}, the only fan this build decodes",
+                c.spread_growth
+            ),
+        });
+    }
     let desc = ModelDescriptor {
         bg: inputs.bg,
         doses: inputs.doses,
@@ -789,6 +801,9 @@ pub struct GraphInput {
     pub slot_patch: Vec<i32>,
     /// Absolute patch index, or `-1` when the window carries no future zone.
     pub first_forecast_patch: i32,
+    /// Per masked slot: its span has a readable neighbour left / right (§8.2), for §8.1's growth.
+    pub slot_has_left: Vec<bool>,
+    pub slot_has_right: Vec<bool>,
 }
 
 /// Spans never abut (separator anchors them); a visible future patch would fake a z=0 observation.
@@ -1062,6 +1077,7 @@ pub fn build_graph_input(
     for a in anchors.iter_mut().skip(n_masked) {
         *a = fill;
     }
+    let (slot_has_left, slot_has_right) = slot_sides(&slot_patch[..n_masked], &attn, t);
 
     Ok(GraphInput {
         n_ctx: n_ctx as i32,
@@ -1075,7 +1091,39 @@ pub fn build_graph_input(
         anchors,
         slot_patch,
         first_forecast_patch: if with_forecast { (pad0 + n_ctx) as i32 } else { -1 },
+        slot_has_left,
+        slot_has_right,
     })
+}
+
+/// §8.1: g = √d / mean √d over a span of `n` steps, d the steps to the nearest readable side.
+pub(crate) fn spread_growth(n: usize, has_left: bool, has_right: bool) -> Vec<f64> {
+    let root: Vec<f64> = (0..n)
+        .map(|p| {
+            let d = match (has_left, has_right) {
+                (true, true) => (p + 1).min(n - p),
+                (true, false) => p + 1,
+                (false, true) => n - p,
+                (false, false) => 1,
+            };
+            (d as f64).sqrt()
+        })
+        .collect();
+    let mean = root.iter().sum::<f64>() / n as f64;
+    root.iter().map(|r| r / mean).collect()
+}
+
+/// Per masked slot, its span's §8.2 neighbour on each side: what §8.1's growth reads.
+pub(crate) fn slot_sides(slot_patch: &[i32], attn_mask: &[f32], t: usize) -> (Vec<bool>, Vec<bool>) {
+    let mut left = vec![false; slot_patch.len()];
+    let mut right = vec![false; slot_patch.len()];
+    for sp in span_geometry(slot_patch, attn_mask, t) {
+        for j in sp.first_slot..sp.first_slot + sp.length {
+            left[j] = sp.has_left;
+            right[j] = sp.has_right;
+        }
+    }
+    (left, right)
 }
 
 /// Cubic B-spline step weights, row-major (l·PATCH_SIZE, n_nodes) (INFERENCE.md §8.2).
@@ -1240,6 +1288,8 @@ pub fn assemble_decode(
     slot_patch: Vec<i32>,
     n_masked: i32,
     carry_spread: Vec<f64>,
+    has_left: Vec<bool>,
+    has_right: Vec<bool>,
 ) -> Result<Forecast, CoreError> {
     let stride = PATCH_SIZE * N_QUANTILES;
     if head_raw.is_empty() || head_raw.len() % stride != 0 {
@@ -1255,6 +1305,15 @@ pub fn assemble_decode(
     if n_masked == 0 || n_masked > m {
         return Err(CoreError::Internal {
             reason: format!("n_masked {n_masked} outside 1..={m} head slots"),
+        });
+    }
+    if has_left.len() < n_masked || has_right.len() < n_masked {
+        return Err(CoreError::Internal {
+            reason: format!(
+                "need {n_masked} side flags, got {} left and {} right",
+                has_left.len(),
+                has_right.len()
+            ),
         });
     }
     if anchors.len() < n_masked || slot_patch.len() < n_masked {
@@ -1299,8 +1358,9 @@ pub fn assemble_decode(
         *mi = anchor + head_raw[i * N_QUANTILES];
     }
 
-    // SPEC/inference.md §8.1: each level's spread is its span mean, scaled by 1 + β·|delta|.
+    // SPEC/inference.md §8.1: each level's spread is its span mean · g · (1 + β·|delta|).
     let mut span_mean = vec![[0.0f64; 2 * N_SPREADS]; n_masked];
+    let mut growth = vec![1.0f64; n_steps];
     let mut start = 0usize;
     while start < n_masked {
         let mut end = start + 1;
@@ -1319,6 +1379,8 @@ pub fn assemble_decode(
                 slot[k] = s / n;
             }
         }
+        let g = spread_growth((end - start) * PATCH_SIZE, has_left[start], has_right[start]);
+        growth[start * PATCH_SIZE..end * PATCH_SIZE].copy_from_slice(&g);
         start = end;
     }
 
@@ -1333,7 +1395,7 @@ pub fn assemble_decode(
         let mut cs_up = 0.0f64;
         let mut cs_dn = 0.0f64;
         let mean = &span_mean[i / PATCH_SIZE];
-        let scale = 1.0 + beta * head_raw[i * N_QUANTILES].abs();
+        let scale = growth[i] * (1.0 + beta * head_raw[i * N_QUANTILES].abs());
         for k in 0..N_SPREADS {
             cs_up += mean[k] * scale;
             cs_dn += mean[N_SPREADS + k] * scale;
@@ -1728,6 +1790,7 @@ mod tests {
     /// The reference's own head output and anchors; feeding ours would let two errors cancel.
     fn decoded(c: &Value, d: &ModelDescriptor) -> Forecast {
         let n_masked = c["n_masked"].as_i64().unwrap() as i32;
+        let (left, right) = golden_sides(c);
         assemble_decode(
             d,
             f64s(&c["head_raw"]),
@@ -1735,8 +1798,24 @@ mod tests {
             c["slot_patch"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap() as i32).collect(),
             n_masked,
             vec![],
+            left,
+            right,
         )
         .expect("golden decode")
+    }
+
+    /// Per-slot side flags from the reference's own per-span node record.
+    fn golden_sides(c: &Value) -> (Vec<bool>, Vec<bool>) {
+        let n = c["n_masked"].as_u64().unwrap() as usize;
+        let (mut left, mut right) = (vec![false; n], vec![false; n]);
+        for sp in c["spans"].as_array().unwrap() {
+            let first = sp["first_slot"].as_u64().unwrap() as usize;
+            for j in first..first + sp["length"].as_u64().unwrap() as usize {
+                left[j] = sp["has_left"].as_bool().unwrap();
+                right[j] = sp["has_right"].as_bool().unwrap();
+            }
+        }
+        (left, right)
     }
 
     fn f64s(v: &Value) -> Vec<f64> {
@@ -1975,9 +2054,39 @@ mod tests {
         let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
         v["constants"].as_object_mut().unwrap().remove("SPREAD_TIE_BETA");
         assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
+
+        // Tied but grown otherwise, or not at all: a different fan, refused rather than misread.
+        for growth in [None, Some("none")] {
+            let mut v: Value = serde_json::from_str(REFERENCE_DESCRIPTOR).unwrap();
+            let c = v["constants"].as_object_mut().unwrap();
+            match growth {
+                None => {
+                    c.remove("SPREAD_GROWTH");
+                }
+                Some(g) => {
+                    c.insert("SPREAD_GROWTH".into(), serde_json::json!(g));
+                }
+            }
+            assert!(matches!(parse_descriptor(v.to_string()), Err(CoreError::Decode { .. })));
+        }
     }
 
-    /// §8.1: per span, every edge offset is the span-mean spread cumsum times 1 + β·|delta|.
+    /// §8.1's g: averages 1, grows away from the readable side, √n wider at a forecast's end.
+    #[test]
+    fn growth_profile_per_geometry() {
+        let n = 24;
+        let fc = spread_growth(n, true, false);
+        let bc = spread_growth(n, false, true);
+        let inf = spread_growth(n, true, true);
+        assert!(fc.windows(2).all(|w| w[1] > w[0]) && bc.windows(2).all(|w| w[1] < w[0]));
+        assert!((0..n).all(|p| (inf[p] - inf[n - 1 - p]).abs() < 1e-12) && inf[0] < inf[n / 2]);
+        for g in [&fc, &bc, &inf, &spread_growth(n, false, false)] {
+            assert!((g.iter().sum::<f64>() / n as f64 - 1.0).abs() < 1e-12);
+        }
+        assert!((fc[n - 1] / fc[0] - (n as f64).sqrt()).abs() < 1e-12);
+    }
+
+    /// §8.1: per span, every edge offset is the span-mean spread cumsum times g · (1 + β·|delta|).
     #[test]
     fn spreads_are_span_means_scaled_by_the_median_excursion() {
         let d = ModelDescriptor { spread_tie_beta: 0.7, ..test_descriptor() };
@@ -1986,7 +2095,11 @@ mod tests {
         for (i, h) in head.iter_mut().enumerate() {
             *h = ((i * 37 % 23) as f64 - 11.0) / 7.0;
         }
-        let f = assemble_decode(&d, head.clone(), vec![120.0; 3], slots, 3, vec![]).unwrap();
+        let (left, right) = (vec![true; 3], vec![true, true, false]);
+        let f = assemble_decode(&d, head.clone(), vec![120.0; 3], slots, 3, vec![], left, right)
+            .unwrap();
+        let grow: Vec<f64> = [spread_growth(2 * PATCH_SIZE, true, true), spread_growth(PATCH_SIZE, true, false)]
+            .concat();
         for (span, lo, hi) in [(0, 0, 2 * PATCH_SIZE), (1, 2 * PATCH_SIZE, 3 * PATCH_SIZE)] {
             let mut mean = [0.0f64; 2 * N_SPREADS];
             for i in lo..hi {
@@ -1996,7 +2109,7 @@ mod tests {
                 }
             }
             for i in lo..hi {
-                let scale = 1.0 + 0.7 * head[i * N_QUANTILES].abs();
+                let scale = grow[i] * (1.0 + 0.7 * head[i * N_QUANTILES].abs());
                 let row = i * N_QUANTILES;
                 let m = f.q_tau_risk[row + 3];
                 let (mut up, mut dn) = (0.0, 0.0);
@@ -2083,7 +2196,7 @@ mod tests {
         for kov in [OTHER_KOVATCHEV, SHIPPED_KOVATCHEV] {
             let d = ModelDescriptor { kovatchev: kov, ..test_descriptor() };
             let f =
-                assemble_decode(&d, flat.clone(), vec![120.0; 4], vec![0, 1, 2, 3], 4, vec![])
+                assemble_decode(&d, flat.clone(), vec![120.0; 4], vec![0, 1, 2, 3], 4, vec![], vec![true; 4], vec![false; 4])
                     .unwrap();
             for v in &f.median_bg {
                 assert!((v - 120.0).abs() < 1e-6, "anchor round trip under {kov:?} gave {v}");
@@ -2233,11 +2346,11 @@ mod tests {
         }
         let anchors = vec![120.0; 4];
         let slots = vec![0, 1, 2, 3];
-        let bare = assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, vec![])
+        let bare = assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, vec![], vec![true; 4], vec![false; 4])
             .unwrap();
         // [up .75 .9 .95 | dn .25 .1 .05]
         let carry = vec![0.10, 0.20, 0.30, 0.40, 0.50, 0.60];
-        let per = assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, carry.clone())
+        let per = assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, carry.clone(), vec![true; 4], vec![false; 4])
             .unwrap();
 
         for i in 0..bare.median_risk.len() {
@@ -2258,16 +2371,16 @@ mod tests {
             }
         }
 
-        let one = assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, vec![0.37])
+        let one = assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, vec![0.37], vec![true; 4], vec![false; 4])
             .unwrap();
-        let six = assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, vec![0.37; 6])
+        let six = assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, vec![0.37; 6], vec![true; 4], vec![false; 4])
             .unwrap();
         assert_eq!(one.q_tau_risk, six.q_tau_risk);
-        assert_eq!(bare.q_tau_risk, assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, vec![0.0]).unwrap().q_tau_risk);
+        assert_eq!(bare.q_tau_risk, assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, vec![0.0], vec![true; 4], vec![false; 4]).unwrap().q_tau_risk);
 
         for bad in [vec![0.1, 0.2], vec![0.0; 7], vec![-0.1; 6], vec![f64::NAN; 6]] {
             assert!(
-                assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, bad.clone())
+                assemble_decode(&d, head.clone(), anchors.clone(), slots.clone(), 4, bad.clone(), vec![true; 4], vec![false; 4])
                     .is_err(),
                 "carry {bad:?} must be refused"
             );
@@ -2293,7 +2406,7 @@ mod tests {
         for i in 0..24 {
             head[i * 7] = 100.0;
         }
-        let f = assemble_decode(&d, head, vec![120.0; 4], vec![0, 1, 2, 3], 4, vec![]).unwrap();
+        let f = assemble_decode(&d, head, vec![120.0; 4], vec![0, 1, 2, 3], 4, vec![], vec![true; 4], vec![false; 4]).unwrap();
         let hi = d.kovatchev.bg_clamp_max;
         assert!(f.median_bg.iter().all(|&v| (v - hi).abs() < 1e-6));
         assert_eq!(forecast_degeneracy_check(&test_descriptor(), &f), ForecastStatus::RailPinned);
