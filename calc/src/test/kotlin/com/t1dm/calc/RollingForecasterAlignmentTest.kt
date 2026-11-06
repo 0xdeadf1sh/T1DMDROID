@@ -432,6 +432,13 @@ class RollingForecasterAlignmentTest {
         override fun roundtrip(msg: String): String = unused()
         override fun decodeAdvert(payload: ByteArray): DecodedAdvert? = unused()
         override fun advertCrc32(payload: ByteArray): Long = unused()
+        override fun zooBgWindow(history: DoubleArray, ctx: Int, interpMaxSteps: Int): FloatArray? = unused()
+        override fun zooFan(
+            median: List<Double>,
+            offsets: List<List<Double>>,
+            clampMin: Double,
+            clampMax: Double,
+        ): List<Double> = unused()
         override fun kovatchevF(mgdl: Double): Double = unused()
         override fun kovatchevFInv(risk: Double): Double = unused()
         override fun parseDescriptor(json: String): ModelDescriptor? = unused()
