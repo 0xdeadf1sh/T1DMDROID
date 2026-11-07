@@ -939,10 +939,7 @@ class AppContainer(context: Context) {
             flavor = BuildConfig.FLAVOR,
             buildType = BuildConfig.BUILD_TYPE,
             gitSha = BuildConfig.GIT_SHA,
-            license = "MIT. Permission is granted, free of charge, to use, copy, modify, merge, publish, " +
-                "distribute, sublicense and/or sell copies of this software, provided the copyright " +
-                "notice and this permission notice are included. Provided \"as is\", without warranty " +
-                "of any kind.",
+            license = "GPL-3.0-or-later - no warranty - full text in LICENSE",
             modelId = meta?.modelId,
             modelArchVersion = meta?.archVersion,
             modelParamCount = meta?.paramCount,

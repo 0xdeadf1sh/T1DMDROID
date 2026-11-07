@@ -70,4 +70,4 @@ Android SDK 36 and the NDK, JDK 21, and Rust with the `aarch64-linux-android` an
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+GPL-3.0-or-later. See [LICENSE](LICENSE).
