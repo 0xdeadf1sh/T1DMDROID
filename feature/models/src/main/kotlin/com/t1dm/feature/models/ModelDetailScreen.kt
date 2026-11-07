@@ -98,6 +98,7 @@ fun ModelDetailScreen(
 
     // Hoisted for the same reason; saveable so rotation keeps it, keyed on model, stored nowhere.
     var gridHorizonMin by rememberSaveable(modelId) { mutableStateOf(CLARKE_GRID_DEFAULT_MIN) }
+    val dotCache = remember(modelId) { DotRasterCache() }
 
     val backtestDone = backtest as? ModelBacktest.Done
     // Keyed on the run: a finished backtest opens on its own figures.
@@ -225,7 +226,7 @@ fun ModelDetailScreen(
                 lattices == null -> Note("Computing…")
                 lattices.clarke.isEmpty -> Note("Zone regions unavailable")
                 h.medianLine.points.isEmpty() -> Note("No scored pairs")
-                else -> ErrorGridFigure(h.horizonMin, h.medianLine.points, { it.clarke.ordinal }, lattices.clarke)
+                else -> ErrorGridFigure(h.horizonMin, h.medianLine.points, { it.clarke.ordinal }, lattices.clarke, dotCache)
             }
         }
 
@@ -239,7 +240,7 @@ fun ModelDetailScreen(
                 lattices == null -> Note("Computing…")
                 lattices.dts.isEmpty -> Note("Zone regions unavailable")
                 h.medianLine.points.isEmpty() -> Note("No scored pairs")
-                else -> ErrorGridFigure(h.horizonMin, h.medianLine.points, { it.dts.ordinal }, lattices.dts)
+                else -> ErrorGridFigure(h.horizonMin, h.medianLine.points, { it.dts.ordinal }, lattices.dts, dotCache)
             }
         }
 

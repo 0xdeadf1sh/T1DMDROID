@@ -9,20 +9,35 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import android.graphics.Bitmap
+import android.graphics.Paint
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlin.math.ceil
 import androidx.compose.ui.unit.sp
 import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.model.BAND_COV50_TARGET
@@ -233,9 +248,11 @@ internal fun ErrorGridFigure(
     points: List<ScoredPoint>,
     zoneOf: (ScoredPoint) -> Int,
     grid: ZoneLattice,
+    dotCache: DotRasterCache,
 ) {
     val cs = MaterialTheme.colorScheme
     val p = LocalT1dmSemantics.current
+    val density = LocalDensity.current
     val measurer = rememberTextMeasurer()
     val shares = remember(points, zoneOf) { zoneShares(points, zoneOf) }
     val runs = remember(grid) { zoneRuns(grid) }
@@ -244,6 +261,12 @@ internal fun ErrorGridFigure(
     val fills = ramp.mapIndexed { i, c -> c.copy(alpha = REGION_ALPHA[i]) }
     val inks = ramp.mapIndexed { i, c -> c.copy(alpha = DOT_ALPHA[i]) }
 
+    val axisStyle = TextStyle(color = cs.onSurfaceVariant, fontSize = LabelSp)
+    val axisMax = grid.axisMaxMgdl.toFloat()
+    val ticks = listOf(0f, 100f, 200f, 300f, 400f).filter { it <= axisMax }
+    val laid = ticks.map { measurer.measure(fmtAxis(it), axisStyle) }
+    val offScale = remember(points, axisMax) { points.count { !onScale(it, axisMax) } }
+
     // Outside the Canvas, so shares still name every zone when the canvas draws nothing.
     Legend(
         ZONE_LETTERS.mapIndexed { i, letter ->
@@ -251,74 +274,140 @@ internal fun ErrorGridFigure(
         },
         trailing = if (shares.isEmpty()) null else "%",
     )
-    Canvas(Modifier.fillMaxWidth().height(GridHeight)) {
-        if (grid.isEmpty || points.isEmpty()) return@Canvas
-        val axisStyle = TextStyle(color = cs.onSurfaceVariant, fontSize = LabelSp)
-        val letterStyle = TextStyle(color = cs.onSurface.copy(alpha = 0.8f), fontSize = ZoneLetterSp)
-        val axisMax = grid.axisMaxMgdl.toFloat()
-        val ticks = listOf(0f, 100f, 200f, 300f, 400f).filter { it <= axisMax }
-        val laid = ticks.map { measurer.measure(fmtAxis(it), axisStyle) }
-        val gutter = laid.maxOf { it.size.width }.toFloat() + 5.dp.toPx()
-        val lineH = laid.maxOf { it.size.height }.toFloat()
-        val tickRow = lineH + 3.dp.toPx()
-        val capRow = lineH + 2.dp.toPx()
-        val bottom = size.height - tickRow - capRow
-        // Square: unequal mg/dL per pixel would tilt the identity line and every boundary with it.
-        val side = min(size.width - gutter, bottom - lineH / 2f)
-        if (side <= 0f) return@Canvas
-        val left = gutter + (size.width - gutter - side) / 2f
-        val plotTop = bottom - side
-        fun px(v: Float) = left + (v / axisMax) * side
-        fun py(v: Float) = bottom - (v / axisMax) * side
-
-        // Whole-pixel edges: a fractional edge antialiases into a false zone-boundary hairline.
-        fun snap(v: Float) = round(v)
-        runs.forEach { r ->
-            val x0 = snap(left + r.truthIndex * side / grid.cells)
-            val x1 = snap(left + (r.truthIndex + 1) * side / grid.cells)
-            val y0 = snap(bottom - r.predUntil * side / grid.cells)
-            val y1 = snap(bottom - r.predFrom * side / grid.cells)
-            if (x1 <= x0 || y1 <= y0) return@forEach
-            drawRect(fills[r.zone], Offset(x0, y0), Size(x1 - x0, y1 - y0))
+    // Width known in composition, so geometry and the dot raster exist on the first frame.
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val canvasSize = IntSize(constraints.maxWidth, with(density) { GridHeight.roundToPx() })
+        val geom = gridGeometry(canvasSize, laid, density)
+        val dotKey = geom?.takeUnless { grid.isEmpty || points.isEmpty() }?.let {
+            DotKey(points, zoneOf, inks, axisMax, it.left, it.plotTop, it.side, with(density) { DotRadius.toPx() })
         }
-
-        // No interior gridlines: over five tinted regions they read as zone boundaries.
-        drawRect(cs.outlineVariant, Offset(left, plotTop), Size(side, side), style = Stroke(1f))
-        drawLine(cs.onSurface.copy(alpha = 0.45f), Offset(left, bottom), Offset(left + side, plotTop), 1.dp.toPx())
-        val tick = 3.dp.toPx()
-        ticks.forEach { t ->
-            val gx = px(t)
-            val gy = py(t)
-            drawLine(cs.outlineVariant, Offset(left - tick, gy), Offset(left, gy), 1f)
-            drawLine(cs.outlineVariant, Offset(gx, bottom), Offset(gx, bottom + tick), 1f)
-            label(measurer, fmtAxis(t), axisStyle, left - tick - 2.dp.toPx(), gy, alignEnd = true)
-            label(measurer, fmtAxis(t), axisStyle, gx, bottom + tickRow - lineH, centreX = true)
+        val built by produceState<DotRaster?>(null, dotKey) {
+            val k = dotKey ?: return@produceState
+            if (dotCache.get(k) == null) value = withContext(Dispatchers.Default) { rasterizeDots(k) }.also(dotCache::put)
         }
+        // Cache first: a figure scrolling back in draws its dots on the first frame, not one later.
+        val dots = dotKey?.let { k -> dotCache.get(k) ?: built?.takeIf { it.key == k } }
+        Canvas(Modifier.fillMaxWidth().height(GridHeight)) {
+            if (grid.isEmpty || points.isEmpty() || geom == null) return@Canvas
+            val letterStyle = TextStyle(color = cs.onSurface.copy(alpha = 0.8f), fontSize = ZoneLetterSp)
+            val (left, plotTop, side, lineH, tickRow) = geom
+            val bottom = plotTop + side
+            fun px(v: Float) = left + (v / axisMax) * side
+            fun py(v: Float) = bottom - (v / axisMax) * side
 
-        // Off-axis pair is DROPPED and counted, never clamped, or it'd sit in an unclassified zone.
-        val r = DotRadius.toPx()
-        var offScale = 0
-        points.forEach { pt ->
-            val t = pt.truth
-            val q = pt.pred
-            if (!t.isFinite() || !q.isFinite() || t < 0.0 || t > axisMax || q < 0.0 || q > axisMax) {
-                offScale++
-                return@forEach
+            // Whole-pixel edges: a fractional edge antialiases into a false zone-boundary hairline.
+            fun snap(v: Float) = round(v)
+            runs.forEach { r ->
+                val x0 = snap(left + r.truthIndex * side / grid.cells)
+                val x1 = snap(left + (r.truthIndex + 1) * side / grid.cells)
+                val y0 = snap(bottom - r.predUntil * side / grid.cells)
+                val y1 = snap(bottom - r.predFrom * side / grid.cells)
+                if (x1 <= x0 || y1 <= y0) return@forEach
+                drawRect(fills[r.zone], Offset(x0, y0), Size(x1 - x0, y1 - y0))
             }
-            drawCircle(inks[zoneOf(pt)], r, Offset(px(t.toFloat()), py(q.toFloat())))
-        }
 
-        // Letters last: a dense scatter must not bury the only exact naming of a region.
-        anchors.forEach { a ->
-            centredLabel(measurer, ZONE_LETTERS[a.zone], letterStyle, px(a.truthMgdl.toFloat()), py(a.predMgdl.toFloat()))
-        }
+            // No interior gridlines: over five tinted regions they read as zone boundaries.
+            drawRect(cs.outlineVariant, Offset(left, plotTop), Size(side, side), style = Stroke(1f))
+            drawLine(cs.onSurface.copy(alpha = 0.45f), Offset(left, bottom), Offset(left + side, plotTop), 1.dp.toPx())
+            val tick = 3.dp.toPx()
+            ticks.forEach { t ->
+                val gx = px(t)
+                val gy = py(t)
+                drawLine(cs.outlineVariant, Offset(left - tick, gy), Offset(left, gy), 1f)
+                drawLine(cs.outlineVariant, Offset(gx, bottom), Offset(gx, bottom + tick), 1f)
+                label(measurer, fmtAxis(t), axisStyle, left - tick - 2.dp.toPx(), gy, alignEnd = true)
+                label(measurer, fmtAxis(t), axisStyle, gx, bottom + tickRow - lineH, centreX = true)
+            }
 
-        val caption = buildString {
-            append("x truth · y pred · mg/dL · $horizonMin min · n=${points.size}")
-            if (offScale > 0) append(" · $offScale off-scale")
+            // Whole-pixel offset: a fractional one would resample the raster and blur every dot.
+            dots?.let { drawImage(it.image, Offset(it.x.toFloat(), it.y.toFloat())) }
+
+            // Letters last: a dense scatter must not bury the only exact naming of a region.
+            anchors.forEach { a ->
+                centredLabel(measurer, ZONE_LETTERS[a.zone], letterStyle, px(a.truthMgdl.toFloat()), py(a.predMgdl.toFloat()))
+            }
+
+            val caption = buildString {
+                append("x truth · y pred · mg/dL · $horizonMin min · n=${points.size}")
+                if (offScale > 0) append(" · $offScale off-scale")
+            }
+            label(measurer, caption, axisStyle, left + side / 2f, bottom + tickRow + 2.dp.toPx(), centreX = true)
         }
-        label(measurer, caption, axisStyle, left + side / 2f, bottom + tickRow + 2.dp.toPx(), centreX = true)
     }
+}
+
+private data class GridGeometry(val left: Float, val plotTop: Float, val side: Float, val lineH: Float, val tickRow: Float)
+
+/** Null when the canvas is too small for any plot. */
+private fun gridGeometry(size: IntSize, laid: List<TextLayoutResult>, d: Density): GridGeometry? = with(d) {
+    if (size == IntSize.Zero || laid.isEmpty()) return null
+    val gutter = laid.maxOf { it.size.width }.toFloat() + 5.dp.toPx()
+    val lineH = laid.maxOf { it.size.height }.toFloat()
+    val tickRow = lineH + 3.dp.toPx()
+    val capRow = lineH + 2.dp.toPx()
+    val bottom = size.height - tickRow - capRow
+    // Square: unequal mg/dL per pixel would tilt the identity line and every boundary with it.
+    val side = min(size.width - gutter, bottom - lineH / 2f)
+    if (side <= 0f) return null
+    val left = gutter + (size.width - gutter - side) / 2f
+    GridGeometry(left, bottom - side, side, lineH, tickRow)
+}
+
+// Off-axis pair is DROPPED and counted, never clamped, or it'd sit in an unclassified zone.
+private fun onScale(pt: ScoredPoint, axisMax: Float): Boolean {
+    val t = pt.truth
+    val q = pt.pred
+    return t.isFinite() && q.isFinite() && t >= 0.0 && t <= axisMax && q >= 0.0 && q <= axisMax
+}
+
+/** Geometry in canvas px; [points] compares by identity in practice (ArrayList short-circuits). */
+internal data class DotKey(
+    val points: List<ScoredPoint>,
+    val zoneOf: (ScoredPoint) -> Int,
+    val inks: List<Color>,
+    val axisMax: Float,
+    val left: Float,
+    val plotTop: Float,
+    val side: Float,
+    val radius: Float,
+)
+
+/** [x],[y]: whole-px canvas position of the bitmap's top-left. */
+internal class DotRaster(val key: DotKey, val image: ImageBitmap, val x: Int, val y: Int)
+
+/** Per-screen, hoisted above the LazyColumn; two slots, one per error grid. Main thread only. */
+internal class DotRasterCache {
+    private val slots = ArrayDeque<DotRaster>(DOT_CACHE_SLOTS + 1)
+    fun get(k: DotKey): DotRaster? = slots.firstOrNull { it.key == k }
+    fun put(r: DotRaster) {
+        slots.removeAll { it.key == r.key }
+        slots.addFirst(r)
+        while (slots.size > DOT_CACHE_SLOTS) slots.removeLast()
+    }
+}
+
+private const val DOT_CACHE_SLOTS = 2
+
+// Point order kept; src-over is associative, so this matches the direct draw to 8-bit rounding.
+private fun rasterizeDots(k: DotKey): DotRaster {
+    val r = k.radius
+    val x0 = floor(k.left - r).toInt()
+    val y0 = floor(k.plotTop - r).toInt()
+    val dim = ceil(k.side + 2f * r).toInt() + 2
+    val bmp = Bitmap.createBitmap(dim, dim, Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(bmp)
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    val argb = k.inks.map { it.toArgb() }
+    val scale = k.side / k.axisMax
+    val ox = k.left - x0
+    val oy = k.plotTop + k.side - y0
+    for (pt in k.points) {
+        if (!onScale(pt, k.axisMax)) continue
+        paint.color = argb[k.zoneOf(pt)]
+        canvas.drawCircle(ox + pt.truth.toFloat() * scale, oy - pt.pred.toFloat() * scale, r, paint)
+    }
+    bmp.prepareToDraw()
+    return DotRaster(k, bmp.asImageBitmap(), x0, y0)
 }
 
 /** Percent off per-point enums the core classified; empty series stays empty, not partitioned. */
