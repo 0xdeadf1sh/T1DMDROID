@@ -13,6 +13,8 @@ import android.view.Choreographer
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.TextureView
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -37,7 +39,7 @@ fun TwinView(scan: TwinScan?, modifier: Modifier = Modifier) {
     val palette = LocalT1dmSemantics.current
     val cs = MaterialTheme.colorScheme
     val animate = LocalAnimationsEnabled.current
-    val view = remember { TwinTextureView(context, body) }
+    val view = remember { TwinTextureView(context, body).also { it.renderer.anchorVerts = pickAnchors(body) } }
     view.renderer.colors = TwinColors(palette.background.rgb(), cs.primary.rgb(), cs.secondary.rgb())
     view.animate = animate
     view.renderer.animate = animate
@@ -62,7 +64,10 @@ fun TwinView(scan: TwinScan?, modifier: Modifier = Modifier) {
             view.pause()
         }
     }
-    AndroidView(factory = { view }, modifier = modifier)
+    Box(modifier) {
+        AndroidView(factory = { view }, modifier = Modifier.fillMaxSize())
+        TwinCallouts(view.renderer, scan, Modifier.fillMaxSize())
+    }
 }
 
 private fun Color.rgb() = floatArrayOf(red, green, blue)
@@ -83,6 +88,7 @@ internal class TwinTextureView(context: Context, body: TwinBody) : TextureView(c
     private var lastFrameNs = 0L
     private var lastX = 0f
     private var lastY = 0f
+    private var activeId = MotionEvent.INVALID_POINTER_ID
 
     /** ≤60 fps from the frame clock, never the panel's full 120 Hz. */
     private val tick = object : Choreographer.FrameCallback {
@@ -98,7 +104,7 @@ internal class TwinTextureView(context: Context, body: TwinBody) : TextureView(c
 
     private val scale = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScale(d: ScaleGestureDetector): Boolean {
-            renderer.zoom = (renderer.zoom / d.scaleFactor).coerceIn(0.45f, 2.2f)
+            renderer.zoomTarget = (renderer.zoomTarget / d.scaleFactor).coerceIn(0.3f, 2.2f)
             return true
         }
     })
@@ -146,21 +152,32 @@ internal class TwinTextureView(context: Context, body: TwinBody) : TextureView(c
         scale.onTouchEvent(e)
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                lastX = e.x
-                lastY = e.y
+                track(e, 0)
                 parent?.requestDisallowInterceptTouchEvent(true)
             }
+            // The finger that stays down takes over; its stale delta was what snapped the view.
+            MotionEvent.ACTION_POINTER_UP -> track(e, if (e.actionIndex == 0) 1 else 0)
             MotionEvent.ACTION_MOVE -> if (!scale.isInProgress && e.pointerCount == 1) {
-                renderer.yawDrag += (e.x - lastX) / width * 4f
-                renderer.pitch = (renderer.pitch + (e.y - lastY) / height * 2f).coerceIn(-0.2f, 0.9f)
-                lastX = e.x
-                lastY = e.y
+                val i = e.findPointerIndex(activeId)
+                if (i >= 0) {
+                    renderer.yawTarget -= (e.getX(i) - lastX) / width * 4f
+                    renderer.pitchTarget = (renderer.pitchTarget + (e.getY(i) - lastY) / height * 2f)
+                        .coerceIn(-0.2f, 0.9f)
+                    lastX = e.getX(i)
+                    lastY = e.getY(i)
+                }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> parent?.requestDisallowInterceptTouchEvent(false)
         }
         renderer.lastTouchNs = System.nanoTime()
         kick()
         return true
+    }
+
+    private fun track(e: MotionEvent, index: Int) {
+        activeId = e.getPointerId(index)
+        lastX = e.getX(index)
+        lastY = e.getY(index)
     }
 
     private companion object {

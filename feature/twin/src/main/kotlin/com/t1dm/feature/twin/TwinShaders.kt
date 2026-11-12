@@ -9,37 +9,17 @@ void main() {
 }
 """
 
-internal const val RAIN_FS = """#version 300 es
+internal const val BACKDROP_FS = """#version 300 es
 precision highp float;
 in vec2 vUv;
-uniform vec2 uRes;
-uniform float uT;
 uniform vec3 uC1;
 uniform vec3 uBg;
 out vec4 o;
-float h(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 void main() {
-    float cw = max(10.0, uRes.x / 54.0);
-    vec2 size = vec2(cw, cw * 1.45);
-    vec2 px = vUv * uRes;
-    vec2 cell = floor(px / size);
-    vec2 sub = fract(px / size);
-    float col = cell.x;
-    float lane = step(0.4, h(vec2(col, 11.0)));
-    float speed = 0.05 + h(vec2(col, 1.0)) * 0.12;
-    float headY = 1.0 - fract(h(vec2(col, 7.0)) + uT * speed);
-    float y = (cell.y + 0.5) * size.y / uRes.y;
-    float dist = y - headY;
-    float trail = dist >= 0.0 ? exp(-dist * 9.0) : 0.0;
-    vec2 g = floor(sub * vec2(3.0, 5.0));
-    float bit = step(0.45, h(cell * 7.0 + g + floor(uT * 2.0 + h(cell) * 10.0)));
-    float inCell = step(0.18, sub.x) * step(sub.x, 0.82) * step(0.1, sub.y) * step(sub.y, 0.9);
-    float glyph = bit * inCell * lane;
-    float headGlow = exp(-abs(dist) * 90.0);
-    vec3 c = uBg + uC1 * glyph * (trail * 0.22 + headGlow * 0.45);
+    float glow = exp(-pow((vUv.y - 0.32) * 4.0, 2.0)) * 0.05;
+    vec3 c = uBg + uC1 * glow;
     float v = length(vUv - vec2(0.5, 0.45));
-    c *= 1.0 - v * 0.7;
-    o = vec4(c, 1.0);
+    o = vec4(c * (1.0 - v * 0.7), 1.0);
 }
 """
 

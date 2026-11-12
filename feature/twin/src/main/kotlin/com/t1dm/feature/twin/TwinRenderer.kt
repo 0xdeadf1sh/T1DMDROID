@@ -21,10 +21,22 @@ internal class TwinColors(val bg: FloatArray, val primary: FloatArray, val secon
 /** GL-thread only, except the @Volatile inputs the view writes. */
 internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer {
     @Volatile var colors = TwinColors(floatArrayOf(0f, 0f, 0f), floatArrayOf(0f, 1f, 1f), floatArrayOf(1f, 0f, 1f))
-    @Volatile var yawDrag = 0f
-    @Volatile var pitch = 0.12f
-    @Volatile var zoom = 1f
+    /** Gesture goals; the camera eases toward them each frame. */
+    @Volatile var yawTarget = 0f
+    @Volatile var pitchTarget = 0.12f
+    @Volatile var zoomTarget = 1f
     @Volatile var lastTouchNs = 0L
+
+    /** Vertex indices whose screen positions [anchorScreen] reports, in callout order. */
+    @Volatile var anchorVerts = IntArray(0)
+
+    /** Per anchor: x px, y px, 1 if on the camera's side else 0. A fresh array each frame. */
+    @Volatile var anchorScreen = FloatArray(0)
+        private set
+
+    /** 0 → 1 over the build-up; callouts wait on it. */
+    @Volatile var assembled = 0f
+        private set
 
     /** False: morphs and the build-up jump to their end state, and the scene holds still. */
     @Volatile var animate = true
@@ -41,7 +53,7 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
     private var dirty = true
 
     private var ok = false
-    private var rainProg = 0
+    private var backdropProg = 0
     private var floorProg = 0
     private var bodyProg = 0
     private var particleProg = 0
@@ -57,7 +69,12 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
     private val startNs = System.nanoTime()
     private var lastNs = startNs
     private var yawAuto = 0f
+    private var yaw = 0f
+    private var pitch = 0.12f
+    private var zoom = 1f
     private var revealStart = 0f
+    private val anchorP = FloatArray(4)
+    private val anchorClip = FloatArray(4)
 
     fun setTarget(weights: FloatArray, assemble: Boolean) {
         target = weights.copyOf()
@@ -67,7 +84,7 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         uniformCache.clear()
         ok = runCatching {
-            rainProg = program(FULLSCREEN_VS, RAIN_FS)
+            backdropProg = program(FULLSCREEN_VS, BACKDROP_FS)
             floorProg = program(FLOOR_VS, FLOOR_FS)
             bodyProg = program(BODY_VS, BODY_FS)
             particleProg = program(PARTICLE_VS, PARTICLE_FS)
@@ -117,26 +134,31 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
             revealStart = t
         }
         val k = if (still) 1f else ((t - revealStart) / ASSEMBLE_S).coerceIn(0f, 1f)
+        assembled = k
         val reveal = minY - 1f + (maxY - minY + 2f) * (1f - (1f - k) * (1f - k) * (1f - k))
 
         if (!still && now - lastTouchNs > IDLE_NS) yawAuto += dt * SPIN_RAD_S
-        val yaw = yawAuto + yawDrag
+        val ease = if (still) 1f else 1f - exp(-dt * CAMERA_RATE)
+        yaw += (yawAuto + yawTarget - yaw) * ease
+        pitch += (pitchTarget - pitch) * ease
+        zoom += (zoomTarget - zoom) * ease
         val bodyH = maxY - minY
-        val cy = (minY + maxY) / 2f
-        val dist = bodyH * 0.62f / tan(Math.toRadians(FOV_DEG / 2.0).toFloat()) * zoom
+        val z = zoom
+        val toFace = ((1f - z) / (1f - MIN_ZOOM)).coerceIn(0f, 1f)
+        val cy = (minY + maxY) / 2f + (maxY - bodyH * EYE_FROM_TOP - (minY + maxY) / 2f) * toFace
+        val dist = bodyH * 0.62f / tan(Math.toRadians(FOV_DEG / 2.0).toFloat()) * z
         val ex = sin(yaw) * cos(pitch) * dist
         val ey = cy + sin(pitch) * dist
         val ez = cos(yaw) * cos(pitch) * dist
         Matrix.setLookAtM(view, 0, ex, ey, ez, 0f, cy, 0f, 0f, 1f, 0f)
         Matrix.multiplyMM(mvp, 0, proj, 0, view, 0)
+        projectAnchors(ex, ez)
 
         glDisable(GL_DEPTH_TEST)
         glDisable(GL_BLEND)
-        glUseProgram(rainProg)
-        glUniform2f(loc(rainProg, "uRes"), width.toFloat(), height.toFloat())
-        glUniform1f(loc(rainProg, "uT"), t)
-        glUniform3fv(loc(rainProg, "uC1"), 1, c.primary, 0)
-        glUniform3fv(loc(rainProg, "uBg"), 1, c.bg, 0)
+        glUseProgram(backdropProg)
+        glUniform3fv(loc(backdropProg, "uC1"), 1, c.primary, 0)
+        glUniform3fv(loc(backdropProg, "uBg"), 1, c.bg, 0)
         glBindVertexArray(emptyVao)
         glDrawArrays(GL_TRIANGLES, 0, 3)
 
@@ -180,6 +202,26 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
         glDrawArrays(GL_POINTS, 0, PARTICLES)
         glDepthMask(true)
         glBindVertexArray(0)
+    }
+
+    /** Front test is horizontal: is the vertex nearer the eye than the body's vertical axis? */
+    private fun projectAnchors(ex: Float, ez: Float) {
+        val verts = anchorVerts
+        val out = FloatArray(verts.size * 3)
+        for ((i, v) in verts.withIndex()) {
+            val b = v * 3
+            if (b + 2 >= blended.size) continue
+            anchorP[0] = blended[b]
+            anchorP[1] = blended[b + 1]
+            anchorP[2] = blended[b + 2]
+            anchorP[3] = 1f
+            Matrix.multiplyMV(anchorClip, 0, mvp, 0, anchorP, 0)
+            val w = anchorClip[3].takeIf { it > 1e-4f } ?: continue
+            out[i * 3] = (anchorClip[0] / w * 0.5f + 0.5f) * width
+            out[i * 3 + 1] = (0.5f - anchorClip[1] / w * 0.5f) * height
+            out[i * 3 + 2] = if (anchorP[0] * ex + anchorP[2] * ez > 0f) 1f else 0f
+        }
+        anchorScreen = out
     }
 
     /** Eases [current] toward [target]; re-blends and re-uploads only while it moves. */
@@ -228,6 +270,11 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
     private companion object {
         const val TAG = "TwinRenderer"
         const val FOV_DEG = 35f
+        const val MIN_ZOOM = 0.3f
+        const val CAMERA_RATE = 9f
+
+        /** Eye line as a fraction of standing height, measured down from the crown. */
+        const val EYE_FROM_TOP = 0.07f
         const val FLOOR_SIZE = 120f
         const val ASSEMBLE_S = 1.8f
         const val SCAN_S = 3.5f
