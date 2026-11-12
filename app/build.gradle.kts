@@ -80,6 +80,13 @@ android {
     }
 }
 
+// x86_64 runs only on emulators; its MediaPipe library is 13 MB. The face scan fails closed there.
+androidComponents {
+    onVariants(selector().withBuildType("release")) { variant ->
+        variant.packaging.jniLibs.excludes.add("lib/x86_64/libmediapipe_tasks_jni.so")
+    }
+}
+
 dependencies {
     implementation(project(":core:ble"))
     implementation(project(":core:common"))

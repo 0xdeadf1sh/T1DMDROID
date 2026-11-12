@@ -31,6 +31,13 @@
 -dontwarn org.pytorch.**
 -dontwarn com.facebook.**
 
+# ── MediaPipe (the twin's face scan). Its native graph calls back into Java classes by name and
+#    reads protobuf-lite messages reflectively; neither AAR ships consumer rules. ──
+-keep class com.google.mediapipe.** { *; }
+-keep class com.google.protobuf.** { *; }
+-dontwarn com.google.mediapipe.**
+-dontwarn com.google.protobuf.**
+
 # ── osmdroid (the exercise track's map). Tile sources, overlays and its configuration are resolved
 #    by NAME through reflection and a preferences file, so a shrunk or renamed class fails only in the
 #    minified release — the variant that goes on the phone. ──
