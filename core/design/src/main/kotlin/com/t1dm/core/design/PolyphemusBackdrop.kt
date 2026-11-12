@@ -115,8 +115,8 @@ private fun hexagon(path: Path, cx: Float, cy: Float, r: Float) {
 
 private const val HEXES_ACROSS = 9f
 private const val FRAME_MS = 33L
-/** A whole number of 4 s sweeps, so the wrap never makes the wave jump. */
-private const val CLOCK_WRAP_S = 1000f
+/** A whole number of 6 s wave cycles, so the wrap never makes the wave jump. */
+private const val CLOCK_WRAP_S = 1002f
 
 private const val POLYPHEMUS_AGSL = """
 uniform float2 res;
@@ -166,10 +166,13 @@ half4 main(float2 fc) {
     float inBottom = smoothstep(bottomEdge - 8.0, bottomEdge + 24.0, y);
     float sTop = y / max(topEdge, 1.0);
     float sBottom = (y - bottomEdge) / max(res.y - bottomEdge, 1.0);
-    float dTop = sTop - (fract(t / 4.0) * 1.8 - 0.4);
-    float dBottom = sBottom - (fract(t / 4.0 + 0.5) * 1.8 - 0.4);
+    // 4 s sweep, then 2 s off-strip; ±0.7 past the strip leaves the window under 2 %.
+    float sweep = fract(t / 6.0) * 1.5;
+    float pos = sweep < 1.0 ? sweep * 2.4 - 0.7 : 9.0;
+    float dTop = sTop - pos;
+    float dBottom = sBottom - pos;
     float wave = inTop * exp(-dTop * dTop * 9.0) + inBottom * exp(-dBottom * dBottom * 9.0);
-    float bandA = clamp(wave * (edge * 0.85 + 0.04), 0.0, 1.0);
+    float bandA = clamp(wave * (edge * 0.16 + 0.0075), 0.0, 1.0);
     float a = baseAlpha + bandA * (1.0 - baseAlpha);
     float3 outCol = col * baseAlpha * (1.0 - bandA) + float3(c1.rgb) * bandA;
     return half4(half3(outCol), half(a));
