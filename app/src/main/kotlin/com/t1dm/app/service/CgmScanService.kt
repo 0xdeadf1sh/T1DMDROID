@@ -7,7 +7,6 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.content.res.Configuration
 import android.os.PowerManager
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
@@ -37,9 +36,7 @@ import androidx.glance.appwidget.updateAll
 import com.t1dm.app.widget.GlucoseWidget
 import androidx.compose.ui.graphics.toArgb
 import com.t1dm.core.design.applyWidgetPalette
-import com.t1dm.core.design.isSystemDark
 import com.t1dm.core.design.resolvePalette
-import kotlinx.coroutines.flow.MutableStateFlow
 import com.t1dm.core.model.InferenceState
 import com.t1dm.core.model.UnitSpace
 import kotlinx.coroutines.flow.combine
@@ -88,7 +85,7 @@ private data class GlanceInputs(
     val theme: ThemeSig,
 )
 
-private data class ThemeSig(val id: String, val customJson: String?, val systemDark: Boolean)
+private data class ThemeSig(val id: String, val customJson: String?)
 
 /** The next epoch-aligned period boundary strictly after [nowMs]. */
 internal fun nextTimedCycleMs(nowMs: Long, periodMin: Int): Long {
@@ -112,8 +109,6 @@ class CgmScanService : LifecycleService() {
     /** Touched only from `refreshGlanceSurfaces`, on one coroutine — no synchronization. */
     private var lastWidgetPushSig: List<Any?>? = null
 
-    private val systemDark = MutableStateFlow(false)
-
     /** Alarm-engine feed: authoritative-source readings plus injected ones. */
     private val readingBus = MutableSharedFlow<CgmReading>(replay = 0, extraBufferCapacity = 128)
 
@@ -130,7 +125,6 @@ class CgmScanService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         container = (application as T1dmApplication).container
-        systemDark.value = isSystemDark()
 
         createChannel()
         // Fails closed without BLUETOOTH_SCAN/CONNECT; MainActivity restarts once granted.
@@ -332,7 +326,6 @@ class CgmScanService : LifecycleService() {
             val theme = combine(
                 container.settingsStore.themeId,
                 container.settingsStore.customThemeJson,
-                systemDark,
                 ::ThemeSig,
             )
             combine(
@@ -381,8 +374,8 @@ class CgmScanService : LifecycleService() {
             null
         }
         // Same signature that drove this refresh, resolved once so both surfaces repaint together.
-        val (themeId, customJson, dark) = themeSig
-        val palette = resolvePalette(themeId, customJson, dark)
+        val (themeId, customJson) = themeSig
+        val palette = resolvePalette(themeId, customJson)
         val accent = palette.primary.toArgb()
         // A widget push parcels ~2 MB: only when what it draws changed.
         val widgetSig = widgetPushSig(
@@ -757,11 +750,6 @@ class CgmScanService : LifecycleService() {
             nowMs = now,
         )
         return DEBUG_SOURCE
-    }
-
-    override fun onConfigurationChanged(newConfig: Configuration) {
-        super.onConfigurationChanged(newConfig)
-        systemDark.value = isSystemDark()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {

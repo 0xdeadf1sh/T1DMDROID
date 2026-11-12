@@ -27,31 +27,23 @@ enum class T1dmFontId(val storageKey: String, val displayName: String) {
 private fun variableFont(res: Int, weight: FontWeight, vararg extra: FontVariation.Setting) =
     Font(res, weight, variationSettings = FontVariation.Settings(FontVariation.weight(weight.weight), *extra))
 
-private val NewsreaderFamily: FontFamily by lazy {
-    val opsz = FontVariation.Setting("opsz", 16f)
+private val OrbitronFamily: FontFamily by lazy {
     FontFamily(
-        variableFont(R.font.newsreader, FontWeight.Normal, opsz),
-        variableFont(R.font.newsreader, FontWeight.Medium, opsz),
-        variableFont(R.font.newsreader, FontWeight.Bold, opsz),
+        variableFont(R.font.orbitron, FontWeight.Medium),
+        variableFont(R.font.orbitron, FontWeight.Bold),
     )
 }
 
-private val JetBrainsMonoFamily: FontFamily by lazy {
-    FontFamily(
-        variableFont(R.font.jetbrains_mono, FontWeight.Normal),
-        variableFont(R.font.jetbrains_mono, FontWeight.Medium),
-        variableFont(R.font.jetbrains_mono, FontWeight.Bold),
-    )
-}
+private val SplineSansMonoFamily: FontFamily by lazy { FontFamily(Font(R.font.spline_sans_mono)) }
 
-private val InstrumentSerifFamily: FontFamily by lazy { FontFamily(Font(R.font.instrument_serif)) }
+private val ShareTechMonoFamily: FontFamily by lazy { FontFamily(Font(R.font.share_tech_mono)) }
 
 fun fontFamilyFor(id: T1dmFontId): FontFamily = when (id) {
-    T1dmFontId.POLYPHEMUS -> NewsreaderFamily
+    T1dmFontId.POLYPHEMUS -> SplineSansMonoFamily
     T1dmFontId.SYSTEM -> FontFamily.Default
     T1dmFontId.IBM_PLEX_MONO -> FontFamily(Font(R.font.ibm_plex_mono))
-    T1dmFontId.SHARE_TECH_MONO -> FontFamily(Font(R.font.share_tech_mono))
-    T1dmFontId.SPLINE_SANS_MONO -> FontFamily(Font(R.font.spline_sans_mono))
+    T1dmFontId.SHARE_TECH_MONO -> ShareTechMonoFamily
+    T1dmFontId.SPLINE_SANS_MONO -> SplineSansMonoFamily
     T1dmFontId.CRIMSON_TEXT -> FontFamily(
         Font(R.font.crimson_text, FontWeight.Normal),
         Font(R.font.crimson_text_bold, FontWeight.Bold),
@@ -61,12 +53,12 @@ fun fontFamilyFor(id: T1dmFontId): FontFamily = when (id) {
 fun typographyFor(id: T1dmFontId): Typography =
     if (id == T1dmFontId.POLYPHEMUS) polyphemusTypography() else typographyWith(fontFamilyFor(id))
 
-/** The site's type: Instrument Serif headings, Newsreader text, JetBrains Mono labels. */
+/** Orbitron headings, Spline Sans Mono text, Share Tech Mono HUD labels. */
 private fun polyphemusTypography(): Typography {
     val base = Typography()
-    fun display(s: TextStyle) = s.copy(fontFamily = InstrumentSerifFamily, fontWeight = FontWeight.Normal)
-    fun text(s: TextStyle) = s.copy(fontFamily = NewsreaderFamily)
-    fun label(s: TextStyle) = s.copy(fontFamily = JetBrainsMonoFamily, letterSpacing = 0.06.em)
+    fun display(s: TextStyle) = s.copy(fontFamily = OrbitronFamily, fontWeight = FontWeight.Medium, letterSpacing = 0.04.em)
+    fun text(s: TextStyle) = s.copy(fontFamily = SplineSansMonoFamily)
+    fun label(s: TextStyle) = s.copy(fontFamily = ShareTechMonoFamily, letterSpacing = 0.08.em)
     return base.copy(
         displayLarge = display(base.displayLarge), displayMedium = display(base.displayMedium), displaySmall = display(base.displaySmall),
         headlineLarge = display(base.headlineLarge), headlineMedium = display(base.headlineMedium), headlineSmall = display(base.headlineSmall),

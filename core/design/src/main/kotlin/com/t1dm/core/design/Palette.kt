@@ -1,7 +1,5 @@
 package com.t1dm.core.design
 
-import android.content.Context
-import android.content.res.Configuration
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -68,51 +66,27 @@ object ThemeIds {
     const val CUSTOM = "custom"
 }
 
-/** polyphemus.health light; shares its id with [PolyphemusDark], picked by system night mode. */
-val PolyphemusLight = T1dmPalette(
-    id = ThemeIds.POLYPHEMUS,
-    displayName = "Polyphemus",
-    dark = false,
-    background = Color(0xFFFFFFFF),
-    surface = Color(0xFFF6F6F6),
-    surfaceVariant = Color(0xFFEBEBEB),
-    primary = Color(0xFF0A0A0A),
-    onPrimary = Color(0xFFFFFFFF),
-    secondary = Color(0xFF555555),
-    onSecondary = Color(0xFFFFFFFF),
-    ink = Color(0xFF0A0A0A),
-    inkMuted = Color(0xFF555555),
-    grid = Color(0xFFE4E4E4),
-    urgentLow = Color(0xFFC4262E),
-    low = Color(0xFF8A5800),
-    inRange = Color(0xFF286B41),
-    high = Color(0xFFA04B08),
-    urgentHigh = Color(0xFF9E1B1B),
-)
-
-val PolyphemusDark = T1dmPalette(
+/** Dark only; magenta-on-cyan keeps it apart from Tron's cyan-on-amber. */
+val PolyphemusPalette = T1dmPalette(
     id = ThemeIds.POLYPHEMUS,
     displayName = "Polyphemus",
     dark = true,
-    background = Color(0xFF0A0A0A),
-    surface = Color(0xFF111111),
-    surfaceVariant = Color(0xFF1A1A1A),
-    primary = Color(0xFFF2F2F2),
-    onPrimary = Color(0xFF0A0A0A),
-    secondary = Color(0xFFA0A0A0),
-    onSecondary = Color(0xFF0A0A0A),
-    ink = Color(0xFFF2F2F2),
-    inkMuted = Color(0xFFA0A0A0),
-    grid = Color(0xFF232323),
-    urgentLow = Color(0xFFFF5A5F),
-    low = Color(0xFFE5B04C),
-    inRange = Color(0xFF5FBF80),
-    high = Color(0xFFF08A3C),
-    urgentHigh = Color(0xFFFF453A),
+    background = Color(0xFF05060A),
+    surface = Color(0xFF0B0D16),
+    surfaceVariant = Color(0xFF141829),
+    primary = Color(0xFF00F0FF),
+    onPrimary = Color(0xFF001418),
+    secondary = Color(0xFFFF2BD6),
+    onSecondary = Color(0xFF1A0016),
+    ink = Color(0xFFE6F7FF),
+    inkMuted = Color(0xFF8A93B8),
+    grid = Color(0xFF2B2050),
+    urgentLow = Color(0xFFFF3860),
+    low = Color(0xFFFFB000),
+    inRange = Color(0xFF39FF88),
+    high = Color(0xFFFF8A00),
+    urgentHigh = Color(0xFFFF2E2E),
 )
-
-fun polyphemusPalette(systemDark: Boolean): T1dmPalette =
-    if (systemDark) PolyphemusDark else PolyphemusLight
 
 val TronPalette = T1dmPalette(
     id = ThemeIds.TRON,
@@ -221,18 +195,12 @@ val MatrixPalette = T1dmPalette(
     urgentHigh = Color(0xFFFF5040),
 )
 
-/** In selector order, Polyphemus first as the default; its two variants share one entry. */
+/** In selector order, Polyphemus first as the default. */
 val BundledPalettes: List<T1dmPalette> = listOf(
-    PolyphemusLight, PolyphemusDark,
-    TronPalette, UmbrellaPalette, HelloKittyPalette, EInkPalette, MatrixPalette,
+    PolyphemusPalette, TronPalette, UmbrellaPalette, HelloKittyPalette, EInkPalette, MatrixPalette,
 )
 
-fun paletteForId(id: String?, systemDark: Boolean): T1dmPalette =
-    if (id == ThemeIds.POLYPHEMUS) {
-        polyphemusPalette(systemDark)
-    } else {
-        BundledPalettes.firstOrNull { it.id == id } ?: polyphemusPalette(systemDark)
-    }
+fun paletteForId(id: String?): T1dmPalette = BundledPalettes.firstOrNull { it.id == id } ?: PolyphemusPalette
 
 fun isKnownThemeId(id: String?): Boolean = id == ThemeIds.CUSTOM || BundledPalettes.any { it.id == id }
 
@@ -240,15 +208,12 @@ fun isKnownThemeId(id: String?): Boolean = id == ThemeIds.CUSTOM || BundledPalet
 fun normalizeThemeId(id: String?): String = if (isKnownThemeId(id)) id!! else ThemeIds.POLYPHEMUS
 
 /** The one place a custom theme decodes, so Activity, FGS notification and widget agree. */
-fun resolvePalette(themeId: String?, customThemeJson: String?, systemDark: Boolean): T1dmPalette =
+fun resolvePalette(themeId: String?, customThemeJson: String?): T1dmPalette =
     if (themeId == ThemeIds.CUSTOM && !customThemeJson.isNullOrBlank()) {
-        runCatching { parseThemeJson(customThemeJson) }.getOrDefault(polyphemusPalette(systemDark))
+        runCatching { parseThemeJson(customThemeJson) }.getOrDefault(PolyphemusPalette)
     } else {
-        paletteForId(themeId, systemDark)
+        paletteForId(themeId)
     }
-
-fun Context.isSystemDark(): Boolean =
-    (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
 
 /** Imported file: format="t1dm.theme" tag, name, dark, colors block of #RRGGBB strings. */
 fun parseThemeJson(text: String): T1dmPalette {

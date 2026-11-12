@@ -10,7 +10,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -58,10 +57,7 @@ class MainActivity : ComponentActivity() {
             val death by ss.deathMode.collectAsState(false)
             val hapticsKey by ss.hapticsLevel.collectAsState(HapticStrength.DEFAULT.name)
             val customJson by ss.customThemeJson.collectAsState(null)
-            val systemDark = isSystemInDarkTheme()
-            val palette = remember(themeId, customJson, systemDark) {
-                resolvePalette(themeId, customJson, systemDark)
-            }
+            val palette = remember(themeId, customJson) { resolvePalette(themeId, customJson) }
             SideEffect {
                 WindowCompat.getInsetsController(window, window.decorView).apply {
                     isAppearanceLightStatusBars = !palette.dark

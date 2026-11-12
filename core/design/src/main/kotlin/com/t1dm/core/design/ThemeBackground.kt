@@ -1,5 +1,6 @@
 package com.t1dm.core.design
 
+import android.os.Build
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
@@ -30,7 +31,9 @@ fun ThemeBackdrop(alphaPct: Int, modifier: Modifier = Modifier) {
     val palette = LocalT1dmSemantics.current
     val a = (alphaPct / 100f).coerceIn(0f, 1f)
     val resId = rememberBackdropRasterId(palette.id)
-    if (resId != 0) {
+    if (palette.id == ThemeIds.POLYPHEMUS && LocalAnimationsEnabled.current && Build.VERSION.SDK_INT >= 33) {
+        PolyphemusShaderBackdrop(palette, a, modifier)
+    } else if (resId != 0) {
         // Centred at half size, Fit rather than Crop, so the whole motif stays visible.
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Image(
@@ -58,6 +61,7 @@ private fun rememberBackdropRasterId(themeId: String): Int {
 }
 
 private val MOTIF_PAINTERS: Map<String, DrawScope.(T1dmPalette) -> Unit> = mapOf(
+    ThemeIds.POLYPHEMUS to { p -> drawPolyphemusBackground(p) },
     ThemeIds.TRON to { p -> drawTronBackground(p) },
     ThemeIds.UMBRELLA to { p -> drawUmbrellaBackground(p) },
     ThemeIds.HELLO_KITTY to { p -> drawHelloKittyBackground(p) },
