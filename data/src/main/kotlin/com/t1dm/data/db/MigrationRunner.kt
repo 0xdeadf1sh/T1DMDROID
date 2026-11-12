@@ -711,6 +711,25 @@ object MigrationRunner {
         }
     }
 
+    internal const val SQL_33_34_CREATE_TWIN_SCAN =
+        "CREATE TABLE IF NOT EXISTS `twin_scan` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+            "`atMs` INTEGER NOT NULL, `source` TEXT NOT NULL, `outputsJson` TEXT NOT NULL)"
+
+    internal const val SQL_33_34_INDEX_TWIN_SCAN =
+        "CREATE INDEX IF NOT EXISTS `index_twin_scan_atMs` ON `twin_scan` (`atMs`)"
+
+    internal const val SQL_33_34_CREATE_TWIN_OVERRIDE =
+        "CREATE TABLE IF NOT EXISTS `twin_override` (`key` TEXT NOT NULL, `value` REAL NOT NULL, " +
+            "`updatedAtMs` INTEGER NOT NULL, PRIMARY KEY(`key`))"
+
+    val MIGRATION_33_34 = object : Migration(33, 34) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_33_34_CREATE_TWIN_SCAN)
+            connection.execSQL(SQL_33_34_INDEX_TWIN_SCAN)
+            connection.execSQL(SQL_33_34_CREATE_TWIN_OVERRIDE)
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -744,6 +763,7 @@ object MigrationRunner {
         MIGRATION_30_31,
         MIGRATION_31_32,
         MIGRATION_32_33,
+        MIGRATION_33_34,
     )
 
     fun <T : RoomDatabase> configure(builder: RoomDatabase.Builder<T>): RoomDatabase.Builder<T> =

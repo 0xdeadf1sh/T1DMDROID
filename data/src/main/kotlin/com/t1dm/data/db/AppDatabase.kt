@@ -38,8 +38,10 @@ import kotlinx.coroutines.Dispatchers
         ExerciseSessionEntity::class,
         ExerciseFixEntity::class,
         EventTombstoneEntity::class,
+        TwinScanEntity::class,
+        TwinOverrideEntity::class,
     ],
-    version = 33,
+    version = 34,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -69,6 +71,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun exerciseSessionDao(): ExerciseSessionDao
     abstract fun exerciseFixDao(): ExerciseFixDao
     abstract fun eventTombstoneDao(): EventTombstoneDao
+    abstract fun twinScanDao(): TwinScanDao
+    abstract fun twinOverrideDao(): TwinOverrideDao
 
     companion object {
         const val NAME = "t1dm.db"

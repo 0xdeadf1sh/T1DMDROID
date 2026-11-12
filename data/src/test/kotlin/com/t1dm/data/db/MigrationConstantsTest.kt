@@ -100,6 +100,17 @@ class MigrationConstantsTest {
     }
 
     @Test
+    fun `the v34 twin DDL is exactly what Room generates`() {
+        val text = schemaText(34)
+        assertEquals(createSqlOf(text, "twin_scan"), MigrationRunner.SQL_33_34_CREATE_TWIN_SCAN)
+        assertEquals(createSqlOf(text, "twin_override"), MigrationRunner.SQL_33_34_CREATE_TWIN_OVERRIDE)
+        val index = MigrationRunner.SQL_33_34_INDEX_TWIN_SCAN
+            .replace("`twin_scan`", "`\${TABLE_NAME}`")
+            .replace("\"", "\\\"")
+        assertTrue("the twin_scan index DDL is not the one Room expects: $index", text.contains(index))
+    }
+
+    @Test
     fun `the real-sensor backfill writes exactly CgmSensorModelId AIDEX_X`() {
         assertTrue(
             "MIGRATION_10_11 no longer backfills ${CgmSensorModelId.AIDEX_X}: " +

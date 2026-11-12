@@ -38,6 +38,11 @@ import com.t1dm.data.db.LoggedExerciseEntity
 import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.InsulinTypeEntity
 import com.t1dm.data.db.EventTombstoneEntity
+import com.t1dm.data.db.TwinOverrideEntity
+import com.t1dm.data.db.TwinScanEntity
+import com.t1dm.data.db.encodeTwinOutputs
+import com.t1dm.data.db.toTwinScan
+import com.t1dm.core.model.TwinScan
 import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.TOMBSTONE_KIND_BG
 import com.t1dm.data.db.TOMBSTONE_KIND_DOSE
@@ -138,6 +143,8 @@ class T1dmRepository(
     private val exerciseSessions get() = db.exerciseSessionDao()
     private val tombstones get() = db.eventTombstoneDao()
     private val exerciseFixes get() = db.exerciseFixDao()
+    private val twinScans get() = db.twinScanDao()
+    private val twinOverrides get() = db.twinOverrideDao()
 
     /** BEGIN IMMEDIATE on the writer connection; every DAO call in body joins this transaction. */
     private suspend fun <R> inWriteTx(body: suspend () -> R): R =
@@ -1520,6 +1527,24 @@ class T1dmRepository(
 
     suspend fun infillCount(): Int = withContext(io) { infills.count() }
 
+    /** Oldest first: the order the tracking charts plot in. */
+    fun observeTwinScans(): Flow<List<TwinScan>> = twinScans.observeAll().map { rows -> rows.map { it.toTwinScan() } }
+
+    suspend fun latestTwinScan(): TwinScan? = withContext(io) { twinScans.latest()?.toTwinScan() }
+
+    suspend fun insertTwinScan(atMs: Long, source: String, outputs: Map<String, Double>): Long = withContext(io) {
+        twinScans.insert(TwinScanEntity(atMs = atMs, source = source, outputsJson = encodeTwinOutputs(outputs)))
+    }
+
+    fun observeTwinOverrides(): Flow<Map<String, Double>> =
+        twinOverrides.observeAll().map { rows -> rows.associate { it.key to it.value } }
+
+    suspend fun setTwinOverride(key: String, value: Double, nowMs: Long) = withContext(io) {
+        twinOverrides.upsert(TwinOverrideEntity(key, value, nowMs))
+    }
+
+    suspend fun clearTwinOverride(key: String) = withContext(io) { twinOverrides.delete(key) }
+
     /** Row-only wipe, never drop/recreate; preserveCgmSources keeps the live binding on reset. */
     suspend fun wipeAllData(preserveCgmSources: Boolean = false) = withContext(io) {
         inWriteTx {
@@ -1548,6 +1573,8 @@ class T1dmRepository(
             exerciseFixes.deleteAll()
             exerciseSessions.deleteAll()
             loggedExercise.deleteAll()
+            twinScans.deleteAll()
+            twinOverrides.deleteAll()
             // kv LAST: it holds the watch nonce ceilings + pairing bits + every setting.
             kv.deleteAll()
         }
