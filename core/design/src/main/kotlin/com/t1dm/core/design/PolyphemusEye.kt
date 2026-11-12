@@ -30,7 +30,7 @@ import kotlin.math.PI
 import kotlin.math.floor
 import kotlin.math.sin
 
-/** [distressed]: no usable reading; the eye glitches constantly. */
+/** [distressed]: no usable reading; the eye holds a pulsing RGB split. */
 @Composable
 fun PolyphemusEye(size: Dp, distressed: Boolean = false, modifier: Modifier = Modifier) {
     val paths = rememberEyePaths()
@@ -70,9 +70,8 @@ private fun parse(d: String): Path = PathParser().parsePathString(d).toPath()
 
 private fun DrawScope.drawEye(p: EyePaths, t: Float, line: Color, ghost: Color, distressed: Boolean) {
     val breath = 0.5f + 0.5f * sin(t * TAU / BREATH_S)
-    val glitch = if (distressed) 0.6f + 0.4f * hash(floor(t * 12f).toInt()) else glitchAt(t)
-    val jitter = if (glitch > 0f) (hash(floor(t * 30f).toInt() + 7) - 0.5f) * 1.6f * glitch else 0f
-    val irisX = gazeAt(t) + jitter
+    val glitch = if (distressed) 0.55f + 0.35f * sin(t * TAU / DISTRESS_S) else glitchAt(t)
+    val irisX = gazeAt(t)
 
     drawPath(p.brackets, line.copy(alpha = 0.55f + 0.45f * breath), style = Stroke(1.4f))
     withTransform({ scale(1f, opennessAt(t), pivot = CENTER) }) {
@@ -95,13 +94,13 @@ private fun DrawScope.drawEye(p: EyePaths, t: Float, line: Color, ghost: Color, 
     }
 }
 
-/** Saccades: holds a gaze, then snaps to the next in [SACCADE_S]. */
+/** Holds a gaze, then glides to the next over [GLIDE_S], eased at both ends. */
 private fun gazeAt(t: Float): Float {
     val i = floor(t / GAZE_HOLD_S).toInt()
     val from = gazeTarget(i - 1)
     val to = gazeTarget(i)
-    val k = ((t - i * GAZE_HOLD_S) / SACCADE_S).coerceIn(0f, 1f)
-    return from + (to - from) * (1f - (1f - k) * (1f - k))
+    val k = ((t - i * GAZE_HOLD_S) / GLIDE_S).coerceIn(0f, 1f)
+    return from + (to - from) * k * k * (3f - 2f * k)
 }
 
 private fun gazeTarget(i: Int): Float = if (i < 0) 0f else (hash(i * 31 + 3) - 0.5f) * 2f * GAZE_RANGE
@@ -117,7 +116,7 @@ private fun glitchAt(t: Float): Float {
     val i = floor(t / GLITCH_PERIOD_S).toInt()
     if (hash(i * 13 + 5) < 0.35f) return 0f
     val dt = t - (i * GLITCH_PERIOD_S + 1f + hash(i * 7 + 2) * 3f)
-    return if (dt in 0f..GLITCH_S) 1f else 0f
+    return if (dt in 0f..GLITCH_S) sin(PI.toFloat() * dt / GLITCH_S) else 0f
 }
 
 /** Deterministic in `[0,1)`. */
@@ -136,10 +135,11 @@ private const val BREATH_S = 3.2f
 private const val SCAN_PITCH = 2f
 private const val SCAN_UNITS_PER_S = 1.5f
 private const val SWEEP_S = 4.5f
-private const val GAZE_HOLD_S = 1.6f
-private const val SACCADE_S = 0.12f
+private const val GAZE_HOLD_S = 2.4f
+private const val GLIDE_S = 0.6f
 private const val GAZE_RANGE = 3f
 private const val BLINK_PERIOD_S = 7f
-private const val BLINK_S = 0.18f
+private const val BLINK_S = 0.3f
 private const val GLITCH_PERIOD_S = 5.3f
-private const val GLITCH_S = 0.16f
+private const val GLITCH_S = 0.7f
+private const val DISTRESS_S = 2.2f
