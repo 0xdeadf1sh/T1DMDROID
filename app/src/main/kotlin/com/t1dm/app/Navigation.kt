@@ -82,6 +82,10 @@ import com.t1dm.core.design.SignalBars
 import com.t1dm.core.design.PolyphemusEye
 import com.t1dm.core.design.hapticClickable
 import com.t1dm.core.design.ThemeBackdrop
+import com.t1dm.core.design.BackdropBars
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import com.t1dm.core.design.navEnter
 import com.t1dm.core.design.navExit
 import com.t1dm.app.di.AppContainer.BolusAdviceUi
@@ -248,6 +252,7 @@ fun T1dmApp(container: AppContainer) {
     // The base is painted here so the motif can sit at a low alpha under a transparent Scaffold.
     val bgAlphaPct by container.settingsStore.backgroundAlphaPct
         .collectAsState(com.t1dm.app.settings.SettingsStore.DEFAULT_BG_ALPHA_PCT)
+    val backdropBars = remember { BackdropBars() }
     // Not per-route: route scope dies on exit, killing the undo. Writes go on container.appScope.
     val snackbars = remember { SnackbarHostState() }
     val receiptScope = rememberCoroutineScope()
@@ -270,14 +275,18 @@ fun T1dmApp(container: AppContainer) {
         }
     }
     Box(Modifier.fillMaxSize().background(LocalT1dmSemantics.current.background)) {
-        ThemeBackdrop(bgAlphaPct)
+        ThemeBackdrop(bgAlphaPct, backdropBars)
         Scaffold(
             containerColor = Color.Transparent,
             // targetSdk 36 never resizes window; imePadding keeps receipts from hiding under it.
             snackbarHost = { SnackbarHost(snackbars, Modifier.imePadding()) },
             // Transparent container derives contentColor from Transparent, collapsing to black.
             contentColor = MaterialTheme.colorScheme.onBackground,
-            bottomBar = { T1dmBottomBar(navController, container, wheel, wheelMotion, onWheelSelect) },
+            bottomBar = {
+                Box(Modifier.onGloballyPositioned { backdropBars.bottomEdgePx = it.positionInRoot().y }) {
+                    T1dmBottomBar(navController, container, wheel, wheelMotion, onWheelSelect)
+                }
+            },
         ) { padding ->
             // Only insets apply here; consumeWindowInsets first avoids doubling with imePadding.
             Column(
@@ -288,7 +297,9 @@ fun T1dmApp(container: AppContainer) {
             ) {
                 // Flavor-specific: real text in the public build, no-op in the personal build.
                 Disclaimer()
-                Breadcrumb(navController, container)
+                Box(Modifier.onGloballyPositioned { backdropBars.topEdgePx = it.boundsInRoot().bottom }) {
+                    Breadcrumb(navController, container)
+                }
                 T1dmNavHost(
                     navController,
                     container,

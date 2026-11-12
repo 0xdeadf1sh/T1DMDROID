@@ -5,9 +5,12 @@ import androidx.annotation.RequiresApi
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -20,9 +23,21 @@ import androidx.compose.ui.graphics.toArgb
 import kotlinx.coroutines.delay
 import kotlin.math.sqrt
 
+/** Root-space px: top bar's bottom edge, bottom bar's top edge; the sweep runs outside them. */
+@Stable
+class BackdropBars {
+    var topEdgePx by mutableFloatStateOf(0f)
+    var bottomEdgePx by mutableFloatStateOf(Float.MAX_VALUE)
+}
+
 @RequiresApi(33)
 @Composable
-internal fun PolyphemusShaderBackdrop(p: T1dmPalette, alpha: Float, modifier: Modifier = Modifier) {
+internal fun PolyphemusShaderBackdrop(
+    p: T1dmPalette,
+    alpha: Float,
+    bars: BackdropBars?,
+    modifier: Modifier = Modifier,
+) {
     val shader = remember { RuntimeShader(POLYPHEMUS_AGSL) }
     val brush = remember(shader) { ShaderBrush(shader) }
     // ~30 fps: a backdrop needs no more, and it runs behind every screen.
@@ -41,6 +56,8 @@ internal fun PolyphemusShaderBackdrop(p: T1dmPalette, alpha: Float, modifier: Mo
         shader.setColorUniform("c2", p.secondary.toArgb())
         shader.setColorUniform("gridc", p.grid.toArgb())
         shader.setFloatUniform("baseAlpha", alpha)
+        shader.setFloatUniform("topEdge", bars?.topEdgePx ?: 0f)
+        shader.setFloatUniform("bottomEdge", (bars?.bottomEdgePx ?: size.height).coerceAtMost(size.height))
         drawRect(brush)
     }
 }
@@ -98,13 +115,15 @@ private fun hexagon(path: Path, cx: Float, cy: Float, r: Float) {
 
 private const val HEXES_ACROSS = 9f
 private const val FRAME_MS = 33L
-/** A whole number of 7 s band sweeps, so the wrap never makes the band jump. */
-private const val CLOCK_WRAP_S = 1008f
+/** A whole number of 4 s sweeps, so the wrap never makes the wave jump. */
+private const val CLOCK_WRAP_S = 1000f
 
 private const val POLYPHEMUS_AGSL = """
 uniform float2 res;
 uniform float t;
 uniform float baseAlpha;
+uniform float topEdge;
+uniform float bottomEdge;
 layout(color) uniform half4 bg;
 layout(color) uniform half4 c1;
 layout(color) uniform half4 c2;
@@ -141,14 +160,18 @@ half4 main(float2 fc) {
     float v = length(uv - 0.5) * 1.25;
     col *= 1.0 - 0.45 * v * v;
 
-    // The band is its own layer, opaque past the user's backdrop alpha; output is premultiplied.
-    float d = uv.y - (fract(t / 7.0) * 1.3 - 0.15);
-    float core = exp(-d * d * 6000.0);
-    float trail = d < 0.0 ? exp(d * 14.0) : 0.0;
-    float bandA = clamp(core * 0.9 + trail * (0.12 + edge * 0.6), 0.0, 1.0);
-    float3 bandCol = mix(float3(c1.rgb), float3(1.0), core * 0.5);
+    // A wave of lit hex edges, only behind the bars; past the user's backdrop alpha, premultiplied.
+    float y = fc.y;
+    float inTop = 1.0 - smoothstep(topEdge - 24.0, topEdge + 8.0, y);
+    float inBottom = smoothstep(bottomEdge - 8.0, bottomEdge + 24.0, y);
+    float sTop = y / max(topEdge, 1.0);
+    float sBottom = (y - bottomEdge) / max(res.y - bottomEdge, 1.0);
+    float dTop = sTop - (fract(t / 4.0) * 1.8 - 0.4);
+    float dBottom = sBottom - (fract(t / 4.0 + 0.5) * 1.8 - 0.4);
+    float wave = inTop * exp(-dTop * dTop * 9.0) + inBottom * exp(-dBottom * dBottom * 9.0);
+    float bandA = clamp(wave * (edge * 0.85 + 0.04), 0.0, 1.0);
     float a = baseAlpha + bandA * (1.0 - baseAlpha);
-    float3 outCol = col * baseAlpha * (1.0 - bandA) + bandCol * bandA;
+    float3 outCol = col * baseAlpha * (1.0 - bandA) + float3(c1.rgb) * bandA;
     return half4(half3(outCol), half(a));
 }
 """

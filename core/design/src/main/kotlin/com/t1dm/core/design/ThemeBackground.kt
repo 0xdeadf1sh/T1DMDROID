@@ -26,13 +26,13 @@ import androidx.compose.ui.graphics.lerp
 
 /** Painters paint at full strength; caller applies the user's alpha once, over the whole layer. */
 @Composable
-fun ThemeBackdrop(alphaPct: Int, modifier: Modifier = Modifier) {
+fun ThemeBackdrop(alphaPct: Int, bars: BackdropBars? = null, modifier: Modifier = Modifier) {
     if (alphaPct <= 0) return
     val palette = LocalT1dmSemantics.current
     val a = (alphaPct / 100f).coerceIn(0f, 1f)
     val resId = rememberBackdropRasterId(palette.id)
     if (palette.id == ThemeIds.POLYPHEMUS && LocalAnimationsEnabled.current && Build.VERSION.SDK_INT >= 33) {
-        PolyphemusShaderBackdrop(palette, a, modifier)
+        PolyphemusShaderBackdrop(palette, a, bars, modifier)
     } else if (resId != 0) {
         // Centred at half size, Fit rather than Crop, so the whole motif stays visible.
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
