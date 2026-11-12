@@ -3,7 +3,7 @@ package com.t1dm.feature.twin
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -131,7 +131,8 @@ private fun TrendChart(points: List<Pair<Long, Double>>, trend: Trend, modifier:
         modifier
             .pointerInput(points) { detectTapGestures { scrubX = if (scrubX == null) it.x else null } }
             .pointerInput(points) {
-                detectDragGestures(onDragEnd = { scrubX = null }, onDragCancel = { scrubX = null }) { change, _ ->
+                // Horizontal only: a vertical drag must still scroll the list of cards.
+                detectHorizontalDragGestures(onDragEnd = { scrubX = null }, onDragCancel = { scrubX = null }) { change, _ ->
                     scrubX = change.position.x
                 }
             },
