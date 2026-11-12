@@ -40,7 +40,8 @@ internal fun PolyphemusShaderBackdrop(p: T1dmPalette, alpha: Float, modifier: Mo
         shader.setColorUniform("c1", p.primary.toArgb())
         shader.setColorUniform("c2", p.secondary.toArgb())
         shader.setColorUniform("gridc", p.grid.toArgb())
-        drawRect(brush, alpha = alpha)
+        shader.setFloatUniform("baseAlpha", alpha)
+        drawRect(brush)
     }
 }
 
@@ -97,11 +98,13 @@ private fun hexagon(path: Path, cx: Float, cy: Float, r: Float) {
 
 private const val HEXES_ACROSS = 9f
 private const val FRAME_MS = 33L
-private const val CLOCK_WRAP_S = 1000f
+/** A whole number of 7 s band sweeps, so the wrap never makes the band jump. */
+private const val CLOCK_WRAP_S = 1008f
 
 private const val POLYPHEMUS_AGSL = """
 uniform float2 res;
 uniform float t;
+uniform float baseAlpha;
 layout(color) uniform half4 bg;
 layout(color) uniform half4 c1;
 layout(color) uniform half4 c2;
@@ -129,9 +132,6 @@ half4 main(float2 fc) {
     float edge = 1.0 - smoothstep(0.0, 0.035, e);
     float3 col = mix(float3(bg.rgb), float3(gridc.rgb), edge * 0.55);
 
-    float d = uv.y - fract(t * 0.08);
-    col += float3(c1.rgb) * exp(-d * d * 900.0) * 0.25 * (0.4 + edge);
-
     float breath = 0.5 + 0.5 * sin(t * 0.6);
     col += float3(c2.rgb) * 0.10 * breath * smoothstep(0.9, 0.0, distance(uv, float2(1.0, 0.0)));
     col += float3(c1.rgb) * 0.08 * (1.0 - breath) * smoothstep(0.9, 0.0, distance(uv, float2(0.0, 1.0)));
@@ -140,6 +140,15 @@ half4 main(float2 fc) {
     col += (hash(fc + fract(t)) - 0.5) * 0.035;
     float v = length(uv - 0.5) * 1.25;
     col *= 1.0 - 0.45 * v * v;
-    return half4(half3(col), 1.0);
+
+    // The band is its own layer, opaque past the user's backdrop alpha; output is premultiplied.
+    float d = uv.y - (fract(t / 7.0) * 1.3 - 0.15);
+    float core = exp(-d * d * 6000.0);
+    float trail = d < 0.0 ? exp(d * 14.0) : 0.0;
+    float bandA = clamp(core * 0.9 + trail * (0.12 + edge * 0.6), 0.0, 1.0);
+    float3 bandCol = mix(float3(c1.rgb), float3(1.0), core * 0.5);
+    float a = baseAlpha + bandA * (1.0 - baseAlpha);
+    float3 outCol = col * baseAlpha * (1.0 - bandA) + bandCol * bandA;
+    return half4(half3(outCol), half(a));
 }
 """
