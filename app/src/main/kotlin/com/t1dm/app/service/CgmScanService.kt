@@ -20,7 +20,7 @@ import com.t1dm.alerts.AlertActuatorConfig
 import com.t1dm.alerts.AndroidAlarmNotifier
 import com.t1dm.alerts.isDismissable
 import com.t1dm.alerts.kind
-import com.t1dm.app.MainActivity
+import com.t1dm.app.bgIntent
 import com.t1dm.app.T1dmApplication
 import com.t1dm.app.di.AppContainer
 import com.t1dm.app.notify.AlarmActionReceiver
@@ -424,7 +424,7 @@ class CgmScanService : LifecycleService() {
     }
 
     private fun contentIntent(): PendingIntent {
-        val i = Intent(this, MainActivity::class.java)
+        val i = bgIntent(this)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         return PendingIntent.getActivity(
             this, 1, i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
@@ -432,7 +432,7 @@ class CgmScanService : LifecycleService() {
     }
 
     private fun fullScreenIntent(): PendingIntent {
-        val i = Intent(this, MainActivity::class.java)
+        val i = bgIntent(this)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         return PendingIntent.getActivity(
             this, 2, i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,

@@ -13,7 +13,7 @@ import android.graphics.drawable.Icon
 import android.location.LocationManager
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
-import com.t1dm.app.MainActivity
+import com.t1dm.app.bgIntent
 import com.t1dm.app.T1dmApplication
 import com.t1dm.app.di.AppContainer
 import com.t1dm.core.model.ActiveExercise
@@ -213,7 +213,7 @@ class ExerciseService : LifecycleService() {
 
     /** Its own request code: shared with the monitor's filterEquals would update each other. */
     private fun openIntent(): PendingIntent {
-        val i = Intent(this, MainActivity::class.java)
+        val i = bgIntent(this)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         return PendingIntent.getActivity(
             this, RQ_OPEN, i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,

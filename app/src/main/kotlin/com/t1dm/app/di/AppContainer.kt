@@ -2038,6 +2038,16 @@ class AppContainer(context: Context) {
         )
     }
 
+    val twinScans: Flow<List<com.t1dm.core.model.TwinScan>> get() = repository.observeTwinScans()
+
+    /** Stands in for the encrypted scan until the server contract settles. */
+    fun mockTwinScan() {
+        appScope.launch {
+            val outputs = com.t1dm.feature.twin.MockTwin.next(repository.latestTwinScan(), kotlin.random.Random.Default)
+            repository.insertTwinScan(System.currentTimeMillis(), com.t1dm.core.model.TwinSource.MOCK, outputs)
+        }
+    }
+
     /** Published by [com.t1dm.app.service.ExerciseService]; null whenever no bout is running. */
     val activeExercise = MutableStateFlow<ActiveExercise?>(null)
 

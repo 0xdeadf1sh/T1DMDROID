@@ -1,7 +1,6 @@
 package com.t1dm.app.widget
 
 import android.content.Context
-import android.content.Intent
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.DpSize
@@ -42,7 +41,7 @@ import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
-import com.t1dm.app.MainActivity
+import com.t1dm.app.bgIntent
 import com.t1dm.app.R
 import com.t1dm.app.notify.BgFormat
 import com.t1dm.app.notify.BgGlance
@@ -146,7 +145,7 @@ private fun WidgetSurface(snap: WidgetSnapshot) {
             }
             .cornerRadius(24.dp)
             .padding(horizontal = 14.dp, vertical = 12.dp)
-            .clickable(actionStartActivity(Intent(LocalContext.current, MainActivity::class.java))),
+            .clickable(actionStartActivity(bgIntent(LocalContext.current))),
         contentAlignment = Alignment.Center,
     ) {
         when {

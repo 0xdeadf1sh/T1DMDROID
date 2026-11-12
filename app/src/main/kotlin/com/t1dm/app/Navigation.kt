@@ -118,6 +118,7 @@ import com.t1dm.app.di.AppContainer
 import com.t1dm.app.backup.BackupRoute
 import com.t1dm.feature.settings.NightscoutSettingsScreen
 import com.t1dm.feature.settings.DeathModeScreen
+import com.t1dm.feature.twin.TwinScreen
 import com.t1dm.app.notify.BgFormat
 import com.t1dm.app.notify.BgGlanceComputer
 import com.t1dm.core.model.SensitivityEstimate
@@ -232,6 +233,7 @@ internal data class Destination(val route: String, val label: String)
 
 // The ring the nav wheel turns through, in wheel order.
 internal val destinations = listOf(
+    Destination("twin", "Twin"),
     Destination("dashboard", "BG"),
     Destination("circadian", "Clock"),
     Destination("stats", "Stats"),
@@ -247,8 +249,17 @@ internal val destinations = listOf(
 )
 
 @Composable
-fun T1dmApp(container: AppContainer) {
+fun T1dmApp(container: AppContainer, openRoute: String? = null, onRouteOpened: () -> Unit = {}) {
     val navController = rememberNavController()
+    LaunchedEffect(openRoute) {
+        if (openRoute == null) return@LaunchedEffect
+        navController.navigate(openRoute) {
+            launchSingleTop = true
+            restoreState = true
+            popUpTo("twin") { saveState = true }
+        }
+        onRouteOpened()
+    }
     // The base is painted here so the motif can sit at a low alpha under a transparent Scaffold.
     val bgAlphaPct by container.settingsStore.backgroundAlphaPct
         .collectAsState(com.t1dm.app.settings.SettingsStore.DEFAULT_BG_ALPHA_PCT)
@@ -270,7 +281,7 @@ fun T1dmApp(container: AppContainer) {
             navController.navigate(destinations[index].route) {
                 launchSingleTop = true
                 restoreState = true
-                popUpTo("dashboard") { saveState = true }
+                popUpTo("twin") { saveState = true }
             }
         }
     }
@@ -347,7 +358,8 @@ internal data class Crumb(val label: String, val route: String?)
 internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = null): List<Crumb> {
     fun settings(vararg tail: Crumb) = listOf(Crumb("Settings", "settings"), *tail)
     return when (route) {
-        null, "dashboard" -> listOf(Crumb("BG", null))
+        null, "twin" -> listOf(Crumb("Twin", null))
+        "dashboard" -> listOf(Crumb("BG", null))
         "circadian" -> listOf(Crumb("Circadian clock", null))
         "stats" -> listOf(Crumb("Stats", null))
         "models" -> listOf(Crumb("Models", null))
@@ -938,7 +950,7 @@ private fun VolumeKeyShortcuts(
             navController.navigate(if (up) "meals" else "insulin") {
                 launchSingleTop = true
                 restoreState = true
-                popUpTo("dashboard") { saveState = true }
+                popUpTo("twin") { saveState = true }
             }
             true
         }
@@ -968,7 +980,7 @@ private fun T1dmNavHost(
     CompositionLocalProvider(LocalSettingsFocus provides settingsFocus) {
     NavHost(
         navController = navController,
-        startDestination = "dashboard",
+        startDestination = "twin",
         enterTransition = { navEnter(animationsOn) },
         exitTransition = { navExit(animationsOn) },
         popEnterTransition = { navEnter(animationsOn) },
@@ -1155,6 +1167,10 @@ private fun T1dmNavHost(
                     )
                 },
             )
+        }
+        composable("twin") {
+            val scans by container.twinScans.collectAsState(emptyList())
+            TwinScreen(latest = scans.lastOrNull(), scanCount = scans.size, onMockScan = container::mockTwinScan)
         }
         composable("circadian") {
             val inference by container.inferenceState.collectAsState(InferenceState())

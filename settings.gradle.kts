@@ -37,6 +37,7 @@ include(
     ":feature:logs",
     ":feature:game",
     ":feature:backup",
+    ":feature:twin",
 )
 
 include(":cgm", ":sensors", ":inference", ":calc", ":sync", ":watch", ":alerts")

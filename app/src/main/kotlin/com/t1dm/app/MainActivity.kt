@@ -1,6 +1,8 @@
 package com.t1dm.app
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -13,6 +15,7 @@ import androidx.core.view.WindowCompat
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.lifecycle.lifecycleScope
 import com.t1dm.app.di.AppContainer
@@ -27,9 +30,28 @@ import com.t1dm.feature.settings.BackgroundFix
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
+/** Alarm, notification and widget taps open BG, not the start screen. */
+fun bgIntent(context: Context): Intent =
+    Intent(context, MainActivity::class.java).putExtra(EXTRA_ROUTE, ROUTE_BG)
+
+private const val EXTRA_ROUTE = "com.t1dm.app.ROUTE"
+private const val ROUTE_BG = "dashboard"
+
 class MainActivity : ComponentActivity() {
 
     private val container: AppContainer get() = (application as T1dmApplication).container
+
+    /** Exported activity: only [ROUTE_BG] is honoured, whatever a caller puts in the extra. */
+    private val requestedRoute = mutableStateOf<String?>(null)
+
+    private fun takeRoute(intent: Intent?) {
+        if (intent?.getStringExtra(EXTRA_ROUTE) == ROUTE_BG) requestedRoute.value = ROUTE_BG
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        takeRoute(intent)
+    }
 
     /** True when it navigated; false leaves the key as the system volume. */
     internal var volumeShortcut: ((up: Boolean) -> Boolean)? = null
@@ -46,6 +68,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // A recreation replays the launch intent; only the first creation may navigate.
+        if (savedInstanceState == null) takeRoute(intent)
 
         requestRuntimePermissions()
 
@@ -71,7 +95,7 @@ class MainActivity : ComponentActivity() {
                 deathMode = death,
                 hapticStrength = HapticStrength.forKey(hapticsKey),
             ) {
-                T1dmApp(container)
+                T1dmApp(container, requestedRoute.value) { requestedRoute.value = null }
             }
         }
     }

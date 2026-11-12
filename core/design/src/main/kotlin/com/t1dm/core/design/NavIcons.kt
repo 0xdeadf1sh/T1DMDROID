@@ -55,6 +55,12 @@ private fun glyph(name: String, style: IconStyle, body: PathBuilder.() -> Unit):
     }.build()
 }
 
+private fun twin(s: IconStyle) = glyph("twin", s) { // a head over shoulders
+    moveTo(12f, 3f); arcTo(4f, 4f, 0f, true, true, 11.99f, 3f); close()
+    moveTo(4f, 21f); curveTo(4f, 15f, 8f, 13f, 12f, 13f)
+    curveTo(16f, 13f, 20f, 15f, 20f, 21f); close()
+}
+
 private fun dashboard(s: IconStyle) = glyph("bg", s) { // a droplet
     moveTo(12f, 3f); curveTo(16f, 9f, 18f, 12f, 18f, 15f)
     arcTo(6f, 6f, 0f, true, true, 6f, 15f)
@@ -192,6 +198,7 @@ private fun heart(s: IconStyle) = glyph("heart", s) {
 fun heartIcon(style: IconStyle): ImageVector = heart(style)
 
 fun navIcon(route: String, style: IconStyle): ImageVector = when (route) {
+    "twin" -> twin(style)
     "dashboard" -> dashboard(style)
     "circadian" -> clock(style)
     "stats" -> stats(style)

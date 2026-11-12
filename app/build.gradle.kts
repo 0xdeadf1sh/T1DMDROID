@@ -110,6 +110,7 @@ dependencies {
     implementation(project(":feature:logs"))
     implementation(project(":feature:game"))
     implementation(project(":feature:backup"))
+    implementation(project(":feature:twin"))
     // Not for drawing: :feature:dashboard exposes PredictedClock only via `implementation`.
     implementation(project(":ui:graph"))
 
