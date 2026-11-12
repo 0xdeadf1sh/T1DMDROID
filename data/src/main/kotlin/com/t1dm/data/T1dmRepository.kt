@@ -1545,6 +1545,8 @@ class T1dmRepository(
 
     suspend fun clearTwinOverride(key: String) = withContext(io) { twinOverrides.delete(key) }
 
+    suspend fun clearTwinOverrides() = withContext(io) { twinOverrides.deleteAll() }
+
     /** Row-only wipe, never drop/recreate; preserveCgmSources keeps the live binding on reset. */
     suspend fun wipeAllData(preserveCgmSources: Boolean = false) = withContext(io) {
         inWriteTx {

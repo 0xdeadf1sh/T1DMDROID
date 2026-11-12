@@ -2048,6 +2048,20 @@ class AppContainer(context: Context) {
         }
     }
 
+    val twinOverrides: Flow<Map<String, Double>> get() = repository.observeTwinOverrides()
+
+    /** null clears the edit, so the trait follows the scan again. */
+    fun setTwinOverride(key: String, value: Double?) {
+        appScope.launch {
+            if (value == null) repository.clearTwinOverride(key)
+            else repository.setTwinOverride(key, value, System.currentTimeMillis())
+        }
+    }
+
+    fun clearTwinOverrides() {
+        appScope.launch { repository.clearTwinOverrides() }
+    }
+
     /** Published by [com.t1dm.app.service.ExerciseService]; null whenever no bout is running. */
     val activeExercise = MutableStateFlow<ActiveExercise?>(null)
 
