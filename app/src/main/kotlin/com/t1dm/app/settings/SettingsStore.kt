@@ -347,6 +347,9 @@ class SettingsStore(
     suspend fun currentAnimationsEnabled(): Boolean = getBool(K_UI_ANIMATIONS, true)
     suspend fun setAnimationsEnabled(on: Boolean) = put(K_UI_ANIMATIONS, if (on) "1" else "0")
 
+    val twinTutorialSeen: Flow<Boolean> = boolFlow(K_TWIN_TUTORIAL_SEEN, false)
+    suspend fun setTwinTutorialSeen() = put(K_TWIN_TUTORIAL_SEEN, "1")
+
     // Volume up=Meals, down=Insulin; stands down during any alarm, gated at dispatch site.
     val volumeNavEnabled: Flow<Boolean> = boolFlow(K_UI_VOLUME_NAV, true)
     suspend fun setVolumeNavEnabled(on: Boolean) = put(K_UI_VOLUME_NAV, if (on) "1" else "0")
@@ -758,6 +761,7 @@ class SettingsStore(
         private const val K_DEATH = "death.enabled"
 
         private const val K_UI_ANIMATIONS = "ui.animations"
+        private const val K_TWIN_TUTORIAL_SEEN = "twin.tutorial_seen"
         private const val K_UI_VOLUME_NAV = "ui.volume_nav"
         private const val K_UI_HAPTICS = "ui.haptics"
         val DEFAULT_HAPTICS: String = HapticStrength.DEFAULT.name

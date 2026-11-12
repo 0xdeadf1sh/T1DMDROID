@@ -44,8 +44,12 @@ fun TwinView(scan: TwinScan?, modifier: Modifier = Modifier) {
     view.animate = animate
     view.renderer.animate = animate
 
-    LaunchedEffect(scan?.id, scan?.outputs) {
+    LaunchedEffect(scan?.id) {
         view.renderer.setTarget(TwinMorphs.weights(scan, body), assemble = true)
+        view.kick()
+    }
+    LaunchedEffect(scan?.outputs) {
+        view.renderer.setTarget(TwinMorphs.weights(scan, body), assemble = false)
         view.kick()
     }
     val lifecycle = LocalLifecycleOwner.current.lifecycle

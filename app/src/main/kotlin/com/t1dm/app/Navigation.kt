@@ -120,6 +120,7 @@ import com.t1dm.feature.settings.NightscoutSettingsScreen
 import com.t1dm.feature.settings.DeathModeScreen
 import com.t1dm.feature.twin.TwinScanScreen
 import com.t1dm.feature.twin.TwinScreen
+import com.t1dm.feature.twin.TwinTrendsScreen
 import com.t1dm.app.notify.BgFormat
 import com.t1dm.app.notify.BgGlanceComputer
 import com.t1dm.core.model.SensitivityEstimate
@@ -361,6 +362,7 @@ internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = nu
     return when (route) {
         null, "twin" -> listOf(Crumb("Twin", null))
         "twin/scan" -> listOf(Crumb("Twin", "twin"), Crumb("Scan", null))
+        "twin/trends" -> listOf(Crumb("Twin", "twin"), Crumb("Trends", null))
         "dashboard" -> listOf(Crumb("BG", null))
         "circadian" -> listOf(Crumb("Circadian clock", null))
         "stats" -> listOf(Crumb("Stats", null))
@@ -1172,12 +1174,26 @@ private fun T1dmNavHost(
         }
         composable("twin") {
             val scans by container.twinScans.collectAsState(emptyList())
+            val overrides by container.twinOverrides.collectAsState(emptyMap())
+            // Starts true so the tutorial never flashes before the stored flag loads.
+            val seen by container.settingsStore.twinTutorialSeen.collectAsState(true)
+            val scope = rememberCoroutineScope()
             TwinScreen(
                 latest = scans.lastOrNull(),
                 scanCount = scans.size,
+                overrides = overrides,
+                showTutorial = !seen,
                 onScan = { navController.navigate("twin/scan") { launchSingleTop = true } },
                 onMockScan = container::mockTwinScan,
+                onTrends = { navController.navigate("twin/trends") { launchSingleTop = true } },
+                onOverride = container::setTwinOverride,
+                onResetOverrides = container::clearTwinOverrides,
+                onTutorialDone = { scope.launch { container.settingsStore.setTwinTutorialSeen() } },
             )
+        }
+        composable("twin/trends") {
+            val scans by container.twinScans.collectAsState(emptyList())
+            TwinTrendsScreen(scans)
         }
         composable("twin/scan") {
             TwinScanScreen(onCaptured = {
