@@ -177,37 +177,6 @@ fun logMarkerIcon(kind: CurveKind): ImageVector = when (kind) {
     CurveKind.EXERCISE -> ExerciseMark
 }
 
-enum class DayPeriod { MORNING, NOON, EVENING, NIGHT }
-
-/** [hour] is the LOCAL hour, `[0,24)`. */
-fun dayPeriodFor(hour: Int): DayPeriod = when (hour) {
-    in 5..10 -> DayPeriod.MORNING
-    in 11..16 -> DayPeriod.NOON
-    in 17..20 -> DayPeriod.EVENING
-    else -> DayPeriod.NIGHT
-}
-
-private fun morning(s: IconStyle) = glyph("morning", s) { // a sun over a horizon
-    moveTo(4f, 16f); lineTo(20f, 16f); lineTo(20f, 17f); lineTo(4f, 17f); close()
-    moveTo(6f, 16f); arcTo(6f, 6f, 0f, false, true, 18f, 16f); close()
-}
-
-private fun noon(s: IconStyle) = glyph("noon", s) { // a full sun disc
-    moveTo(12f, 6f); arcTo(6f, 6f, 0f, true, true, 11.99f, 6f); close()
-}
-
-private fun evening(s: IconStyle) = glyph("evening", s) { // a sun below a horizon
-    moveTo(4f, 8f); lineTo(20f, 8f); lineTo(20f, 9f); lineTo(4f, 9f); close()
-    moveTo(6f, 9f); arcTo(6f, 6f, 0f, false, false, 18f, 9f); close()
-}
-
-private fun night(s: IconStyle) = glyph("night", s) { // crescent moon
-    moveTo(15f, 4f)
-    arcTo(8f, 8f, 0f, true, false, 15f, 20f)
-    arcTo(6.4f, 6.4f, 0f, true, true, 15f, 4f)
-    close()
-}
-
 private fun heart(s: IconStyle) = glyph("heart", s) {
     moveTo(12f, 21.35f)
     lineTo(10.55f, 20.03f)
@@ -221,13 +190,6 @@ private fun heart(s: IconStyle) = glyph("heart", s) {
 }
 
 fun heartIcon(style: IconStyle): ImageVector = heart(style)
-
-fun timeOfDayIcon(period: DayPeriod, style: IconStyle): ImageVector = when (period) {
-    DayPeriod.MORNING -> morning(style)
-    DayPeriod.NOON -> noon(style)
-    DayPeriod.EVENING -> evening(style)
-    DayPeriod.NIGHT -> night(style)
-}
 
 fun navIcon(route: String, style: IconStyle): ImageVector = when (route) {
     "dashboard" -> dashboard(style)

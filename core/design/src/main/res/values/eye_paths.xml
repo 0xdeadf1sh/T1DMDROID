@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The polyphemus.health eye on its 32-unit grid; drawn by ic_launcher_fg and PolyphemusEye. -->
+<resources>
+    <string name="eye_brackets" translatable="false">M1,4 V1 H5 M27,1 H31 V5 M31,28 V31 H27 M5,31 H1 V28</string>
+    <string name="eye_lid" translatable="false">M2,16 L9,9 H23 L30,16 L23,23 H9 Z</string>
+    <string name="eye_scan" translatable="false">M2,10 H30 V11 H2 Z M2,12 H30 V13 H2 Z M2,14 H30 V15 H2 Z M2,16 H30 V17 H2 Z M2,18 H30 V19 H2 Z M2,20 H30 V21 H2 Z M2,22 H30 V23 H2 Z</string>
+    <!-- Slit as an even-odd hole, so the monochrome launcher layer keeps it. -->
+    <string name="eye_iris" translatable="false">M10.8,16 A5.2,5.2 0 1 0 21.2,16 A5.2,5.2 0 1 0 10.8,16 Z M15.1,11.6 H16.9 V20.4 H15.1 Z</string>
+</resources>

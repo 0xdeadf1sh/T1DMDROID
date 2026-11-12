@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The polyphemus.health eye on its 32-unit grid, scaled 1.5x into the 66dp safe zone. -->
+<!-- The eye from core:design's eye_paths.xml, scaled 1.5x into the 66dp safe zone. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
@@ -14,24 +14,23 @@
             android:strokeWidth="1.4"
             android:strokeColor="#FFFFFF"
             android:fillColor="#00000000"
-            android:pathData="M1,4 V1 H5 M27,1 H31 V5 M31,28 V31 H27 M5,31 H1 V28" />
+            android:pathData="@string/eye_brackets" />
         <path
             android:strokeWidth="1.6"
             android:strokeColor="#FFFFFF"
             android:strokeLineJoin="miter"
             android:fillColor="#00000000"
-            android:pathData="M2,16 L9,9 H23 L30,16 L23,23 H9 Z" />
+            android:pathData="@string/eye_lid" />
         <group>
-            <clip-path android:pathData="M2,16 L9,9 H23 L30,16 L23,23 H9 Z" />
+            <clip-path android:pathData="@string/eye_lid" />
             <path
                 android:fillColor="#FFFFFF"
                 android:fillAlpha="0.18"
-                android:pathData="M2,10 H30 V11 H2 Z M2,12 H30 V13 H2 Z M2,14 H30 V15 H2 Z M2,16 H30 V17 H2 Z M2,18 H30 V19 H2 Z M2,20 H30 V21 H2 Z M2,22 H30 V23 H2 Z" />
-            <!-- Slit as an even-odd hole, so the monochrome layer keeps it. -->
+                android:pathData="@string/eye_scan" />
             <path
                 android:fillColor="#FFFFFF"
                 android:fillType="evenOdd"
-                android:pathData="M10.8,16 A5.2,5.2 0 1 0 21.2,16 A5.2,5.2 0 1 0 10.8,16 Z M15.1,11.6 H16.9 V20.4 H15.1 Z" />
+                android:pathData="@string/eye_iris" />
         </group>
     </group>
 </vector>

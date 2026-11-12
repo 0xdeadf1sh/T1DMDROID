@@ -79,7 +79,7 @@ import com.t1dm.core.design.T1dmHaptics
 import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.design.CgmStatusIcon
 import com.t1dm.core.design.SignalBars
-import com.t1dm.core.design.TimeOfDayIcon
+import com.t1dm.core.design.PolyphemusEye
 import com.t1dm.core.design.hapticClickable
 import com.t1dm.core.design.ThemeBackdrop
 import com.t1dm.core.design.navEnter
@@ -541,15 +541,15 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
             }
         }
         // Centred on the bar, not on what the trail leaves: it yields rather than drift.
-        if (trailWidth <= maxWidth / 2 - TOD_ICON_SIZE / 2 - CRUMB_GAP) {
-            TimeOfDayIcon(TOD_ICON_SIZE, Modifier.align(Alignment.Center))
+        if (trailWidth <= maxWidth / 2 - EYE_SIZE / 2 - CRUMB_GAP) {
+            PolyphemusEye(EYE_SIZE, distressed = status is GlyStatus.Void, Modifier.align(Alignment.Center))
         }
     }
 }
 
 private val CRUMB_H_PAD = 8.dp
 private val CRUMB_GAP = 4.dp
-private val TOD_ICON_SIZE = 36.dp
+private val EYE_SIZE = 36.dp
 
 /** Shared by the arrow and the R/S beneath it, so the two centre on one axis. */
 private val TREND_COL_W = 28.dp
