@@ -118,6 +118,7 @@ import com.t1dm.app.di.AppContainer
 import com.t1dm.app.backup.BackupRoute
 import com.t1dm.feature.settings.NightscoutSettingsScreen
 import com.t1dm.feature.settings.DeathModeScreen
+import com.t1dm.feature.twin.TwinScanScreen
 import com.t1dm.feature.twin.TwinScreen
 import com.t1dm.app.notify.BgFormat
 import com.t1dm.app.notify.BgGlanceComputer
@@ -359,6 +360,7 @@ internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = nu
     fun settings(vararg tail: Crumb) = listOf(Crumb("Settings", "settings"), *tail)
     return when (route) {
         null, "twin" -> listOf(Crumb("Twin", null))
+        "twin/scan" -> listOf(Crumb("Twin", "twin"), Crumb("Scan", null))
         "dashboard" -> listOf(Crumb("BG", null))
         "circadian" -> listOf(Crumb("Circadian clock", null))
         "stats" -> listOf(Crumb("Stats", null))
@@ -1170,7 +1172,18 @@ private fun T1dmNavHost(
         }
         composable("twin") {
             val scans by container.twinScans.collectAsState(emptyList())
-            TwinScreen(latest = scans.lastOrNull(), scanCount = scans.size, onMockScan = container::mockTwinScan)
+            TwinScreen(
+                latest = scans.lastOrNull(),
+                scanCount = scans.size,
+                onScan = { navController.navigate("twin/scan") { launchSingleTop = true } },
+                onMockScan = container::mockTwinScan,
+            )
+        }
+        composable("twin/scan") {
+            TwinScanScreen(onCaptured = {
+                container.mockTwinScan()
+                navController.popBackStack("twin", inclusive = false)
+            })
         }
         composable("circadian") {
             val inference by container.inferenceState.collectAsState(InferenceState())

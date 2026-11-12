@@ -16,4 +16,9 @@ class TwinRouteTest {
         assertEquals(listOf(Crumb("Twin", null)), crumbsFor(null, null))
         assertEquals(listOf(Crumb("BG", null)), crumbsFor("dashboard", null))
     }
+
+    @Test
+    fun `the scan climbs back to Twin`() {
+        assertEquals(listOf(Crumb("Twin", "twin"), Crumb("Scan", null)), crumbsFor("twin/scan", null))
+    }
 }

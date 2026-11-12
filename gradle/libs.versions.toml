@@ -35,6 +35,10 @@ jna = "5.14.0"            # runtime dep of the uniffi-generated Kotlin bindings 
 # directory the caller names, so it adds neither a prompt nor a storage dependency. 6.1.20 is the
 # newest published 6.1.x.
 osmdroid = "6.1.20"
+# Twin face scan (:feature:twin). 1.4.x keeps lifecycle at the 2.8 line this build pins.
+camerax = "1.4.2"
+# On-device face mesh; the face_landmarker.task model ships in :feature:twin's assets (Apache-2.0).
+mediapipe = "0.10.35"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -69,6 +73,10 @@ jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
 androidx-glance-appwidget = { group = "androidx.glance", name = "glance-appwidget", version.ref = "glance" }
 androidx-glance-material3 = { group = "androidx.glance", name = "glance-material3", version.ref = "glance" }
 osmdroid-android = { group = "org.osmdroid", name = "osmdroid-android", version.ref = "osmdroid" }
+androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "camerax" }
+androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camerax" }
+androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "camerax" }
+mediapipe-tasks-vision = { group = "com.google.mediapipe", name = "tasks-vision", version.ref = "mediapipe" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-test-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxJunit" }
 # Build-logic classpath (Gradle plugin artifacts consumed by the convention plugins):
