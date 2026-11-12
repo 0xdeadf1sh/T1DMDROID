@@ -69,7 +69,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.text.font.FontFamily
+import com.t1dm.core.design.LocalT1dmFonts
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.HapticStrength
 import com.t1dm.core.design.LocalAnimationsEnabled
@@ -833,7 +833,7 @@ private fun SensorPanel(
         Text(
             text = sourceSerial ?: "—",
             style = MaterialTheme.typography.bodyMedium,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = LocalT1dmFonts.current.mono,
             color = if (viewingOther) cs.tertiary else muted,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -864,7 +864,7 @@ private fun LastReadingChip(ageMs: Long, stale: Boolean) {
         maxLines = 1,
         softWrap = false,
         // Monospace so the per-second tick does not shift the chip.
-        fontFamily = FontFamily.Monospace,
+        fontFamily = LocalT1dmFonts.current.mono,
         color = if (stale) {
             MaterialTheme.colorScheme.error
         } else {

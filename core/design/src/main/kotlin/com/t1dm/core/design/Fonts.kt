@@ -1,6 +1,11 @@
 package com.t1dm.core.design
 
+import android.graphics.Typeface
 import androidx.compose.material3.Typography
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.platform.LocalFontFamilyResolver
 import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
@@ -38,34 +43,52 @@ private val SplineSansMonoFamily: FontFamily by lazy { FontFamily(Font(R.font.sp
 
 private val ShareTechMonoFamily: FontFamily by lazy { FontFamily(Font(R.font.share_tech_mono)) }
 
-fun fontFamilyFor(id: T1dmFontId): FontFamily = when (id) {
-    T1dmFontId.POLYPHEMUS -> SplineSansMonoFamily
-    T1dmFontId.SYSTEM -> FontFamily.Default
-    T1dmFontId.IBM_PLEX_MONO -> FontFamily(Font(R.font.ibm_plex_mono))
-    T1dmFontId.SHARE_TECH_MONO -> ShareTechMonoFamily
-    T1dmFontId.SPLINE_SANS_MONO -> SplineSansMonoFamily
-    T1dmFontId.CRIMSON_TEXT -> FontFamily(
+private val IbmPlexMonoFamily: FontFamily by lazy { FontFamily(Font(R.font.ibm_plex_mono)) }
+
+private val CrimsonTextFamily: FontFamily by lazy {
+    FontFamily(
         Font(R.font.crimson_text, FontWeight.Normal),
         Font(R.font.crimson_text_bold, FontWeight.Bold),
     )
 }
 
-fun typographyFor(id: T1dmFontId): Typography =
-    if (id == T1dmFontId.POLYPHEMUS) polyphemusTypography() else typographyWith(fontFamilyFor(id))
+/** [text] for prose and canvas labels; [mono] where digits must align. */
+data class T1dmFonts(val text: FontFamily, val mono: FontFamily)
 
-/** Orbitron headings, Spline Sans Mono text, Share Tech Mono HUD labels. */
+val LocalT1dmFonts = staticCompositionLocalOf { fontsFor(T1dmFontId.POLYPHEMUS) }
+
+fun fontsFor(id: T1dmFontId): T1dmFonts = when (id) {
+    T1dmFontId.POLYPHEMUS -> T1dmFonts(ShareTechMonoFamily, ShareTechMonoFamily)
+    T1dmFontId.SYSTEM -> T1dmFonts(FontFamily.Default, FontFamily.Monospace)
+    T1dmFontId.IBM_PLEX_MONO -> T1dmFonts(IbmPlexMonoFamily, IbmPlexMonoFamily)
+    T1dmFontId.SHARE_TECH_MONO -> T1dmFonts(ShareTechMonoFamily, ShareTechMonoFamily)
+    T1dmFontId.SPLINE_SANS_MONO -> T1dmFonts(SplineSansMonoFamily, SplineSansMonoFamily)
+    T1dmFontId.CRIMSON_TEXT -> T1dmFonts(CrimsonTextFamily, FontFamily.Monospace)
+}
+
+fun typographyFor(id: T1dmFontId): Typography =
+    if (id == T1dmFontId.POLYPHEMUS) polyphemusTypography() else typographyWith(fontsFor(id).text)
+
+/** Orbitron headings; Share Tech Mono elsewhere, untracked: a mono face is wide already. */
 private fun polyphemusTypography(): Typography {
     val base = Typography()
     fun display(s: TextStyle) = s.copy(fontFamily = OrbitronFamily, fontWeight = FontWeight.Medium, letterSpacing = 0.04.em)
-    fun text(s: TextStyle) = s.copy(fontFamily = SplineSansMonoFamily)
-    fun label(s: TextStyle) = s.copy(fontFamily = ShareTechMonoFamily, letterSpacing = 0.08.em)
+    fun text(s: TextStyle) = s.copy(fontFamily = ShareTechMonoFamily, letterSpacing = 0.em)
     return base.copy(
         displayLarge = display(base.displayLarge), displayMedium = display(base.displayMedium), displaySmall = display(base.displaySmall),
         headlineLarge = display(base.headlineLarge), headlineMedium = display(base.headlineMedium), headlineSmall = display(base.headlineSmall),
         titleLarge = text(base.titleLarge), titleMedium = text(base.titleMedium), titleSmall = text(base.titleSmall),
         bodyLarge = text(base.bodyLarge), bodyMedium = text(base.bodyMedium), bodySmall = text(base.bodySmall),
-        labelLarge = label(base.labelLarge), labelMedium = label(base.labelMedium), labelSmall = label(base.labelSmall),
+        labelLarge = text(base.labelLarge), labelMedium = text(base.labelMedium), labelSmall = text(base.labelSmall),
     )
+}
+
+/** The theme's [T1dmFonts.text] as a platform [Typeface], for `android.graphics.Paint` text. */
+@Composable
+fun rememberThemeTypeface(): Typeface {
+    val family = LocalT1dmFonts.current.text
+    val resolver = LocalFontFamilyResolver.current
+    return remember(family, resolver) { resolver.resolve(family).value as? Typeface ?: Typeface.DEFAULT }
 }
 
 fun typographyWith(family: FontFamily): Typography {

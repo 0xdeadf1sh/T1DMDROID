@@ -29,7 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.FontFamily
+import com.t1dm.core.design.LocalT1dmFonts
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.FADE_EDGE_DEPTH
@@ -179,7 +179,7 @@ fun IntStepper(
     ) {
         Column(Modifier.weight(1f)) {
             Text(knob.label, style = MaterialTheme.typography.bodyMedium)
-            Text("$value $unit".trim(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+            Text("$value $unit".trim(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, fontFamily = LocalT1dmFonts.current.mono)
         }
         OutlinedButton(
             onClick = {
@@ -218,7 +218,7 @@ fun DoubleStepper(
     ) {
         Column(Modifier.weight(1f)) {
             Text(knob.label, style = MaterialTheme.typography.bodyMedium)
-            Text("${fmt(value)} $unit".trim(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+            Text("${fmt(value)} $unit".trim(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, fontFamily = LocalT1dmFonts.current.mono)
         }
         OutlinedButton(
             onClick = {

@@ -61,7 +61,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.text.font.FontFamily
+import com.t1dm.core.design.LocalT1dmFonts
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -252,7 +252,7 @@ private fun TollingRite(toll: FuneralToll, onComplete: () -> Unit) {
     Text(
         tollNumeral(count),
         style = MaterialTheme.typography.displaySmall,
-        fontFamily = FontFamily.Serif,
+        fontFamily = LocalT1dmFonts.current.text,
         fontWeight = FontWeight.Bold,
         color = cs.error,
     )
@@ -277,7 +277,7 @@ private fun CovenantRite(onSign: () -> Unit) {
     Text(
         "Release of Liability",
         style = MaterialTheme.typography.headlineSmall,
-        fontFamily = FontFamily.Serif,
+        fontFamily = LocalT1dmFonts.current.text,
         fontWeight = FontWeight.Bold,
         color = cs.onSurface,
         textAlign = TextAlign.Center,
@@ -391,7 +391,7 @@ private fun SealedRite(onRescind: () -> Unit) {
     Text(
         "The bell tolls for thee.",
         style = MaterialTheme.typography.headlineSmall,
-        fontFamily = FontFamily.Serif,
+        fontFamily = LocalT1dmFonts.current.text,
         fontWeight = FontWeight.Bold,
         color = cs.error,
         textAlign = TextAlign.Center,
@@ -489,7 +489,7 @@ private fun TearingRite(onTornAway: () -> Unit) {
     Text(
         "The covenant is torn.",
         style = MaterialTheme.typography.headlineSmall,
-        fontFamily = FontFamily.Serif,
+        fontFamily = LocalT1dmFonts.current.text,
         fontWeight = FontWeight.Bold,
         color = cs.error.copy(alpha = 1f - tear.value),
         textAlign = TextAlign.Center,
@@ -514,7 +514,7 @@ private fun Verse(lines: List<String>, accent: Color) {
             Text(
                 it,
                 style = MaterialTheme.typography.bodyLarge,
-                fontFamily = FontFamily.Serif,
+                fontFamily = LocalT1dmFonts.current.text,
                 color = MaterialTheme.colorScheme.onSurface,
                 textAlign = TextAlign.Center,
             )

@@ -35,7 +35,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
+import com.t1dm.core.design.LocalT1dmFonts
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
@@ -114,7 +114,7 @@ fun ModelDetailScreen(
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         item {
-            Text(modelId, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+            Text(modelId, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, fontFamily = LocalT1dmFonts.current.mono)
             running?.let {
                 Text(
                     // displayName() carries precision; only a graph model is fp32 authority.
@@ -552,7 +552,7 @@ private fun Note(text: String) {
 
 @Composable
 private fun Mono(text: String) {
-    Text(text, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+    Text(text, style = MaterialTheme.typography.bodySmall, fontFamily = LocalT1dmFonts.current.mono)
 }
 
 private fun List<Int>.joinToStringOrNa(): String = if (isEmpty()) "n/a" else joinToString(" / ")

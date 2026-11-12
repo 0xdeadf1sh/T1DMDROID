@@ -28,7 +28,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
+import com.t1dm.core.design.LocalT1dmFonts
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
@@ -173,7 +173,7 @@ private fun ModelRow(
                 model.modelId,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = if (model.selected) FontWeight.Bold else FontWeight.Normal,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = LocalT1dmFonts.current.mono,
                 modifier = Modifier.weight(1f).padding(start = 8.dp),
             )
             Text(statusLabel(prediction), style = MaterialTheme.typography.labelMedium, color = statusColor(prediction))
@@ -195,7 +195,7 @@ private fun ModelRow(
             Text(
                 metaLine(m),
                 style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = LocalT1dmFonts.current.mono,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -232,7 +232,7 @@ private fun ZooRow(
                 id,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = LocalT1dmFonts.current.mono,
                 modifier = Modifier.weight(1f).padding(start = 8.dp),
             )
             Text(statusLabel(prediction), style = MaterialTheme.typography.labelMedium, color = statusColor(prediction))
@@ -307,7 +307,7 @@ private fun CompareLine(cells: List<String>, bold: Boolean) {
             Text(
                 c,
                 style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = LocalT1dmFonts.current.mono,
                 fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
                 maxLines = 1,
                 modifier = if (i == 0) Modifier.weight(2.4f) else Modifier.weight(1f),

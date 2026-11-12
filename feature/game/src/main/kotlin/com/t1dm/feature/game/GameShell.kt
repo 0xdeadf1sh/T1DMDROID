@@ -35,6 +35,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.t1dm.core.design.LocalAnimationsEnabled
+import com.t1dm.core.design.LocalT1dmFonts
 import com.t1dm.core.model.AlertThresholds
 import com.t1dm.core.model.UnitSpace
 import com.t1dm.ui.game.WorldMap
@@ -174,6 +175,7 @@ internal fun <T : WorldFrame> GameShell(
     val modelAxisPx = with(density) { if (hasClock) GraphInsets.ModelAxis.toPx() else 0f }
     // Past the furniture's per-frame set (>20 strings); every miss is a text layout at 60 Hz.
     val measurer = rememberTextMeasurer(cacheSize = 32)
+    val font = LocalT1dmFonts.current.text
     val labelCache = remember { GraphLabelCache() }
     val progressThicknessPx = with(density) { PROGRESS_H.toPx() }
     val furnitureColors = MaterialTheme.colorScheme
@@ -234,6 +236,7 @@ internal fun <T : WorldFrame> GameShell(
                 measurer = measurer,
                 cs = furnitureColors,
                 labels = labelCache,
+                font = font,
             )
 
             projection.camLeftM = f.camLeft

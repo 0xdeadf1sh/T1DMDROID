@@ -18,7 +18,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
+import com.t1dm.core.design.LocalT1dmFonts
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.rememberHapticDetent
@@ -108,7 +108,7 @@ private fun CarbEquivSlider(
             Text(
                 "%.1f g/min".format(draft),
                 style = MaterialTheme.typography.bodyMedium,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = LocalT1dmFonts.current.mono,
             )
         }
         Slider(
@@ -144,7 +144,7 @@ private fun BezierDesigner(initial: BezierCurve, defaultDurationMin: Double, onS
         "Peak ≈ ${(peak + 1) * 5} min · duration ${"%.0f".format(draft.durationMin)} min",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
-        fontFamily = FontFamily.Monospace,
+        fontFamily = LocalT1dmFonts.current.mono,
     )
     androidx.compose.runtime.LaunchedEffect(degenerate) {
         if (degenerate) haptics.perform(HapticEvent.Warn)
@@ -175,7 +175,7 @@ private fun BezierDesigner(initial: BezierCurve, defaultDurationMin: Double, onS
 private fun Kv(k: String, v: String) {
     Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(k, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(v, style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace)
+        Text(v, style = MaterialTheme.typography.bodyMedium, fontFamily = LocalT1dmFonts.current.mono)
     }
 }
 

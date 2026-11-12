@@ -71,6 +71,7 @@ import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.LocalAnimationsEnabled
 import com.t1dm.core.design.LocalT1dmHaptics
 import com.t1dm.core.design.LocalT1dmSemantics
+import com.t1dm.core.design.LocalT1dmFonts
 import com.t1dm.core.design.iconStyleForTheme
 import com.t1dm.core.design.navIcon
 import com.t1dm.core.design.rememberHapticDetent
@@ -462,7 +463,10 @@ internal fun NavWheelArc(
 
     val measurer = rememberTextMeasurer(cacheSize = 0)
     // Colour is applied at draw time, so the measurement survives a theme change.
-    val labelStyle = remember { TextStyle(fontSize = 11.sp, fontWeight = FontWeight.Medium, color = Color.White) }
+    val font = LocalT1dmFonts.current.text
+    val labelStyle = remember(font) {
+        TextStyle(fontFamily = font, fontSize = 11.sp, fontWeight = FontWeight.Medium, color = Color.White)
+    }
     val labels: List<TextLayoutResult> = remember(measurer, labelStyle, destinations) {
         destinations.map { measurer.measure(it.label, labelStyle) }
     }

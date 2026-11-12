@@ -59,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.LocalAnimationsEnabled
+import com.t1dm.core.design.LocalT1dmFonts
 import com.t1dm.core.design.LocalT1dmHaptics
 import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.design.T1dmTheme
@@ -231,7 +232,10 @@ fun GlucoseGraph(
     val reconPath = remember { Path() }
     val labelCache = remember { GraphLabelCache() }
     // One style: exactly one legend is ever drawn, since "smoothed" is a swap, not an overlay.
-    val traceLegendStyle = remember(cs.primary) { TextStyle(color = cs.primary, fontSize = 9.sp) }
+    val fonts = LocalT1dmFonts.current
+    val traceLegendStyle = remember(cs.primary, fonts) {
+        TextStyle(color = cs.primary, fontSize = 9.sp, fontFamily = fonts.text)
+    }
     // Where the fan ends, the roll hatch begins, one uncertainty; only from a painted fan series.
     val rolledSeam = remember(predictions) {
         predictions.lastOrNull { it.selected && !it.degenerate && !it.isEmpty }?.let { p ->
@@ -239,11 +243,11 @@ fun GlucoseGraph(
             RolledSeam(p.tsMs[last], p.lo[0][last], p.hi[0][last])
         }
     }
-    val scrubLabelStyle = remember(cs.onPrimary) {
-        TextStyle(color = cs.onPrimary.copy(alpha = 0.72f), fontSize = 11.sp)
+    val scrubLabelStyle = remember(cs.onPrimary, fonts) {
+        TextStyle(color = cs.onPrimary.copy(alpha = 0.72f), fontSize = 11.sp, fontFamily = fonts.text)
     }
-    val scrubValueStyle = remember(cs.onPrimary) {
-        TextStyle(color = cs.onPrimary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+    val scrubValueStyle = remember(cs.onPrimary, fonts) {
+        TextStyle(color = cs.onPrimary, fontSize = 11.sp, fontFamily = fonts.mono)
     }
     // From constant templates, so a scrub does not re-measure seven strings per pointer sample.
     val scrubMetrics = remember(measurer, scrubLabelStyle, scrubValueStyle) {
@@ -847,6 +851,7 @@ fun GlucoseGraph(
                 measurer = measurer,
                 cs = cs,
                 labels = labelCache,
+                font = fonts.text,
             )
 
             // Data is clipped to the plot; grid, axes and margin captions stay outside it.
@@ -1471,6 +1476,7 @@ fun DrawScope.drawGraphFurniture(
     measurer: TextMeasurer,
     cs: ColorScheme,
     labels: GraphLabelCache,
+    font: FontFamily,
 ) {
     val plotHeight = (plotBottom - plotTop).coerceAtLeast(1f)
     val ppm = (plotRight - plotLeft).toDouble().coerceAtLeast(1.0) / viewSpanMs
@@ -1480,7 +1486,7 @@ fun DrawScope.drawGraphFurniture(
     val gridColor = cs.onSurface.copy(alpha = 0.10f)
     val axisColor = cs.onSurface.copy(alpha = 0.30f)
     val labelColor = cs.onSurface.copy(alpha = 0.65f)
-    val labelStyle = TextStyle(color = labelColor, fontSize = 10.sp)
+    val labelStyle = TextStyle(color = labelColor, fontSize = 10.sp, fontFamily = font)
 
         thresholds?.let {
             drawBands(it, unit, kovatchevF, plotLeft, plotRight, ::yToPx, yMin, yMax, cs.error, cs.secondary)
@@ -1506,7 +1512,7 @@ fun DrawScope.drawGraphFurniture(
         if (tick < viewStartMs) tick += tStepMs
         val endMs = viewStartMs + viewSpanMs
         val modelLabelColor = cs.tertiary.copy(alpha = 0.8f)
-        val modelStyle = TextStyle(color = modelLabelColor, fontSize = 10.sp)
+        val modelStyle = TextStyle(color = modelLabelColor, fontSize = 10.sp, fontFamily = font)
         // Labels are sp-scaled, reservation isn't; past ~1.15 scale a label outgrows its strip.
         val modelTopPx = plotTop - GraphInsets.ModelAxis.toPx()
         while (tick <= endMs) {
@@ -1528,7 +1534,7 @@ fun DrawScope.drawGraphFurniture(
         }
         // One label per day, drawn only where its span fits it; suppressed once ticks are dates.
         if (tStepMs < 720L * 60_000L) {
-            val dateStyle = TextStyle(color = labelColor, fontSize = 9.sp)
+            val dateStyle = TextStyle(color = labelColor, fontSize = 9.sp, fontFamily = font)
             val dateTop = plotBottom + 3f + measurer.measure("00:00", labelStyle).size.height + 1f
             // Strip is dp, labels are sp; past ~1.4 font scale pin the row to the strip's floor.
             val stripFloor = plotBottom + GraphInsets.Bottom.toPx()
@@ -1550,13 +1556,13 @@ fun DrawScope.drawGraphFurniture(
             }
         }
 
-        val tzCap = measurer.measure(tzLabel(tzOffsetMin), TextStyle(color = axisColor, fontSize = 8.sp))
+        val tzCap = measurer.measure(tzLabel(tzOffsetMin), TextStyle(color = axisColor, fontSize = 8.sp, fontFamily = font))
         drawText(tzCap, topLeft = Offset(2f, plotBottom + 3f))
         if (predictedClock != null) {
-            val tag = measurer.measure("model", TextStyle(color = modelLabelColor, fontSize = 8.sp))
+            val tag = measurer.measure("model", TextStyle(color = modelLabelColor, fontSize = 8.sp, fontFamily = font))
             drawText(tag, topLeft = Offset(2f, (plotTop - tag.size.height - 2f).coerceAtLeast(0f)))
         } else {
-            val na = measurer.measure("model time n/a", TextStyle(color = axisColor, fontSize = 9.sp))
+            val na = measurer.measure("model time n/a", TextStyle(color = axisColor, fontSize = 9.sp, fontFamily = font))
             drawText(na, topLeft = Offset(plotLeft + 4f, plotTop + 2f))
         }
 

@@ -68,8 +68,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.LocalAnimationsEnabled
-import com.t1dm.core.design.T1dmFontId
-import com.t1dm.core.design.fontFamilyFor
+import com.t1dm.core.design.LocalT1dmFonts
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.CgmLogEntry
 import com.t1dm.core.model.CgmLogKind
@@ -174,7 +173,7 @@ fun CgmLogScreen(
     val haptics = rememberT1dmHaptics()
     val clipboard = LocalClipboardManager.current
     val lineClipboard = remember(clipboard) { LineClipboard(clipboard) }
-    val mono = remember { fontFamilyFor(T1dmFontId.IBM_PLEX_MONO) }
+    val mono = LocalT1dmFonts.current.mono
     val base = remember(mono) { TextStyle(fontFamily = mono, fontSize = 11.sp, lineHeight = 15.sp, color = Term.fg) }
     val sp = clampCgmLogFontSp(fontSp)
     val logStyle = remember(base, sp) { base.copy(fontSize = sp.sp, lineHeight = (sp * LOG_LINE_HEIGHT).sp) }

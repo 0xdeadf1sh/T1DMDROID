@@ -26,7 +26,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.text.font.FontFamily
+import com.t1dm.core.design.LocalT1dmFonts
+import com.t1dm.core.design.rememberThemeTypeface
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.JourneyPath
@@ -135,7 +136,7 @@ private fun DeathCountdownSection(iobU: Double?, iobZeroMs: Long?, tl: DkaTimeli
                 Text(
                     "%.1f U".format(iobU),
                     style = MaterialTheme.typography.labelLarge,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = LocalT1dmFonts.current.mono,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -226,7 +227,7 @@ private fun ReadoutRow(label: String, value: String) {
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, style = MaterialTheme.typography.titleMedium, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+        Text(value, style = MaterialTheme.typography.titleMedium, fontFamily = LocalT1dmFonts.current.mono, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -239,6 +240,15 @@ private fun CircadianDial(pt: PredictedTime, localHour: Double, modifier: Modifi
     val faceColor = palette.grid
     val tickInk = cs.onSurface
     val localHandColor = cs.onSurface.copy(alpha = 0.35f)
+    val face = rememberThemeTypeface()
+    val labelPaint = remember(face) {
+        android.graphics.Paint().apply {
+            typeface = face
+            textAlign = android.graphics.Paint.Align.CENTER
+            isAntiAlias = true
+            isFakeBoldText = true
+        }
+    }
 
     Canvas(modifier) {
         val cx = size.width / 2f
@@ -286,7 +296,7 @@ private fun CircadianDial(pt: PredictedTime, localHour: Double, modifier: Modifi
             val outer = pointAt(center, rOuter, ang)
             drawLine(tickInk.copy(alpha = 0.5f), inner, outer, strokeWidth = if (h % 6 == 0) 3f else 1.5f)
         }
-        drawFaceLabels(center, rOuter, tickInk.toArgb())
+        drawFaceLabels(center, rOuter, tickInk.toArgb(), labelPaint)
 
         drawHand(center, rHist * 0.9f, hourToRadians(localHour), localHandColor, 4f)
 
@@ -310,14 +320,9 @@ private fun DrawScope.drawHand(center: Offset, len: Float, ang: Double, color: C
     drawLine(color, center, pointAt(center, len, ang), strokeWidth = width, cap = androidx.compose.ui.graphics.StrokeCap.Round)
 }
 
-private fun DrawScope.drawFaceLabels(center: Offset, rOuter: Float, argb: Int) {
-    val paint = android.graphics.Paint().apply {
-        color = argb
-        textAlign = android.graphics.Paint.Align.CENTER
-        textSize = rOuter * 0.11f
-        isAntiAlias = true
-        isFakeBoldText = true
-    }
+private fun DrawScope.drawFaceLabels(center: Offset, rOuter: Float, argb: Int, paint: android.graphics.Paint) {
+    paint.color = argb
+    paint.textSize = rOuter * 0.11f
     val labels = listOf(0 to "00", 6 to "06", 12 to "12", 18 to "18")
     labels.forEach { (h, s) ->
         val p = pointAt(center, rOuter * 0.78f, hourToRadians(h.toDouble()))

@@ -20,6 +20,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.text.rememberTextMeasurer
 import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.LocalT1dmFonts
 import com.t1dm.core.design.LocalT1dmHaptics
 import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.design.logMarkerIcon
@@ -54,6 +55,7 @@ fun SessionScrubGraph(
     val density = LocalDensity.current
     val measurer = rememberTextMeasurer(cacheSize = 32)
     val labels = remember { GraphLabelCache() }
+    val font = LocalT1dmFonts.current.text
     // Draw-phase scratch: the cursor moves at pointer rate.
     val tracePath = remember { Path() }
     // Inks from SEMANTIC roles, not the Material projection: a mark is the colour of its channel.
@@ -158,6 +160,7 @@ fun SessionScrubGraph(
             measurer = measurer,
             cs = cs,
             labels = labels,
+            font = font,
         )
 
         clipRect(left = plotLeft, top = plotTop, right = plotRight, bottom = plotBottom) {

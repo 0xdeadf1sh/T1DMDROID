@@ -28,6 +28,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
+import com.t1dm.core.design.LocalT1dmFonts
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Density
@@ -70,7 +71,8 @@ private val LabelSp = 9.sp
 internal fun ErrorByHorizonFigure(hs: List<HorizonMetrics>) {
     val cs = MaterialTheme.colorScheme
     val measurer = rememberTextMeasurer()
-    val axisStyle = TextStyle(color = cs.onSurfaceVariant, fontSize = LabelSp)
+    val font = LocalT1dmFonts.current.text
+    val axisStyle = TextStyle(color = cs.onSurfaceVariant, fontSize = LabelSp, fontFamily = font)
     val rmseInk = cs.primary
     val maeInk = cs.secondary
     val persistInk = cs.onSurface
@@ -126,8 +128,9 @@ internal fun ErrorByHorizonFigure(hs: List<HorizonMetrics>) {
 internal fun CalibrationFigure(hs: List<HorizonMetrics>) {
     val cs = MaterialTheme.colorScheme
     val measurer = rememberTextMeasurer()
-    val axisStyle = TextStyle(color = cs.onSurfaceVariant, fontSize = LabelSp)
-    val targetStyle = TextStyle(color = cs.onSurface, fontSize = LabelSp)
+    val font = LocalT1dmFonts.current.text
+    val axisStyle = TextStyle(color = cs.onSurfaceVariant, fontSize = LabelSp, fontFamily = font)
+    val targetStyle = TextStyle(color = cs.onSurface, fontSize = LabelSp, fontFamily = font)
     val inner = cs.primary
     val outer = cs.secondary
 
@@ -254,6 +257,7 @@ internal fun ErrorGridFigure(
     val p = LocalT1dmSemantics.current
     val density = LocalDensity.current
     val measurer = rememberTextMeasurer()
+    val font = LocalT1dmFonts.current.text
     val shares = remember(points, zoneOf) { zoneShares(points, zoneOf) }
     val runs = remember(grid) { zoneRuns(grid) }
     val anchors = remember(grid) { zoneAnchors(grid) }
@@ -261,7 +265,7 @@ internal fun ErrorGridFigure(
     val fills = ramp.mapIndexed { i, c -> c.copy(alpha = REGION_ALPHA[i]) }
     val inks = ramp.mapIndexed { i, c -> c.copy(alpha = DOT_ALPHA[i]) }
 
-    val axisStyle = TextStyle(color = cs.onSurfaceVariant, fontSize = LabelSp)
+    val axisStyle = TextStyle(color = cs.onSurfaceVariant, fontSize = LabelSp, fontFamily = font)
     val axisMax = grid.axisMaxMgdl.toFloat()
     val ticks = listOf(0f, 100f, 200f, 300f, 400f).filter { it <= axisMax }
     val laid = ticks.map { measurer.measure(fmtAxis(it), axisStyle) }
@@ -289,7 +293,7 @@ internal fun ErrorGridFigure(
         val dots = dotKey?.let { k -> dotCache.get(k) ?: built?.takeIf { it.key == k } }
         Canvas(Modifier.fillMaxWidth().height(GridHeight)) {
             if (grid.isEmpty || points.isEmpty() || geom == null) return@Canvas
-            val letterStyle = TextStyle(color = cs.onSurface.copy(alpha = 0.8f), fontSize = ZoneLetterSp)
+            val letterStyle = TextStyle(color = cs.onSurface.copy(alpha = 0.8f), fontSize = ZoneLetterSp, fontFamily = font)
             val (left, plotTop, side, lineH, tickRow) = geom
             val bottom = plotTop + side
             fun px(v: Float) = left + (v / axisMax) * side
@@ -552,13 +556,14 @@ internal fun TrendMatrixFigure(m: TrendMatrix, binLabels: List<String>) {
     val cs = MaterialTheme.colorScheme
     val p = LocalT1dmSemantics.current
     val measurer = rememberTextMeasurer()
+    val font = LocalT1dmFonts.current.text
     val ink = p.inRange
 
     Legend(listOf(LegendItem(ink.copy(alpha = CELL_ALPHA_MAX), "pairs")), trailing = "x truth · y forecast · mg/dL/min")
     Canvas(Modifier.fillMaxWidth().height(MatrixHeight)) {
         if (m.isEmpty) return@Canvas
-        val axisStyle = TextStyle(color = cs.onSurfaceVariant, fontSize = LabelSp)
-        val cellStyle = TextStyle(color = cs.onSurface, fontSize = CellSp)
+        val axisStyle = TextStyle(color = cs.onSurfaceVariant, fontSize = LabelSp, fontFamily = font)
+        val cellStyle = TextStyle(color = cs.onSurface, fontSize = CellSp, fontFamily = font)
         val labels = binLabels.takeIf { it.size == TREND_BINS }.orEmpty()
         val laid = labels.map { measurer.measure(it, axisStyle) }
         val gutter = (laid.maxOfOrNull { it.size.width } ?: 0).toFloat() + 4.dp.toPx()
@@ -636,8 +641,9 @@ private fun StackedFigure(rows: List<StackRow>, colors: List<Color>, legend: Lis
     if (rows.isEmpty()) return
     val cs = MaterialTheme.colorScheme
     val measurer = rememberTextMeasurer()
-    val labelStyle = TextStyle(color = cs.onSurface, fontSize = LabelSp)
-    val noteStyle = TextStyle(color = cs.onSurfaceVariant, fontSize = LabelSp)
+    val font = LocalT1dmFonts.current.text
+    val labelStyle = TextStyle(color = cs.onSurface, fontSize = LabelSp, fontFamily = font)
+    val noteStyle = TextStyle(color = cs.onSurfaceVariant, fontSize = LabelSp, fontFamily = font)
 
     Legend(legend.mapIndexed { i, name -> LegendItem(colors[i], name) })
     Canvas(Modifier.fillMaxWidth().height(RowHeight * rows.size + RowGap * (rows.size - 1))) {

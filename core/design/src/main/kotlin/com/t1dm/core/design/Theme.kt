@@ -53,6 +53,7 @@ fun T1dmTheme(
         LocalAnimationsEnabled provides animationsEnabled,
         LocalDeathMode provides deathMode,
         LocalT1dmHaptics provides haptics,
+        LocalT1dmFonts provides fontsFor(font),
         LocalRippleConfiguration provides ripple,
     ) {
         MaterialTheme(

@@ -27,7 +27,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
+import com.t1dm.core.design.LocalT1dmFonts
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.rememberHapticDetent
@@ -150,7 +150,7 @@ fun LoraPanel(
             Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
         }
         state.progress?.let { p ->
-            Text(p.label, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+            Text(p.label, style = MaterialTheme.typography.bodySmall, fontFamily = LocalT1dmFonts.current.mono)
             val f = p.fraction
             if (f == null) {
                 LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -191,7 +191,7 @@ fun LoraPanel(
                         Text(
                             if (a.attached) "● ${a.name}" else a.name,
                             style = MaterialTheme.typography.bodyLarge,
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = LocalT1dmFonts.current.mono,
                         )
                         Spacer()
                         if (!a.attached) {

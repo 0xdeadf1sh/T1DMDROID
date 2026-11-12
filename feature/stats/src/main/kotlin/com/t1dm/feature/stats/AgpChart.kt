@@ -1,6 +1,7 @@
 package com.t1dm.feature.stats
 
 import androidx.compose.foundation.Canvas
+import com.t1dm.core.design.rememberThemeTypeface
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
@@ -34,6 +35,7 @@ fun AgpChart(
     axisTextColor: Color = Color(0xFFB8C7D6),
 ) {
     val data = remember(agp, unit) { buildAgpFrame(agp, unit, target, kovatchevF) }
+    val face = rememberThemeTypeface()
     Canvas(
         modifier
             .fillMaxWidth()
@@ -77,6 +79,7 @@ fun AgpChart(
         drawPath(median, medianColor, style = Stroke(width = 3f))
 
         val paint = android.graphics.Paint().apply {
+            typeface = face
             color = android.graphics.Color.argb(
                 255,
                 (axisTextColor.red * 255).toInt(),

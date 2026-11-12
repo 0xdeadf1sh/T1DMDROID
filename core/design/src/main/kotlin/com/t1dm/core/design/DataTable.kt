@@ -13,7 +13,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -49,7 +48,7 @@ fun KeyValueRow(
             value ?: "n/a",
             modifier = Modifier.weight(valueWeight),
             style = valueStyle.merge(TabularFigures),
-            fontFamily = FontFamily.Monospace,
+            fontFamily = LocalT1dmFonts.current.mono,
             fontWeight = if (emphasizeValue) FontWeight.Bold else null,
             color = if (value == null) MaterialTheme.colorScheme.onSurfaceVariant
             else MaterialTheme.colorScheme.onSurface,
@@ -112,7 +111,7 @@ private fun TableLine(
                 modifier = Modifier.weight(col.weight).padding(end = 8.dp),
                 style = (if (header) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall)
                     .merge(TabularFigures),
-                fontFamily = if (col.numeric || header) FontFamily.Monospace else FontFamily.Default,
+                fontFamily = LocalT1dmFonts.current.let { if (col.numeric || header) it.mono else it.text },
                 fontWeight = if (header) FontWeight.Bold else null,
                 color = if (header) MaterialTheme.colorScheme.onSurfaceVariant
                 else MaterialTheme.colorScheme.onSurface,

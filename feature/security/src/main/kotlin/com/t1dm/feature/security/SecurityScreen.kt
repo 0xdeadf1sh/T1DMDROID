@@ -21,7 +21,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
+import com.t1dm.core.design.LocalT1dmFonts
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
@@ -98,10 +98,10 @@ private fun DeviceCard(
                 Text(
                     sas,
                     style = MaterialTheme.typography.displaySmall,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = LocalT1dmFonts.current.mono,
                     fontWeight = FontWeight.Bold,
                 )
-                d.sasWords?.let { Text(it, fontFamily = FontFamily.Monospace) }
+                d.sasWords?.let { Text(it, fontFamily = LocalT1dmFonts.current.mono) }
             }
 
             d.lastError?.let {

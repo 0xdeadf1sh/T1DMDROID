@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import com.t1dm.core.design.rememberThemeTypeface
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -51,8 +52,10 @@ fun BgHeatmap(
         Array(grid.size) { i -> grid[i].takeIf { !it.isNaN() }?.let { heatColor(it.toDouble()) } }
     }
     // Hoisted out of the draw: a Paint is a real allocation, and this repaints every scroll frame.
-    val textPaint = remember(axisTextColor) {
+    val face = rememberThemeTypeface()
+    val textPaint = remember(axisTextColor, face) {
         android.graphics.Paint().apply {
+            typeface = face
             color = android.graphics.Color.argb(
                 255,
                 (axisTextColor.red * 255).toInt(),
