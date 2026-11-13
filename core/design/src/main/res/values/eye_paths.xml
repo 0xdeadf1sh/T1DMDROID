@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The polyphemus.health eye on its 32-unit grid; drawn by ic_launcher_fg and PolyphemusEye. -->
+<!-- The polyphemus.health eye on its 32-unit grid; PolyphemusEye draws it, tools/launcher-icon rasterises it. -->
 <resources>
     <string name="eye_brackets" translatable="false">M1,4 V1 H5 M27,1 H31 V5 M31,28 V31 H27 M5,31 H1 V28</string>
     <string name="eye_lid" translatable="false">M2,16 L9,9 H23 L30,16 L23,23 H9 Z</string>
