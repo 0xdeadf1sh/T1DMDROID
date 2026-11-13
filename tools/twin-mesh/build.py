@@ -247,7 +247,7 @@ def main() -> None:
         f.write(canon.uv.astype("<f4").tobytes())
         f.write(canon.tri.astype("<u2").tobytes())
     print(f"{len(lo_pos)} verts, {len(lo_tri)} tris, {len(deltas)} morphs -> {a.out}")
-    organs.write(a.out.with_name("twin_organs.bin"), lo_pos.astype(np.float64), centres)
+    organs.write(a.out.with_name("twin_organs.bin"), lo_pos.astype(np.float64), centres, a.cache)
 
 
 if __name__ == "__main__":

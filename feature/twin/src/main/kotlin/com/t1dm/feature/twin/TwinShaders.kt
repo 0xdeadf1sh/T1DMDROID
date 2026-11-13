@@ -118,13 +118,18 @@ void main() {
 internal const val ORGAN_VS = """#version 300 es
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aBary;
+layout(location = 2) in vec4 aMotion;
 uniform mat4 uMvp;
 uniform vec3 uCentre;
 uniform float uScale;
+uniform float uAtria;
+uniform float uVentricles;
 out vec3 vW;
 out vec3 vB;
 void main() {
-    vW = uCentre + aPos * uScale;
+    // Each chamber squeezes toward its own centre: atria first, then the ventricles.
+    float squeeze = aMotion.w < 0.5 ? uAtria * 0.14 : (aMotion.w < 1.5 ? uVentricles * 0.12 : 0.0);
+    vW = uCentre + mix(aPos, aMotion.xyz, squeeze) * uScale;
     vB = aBary;
     gl_Position = uMvp * vec4(vW, 1.0);
 }

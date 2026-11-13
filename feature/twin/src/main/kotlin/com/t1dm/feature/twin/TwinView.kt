@@ -143,7 +143,7 @@ internal class TwinTextureView(context: Context, body: TwinBody) : TextureView(c
 
     private val scale = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScale(d: ScaleGestureDetector): Boolean {
-            renderer.zoomTarget = (renderer.zoomTarget / d.scaleFactor).coerceIn(0.3f, 2.2f)
+            renderer.zoomTarget = (renderer.zoomTarget / d.scaleFactor).coerceIn(ZOOM_IN_LIMIT, 2.2f)
             onZoom(abs(ln(d.scaleFactor)))
             return true
         }

@@ -20,6 +20,9 @@ import kotlin.math.tan
 /** sRGB 0..1 triples; set from the UI thread, read once per frame on the GL thread. */
 internal class TwinColors(val bg: FloatArray, val primary: FloatArray, val secondary: FloatArray)
 
+/** Closest pinch zoom, past the face framing at 0.3, so there is room left for the brain. */
+internal const val ZOOM_IN_LIMIT = 0.15f
+
 /** GL-thread only, except the @Volatile inputs the view writes. */
 internal class TwinRenderer(
     private val body: TwinBody,
@@ -212,7 +215,7 @@ internal class TwinRenderer(
         glUniform1f(loc(bodyProg, "uReveal"), reveal)
         glUniform3fv(loc(bodyProg, "uC1"), 1, c.primary, 0)
         glUniform3fv(loc(bodyProg, "uC2"), 1, c.secondary, 0)
-        val inside = smoothstep(BRAIN_FROM, BRAIN_TO, toFace)
+        val inside = 1f - smoothstep(BRAIN_FULL_ZOOM, BRAIN_START_ZOOM, z)
         glUniform1f(loc(bodyProg, "uHeadY"), maxY - bodyH * HEAD_FRAC)
         glUniform1f(loc(bodyProg, "uHeadFade"), inside)
         glBindVertexArray(bodyVao)
@@ -247,14 +250,17 @@ internal class TwinRenderer(
         glUniformMatrix4fv(loc(organProg, "uMvp"), 1, false, mvp, 0)
         glUniform3f(loc(organProg, "uEye"), ex, ey, ez)
         heart?.let { h ->
+            // One cycle per beat: atrial kick, then ventricular systole (≈0.15–0.5 of the cycle).
             val phase = (t * BPM / 60f) % 1f
-            val lub = exp(-((phase - 0.08f) / 0.05f).let { it * it })
-            val dub = exp(-((phase - 0.3f) / 0.05f).let { it * it })
+            val atria = exp(-((phase - 0.06f) / 0.045f).let { it * it })
+            val ventricles = smoothstep(0.14f, 0.24f, phase) * (1f - smoothstep(0.36f, 0.5f, phase))
             h.centre(blended, centre)
             glUniform3fv(loc(organProg, "uCentre"), 1, centre, 0)
-            glUniform1f(loc(organProg, "uScale"), 1f + 0.07f * lub + 0.045f * dub)
+            glUniform1f(loc(organProg, "uScale"), 1f)
+            glUniform1f(loc(organProg, "uAtria"), atria)
+            glUniform1f(loc(organProg, "uVentricles"), ventricles)
             glUniform3fv(loc(organProg, "uColor"), 1, c.secondary, 0)
-            glUniform1f(loc(organProg, "uGain"), 0.55f + 0.9f * (lub + 0.6f * dub))
+            glUniform1f(loc(organProg, "uGain"), 0.6f + 0.5f * ventricles + 0.3f * atria)
             glBindVertexArray(heartVao)
             glDrawArrays(GL_TRIANGLES, 0, h.tris.size)
         }
@@ -263,6 +269,8 @@ internal class TwinRenderer(
         b.centre(blended, centre)
         glUniform3fv(loc(organProg, "uCentre"), 1, centre, 0)
         glUniform1f(loc(organProg, "uScale"), 1f)
+        glUniform1f(loc(organProg, "uAtria"), 0f)
+        glUniform1f(loc(organProg, "uVentricles"), 0f)
         glUniform3fv(loc(organProg, "uColor"), 1, c.primary, 0)
         glUniform1f(loc(organProg, "uGain"), 0.35f * inside)
         glBindVertexArray(brainVao)
@@ -285,13 +293,16 @@ internal class TwinRenderer(
         val n = o.tris.size
         val pos = floatBuffer(n * 3)
         val bary = floatBuffer(n * 3)
+        val motion = floatBuffer(n * 4)
         for (i in 0 until n) {
-            val v = (o.tris[i].toInt() and 0xFFFF) * 3
-            pos.put(o.pos, v, 3)
+            val v = o.tris[i].toInt() and 0xFFFF
+            pos.put(o.pos, v * 3, 3)
             bary.put(BARY, (i % 3) * 3, 3)
+            motion.put(o.motion, v * 4, 4)
         }
         attribute(0, 3, pos.apply { flip() })
         attribute(1, 3, bary.apply { flip() })
+        attribute(2, 4, motion.apply { flip() })
         glBindVertexArray(0)
         return vao
     }
@@ -425,9 +436,9 @@ internal class TwinRenderer(
         /** Head bottom as a share of stature below the crown; the head fades above it. */
         const val HEAD_FRAC = 0.14f
 
-        /** Zoom-to-face progress over which the head thins and the brain appears. */
-        const val BRAIN_FROM = 0.45f
-        const val BRAIN_TO = 0.9f
+        /** Zoom past the face framing over which the head thins and the brain appears. */
+        const val BRAIN_START_ZOOM = 0.27f
+        const val BRAIN_FULL_ZOOM = 0.18f
         const val IDLE_NS = 2_500_000_000L
         val BARY = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
 

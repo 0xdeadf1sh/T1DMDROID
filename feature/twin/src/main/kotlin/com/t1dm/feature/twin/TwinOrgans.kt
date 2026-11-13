@@ -6,10 +6,12 @@ import java.util.PriorityQueue
 import kotlin.math.sqrt
 import kotlin.random.Random
 
-/** A rigid organ in decimetres about its centre; the centre rides on body vertices. */
+/** An organ in decimetres about its centre; the centre rides on body vertices. */
 internal class TwinOrgan(
     val name: String,
     val pos: FloatArray,
+    /** Per vertex: its chamber's centre (xyz, about the organ centre) and class, see [STILL]. */
+    val motion: FloatArray,
     val tris: ShortArray,
     private val anchors: IntArray,
     private val weights: FloatArray,
@@ -56,12 +58,13 @@ internal class TwinOrgan(
         val out = FloatArray(n * SEEDS)
         for (s in 0 until SEEDS) {
             val dist = FloatArray(n) { Float.MAX_VALUE }
-            // Seeds deal round the disconnected parts, so every part fires.
-            val part = parts[s % parts.size]
-            val seed = part[rnd.nextInt(part.size)]
-            dist[seed] = 0f
             val queue = PriorityQueue<Pair<Float, Int>>(compareBy { it.first })
-            queue += 0f to seed
+            // One seed in every disconnected part per channel, so every part fires.
+            for (part in parts) {
+                val seed = part[rnd.nextInt(part.size)]
+                dist[seed] = 0f
+                queue += 0f to seed
+            }
             while (queue.isNotEmpty()) {
                 val (d, v) = queue.poll()!!
                 if (d > dist[v]) continue
@@ -108,25 +111,29 @@ internal class TwinOrgan(
 
     companion object {
         const val SEEDS = 4
+
+        /** Motion classes: atrium 0, ventricle 1, and this for parts that do not contract. */
+        const val STILL = 2f
         private const val UNREACHED = 1e3f
 
-        /** Written by `tools/twin-mesh/organs.py` (layout in its docstring). */
+        /** Written by `tools/twin-mesh/organs.py` (layout in its `write`). */
         fun parse(bytes: ByteArray): Map<String, TwinOrgan> {
             val b = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
             val magic = ByteArray(4).also { b.get(it) }
-            require(magic.contentEquals("TWO1".toByteArray())) { "not twin organs" }
+            require(magic.contentEquals("TWO2".toByteArray())) { "not twin organs" }
             val out = LinkedHashMap<String, TwinOrgan>()
             repeat(b.int) {
                 val name = String(ByteArray(b.get().toInt() and 0xFF).also { b.get(it) })
                 val nv = b.int
                 val nt = b.int
                 val pos = FloatArray(nv * 3) { b.float }
+                val motion = FloatArray(nv * 4) { b.float }
                 val tris = ShortArray(nt * 3) { b.short }
                 val k = b.int
                 val anchors = IntArray(k) { b.short.toInt() and 0xFFFF }
                 val weights = FloatArray(k) { b.float }
                 val offset = FloatArray(3) { b.float }
-                out[name] = TwinOrgan(name, pos, tris, anchors, weights, offset)
+                out[name] = TwinOrgan(name, pos, motion, tris, anchors, weights, offset)
             }
             require(!b.hasRemaining()) { "trailing bytes in twin organs" }
             return out

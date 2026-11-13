@@ -31,6 +31,22 @@ class TwinOrgansTest {
         assertTrue("brain ${top - c[1]} dm below the crown", top - c[1] in 0.3f..1.2f)
     }
 
+    /** Largest axis-aligned extent in cm. */
+    private fun extentCm(o: TwinOrgan): Float =
+        (0 until 3).maxOf { a -> (a until o.pos.size step 3).let { r -> r.maxOf { o.pos[it] } - r.minOf { o.pos[it] } } } * 10f
+
+    @Test fun `organs are life-sized`() {
+        val heart = extentCm(organs.getValue("heart"))
+        val brain = extentCm(organs.getValue("brain"))
+        assertTrue("heart $heart cm", heart in 10f..18f)
+        assertTrue("brain $brain cm", brain in 14f..20f)
+    }
+
+    @Test fun `the heart has atria and ventricles to squeeze`() {
+        val classes = organs.getValue("heart").motion.filterIndexed { i, _ -> i % 4 == 3 }.toSet()
+        assertTrue("classes $classes", 0f in classes && 1f in classes)
+    }
+
     @Test fun `every part of the brain is reached by a seed`() {
         val brain = organs.getValue("brain")
         val d = brain.seedDistances(brain.edges())
