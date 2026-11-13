@@ -231,6 +231,7 @@ private val SCREEN_SOURCES = mapOf(
     SettingsScreenKey.DATA to "DataSettingsScreen.kt",
     SettingsScreenKey.DEATH_CLOCK to "DeathClockSettingsScreen.kt",
     SettingsScreenKey.CGM to "CgmSettingsScreen.kt",
+    SettingsScreenKey.GAMES to "GameSettingsScreen.kt",
 )
 
 private val KNOB_FREE_SOURCES = setOf(
