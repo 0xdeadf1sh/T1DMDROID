@@ -29,14 +29,14 @@ import com.t1dm.core.model.TwinTrait
 import java.util.Locale
 
 /** [slot]: label centre y as a fraction of view height. */
-internal enum class Callout(val label: String, val trait: TwinTrait, val left: Boolean, val slot: Float) {
-    HEIGHT("HEIGHT", TwinTrait.HEIGHT, true, 0.16f),
-    AGE("AGE", TwinTrait.AGE, false, 0.32f),
-    SEX("SEX", TwinTrait.SEX, true, 0.5f),
-    WEIGHT("WEIGHT", TwinTrait.WEIGHT, false, 0.66f),
+internal enum class Callout(val label: String, val trait: TwinTrait, val slot: Float) {
+    HEIGHT("HEIGHT", TwinTrait.HEIGHT, 0.2f),
+    AGE("AGE", TwinTrait.AGE, 0.36f),
+    SEX("SEX", TwinTrait.SEX, 0.52f),
+    WEIGHT("WEIGHT", TwinTrait.WEIGHT, 0.68f),
 }
 
-/** Trait panels beside the body; values count up from the previous scan. */
+/** Trait panels in a column right of the body; values count up from the previous scan. */
 @Composable
 internal fun TwinCallouts(scan: TwinScan?, modifier: Modifier = Modifier) {
     if (scan == null) return
@@ -68,7 +68,7 @@ internal fun TwinCallouts(scan: TwinScan?, modifier: Modifier = Modifier) {
             val p = if (animate) ((t - 1.0f - i * 0.12f) / 0.6f).coerceIn(0f, 1f) else 1f
             if (p <= 0f) continue
             val e = 1f - (1f - p) * (1f - p)
-            drawCallout(measurer, style, c.label, valueText(c, scan, from, e), c.slot * size.height, c.left, e)
+            drawCallout(measurer, style, c.label, valueText(c, scan, from, e), c.slot * size.height, e)
         }
     }
 }
@@ -83,7 +83,6 @@ private fun DrawScope.drawCallout(
     name: String,
     value: String,
     labelY: Float,
-    left: Boolean,
     progress: Float,
 ) {
     val nameL = measurer.measure(name, s.name)
@@ -93,12 +92,12 @@ private fun DrawScope.drawCallout(
     val w = maxOf(nameL.size.width, valueL.size.width) + inner * 2
     val h = nameL.size.height + valueL.size.height + inner * 1.5f
     val slide = (1f - progress) * 16.dp.toPx()
-    val boxX = if (left) pad - slide else size.width - pad - w + slide
+    val boxX = size.width - pad - w + slide
     val boxY = labelY - h / 2
     val corner = CornerRadius(4.dp.toPx())
     drawRoundRect(s.panel.copy(alpha = 0.9f * progress), Offset(boxX, boxY), Size(w, h), corner)
     drawRoundRect(s.line.copy(alpha = 0.55f * progress), Offset(boxX, boxY), Size(w, h), corner, style = Stroke(1.dp.toPx()))
-    val tickX = if (left) boxX else boxX + w - 10.dp.toPx()
+    val tickX = boxX + w - 10.dp.toPx()
     drawLine(s.accent.copy(alpha = progress), Offset(tickX, boxY), Offset(tickX + 10.dp.toPx(), boxY), 2.dp.toPx())
     val textX = boxX + inner
     drawText(nameL, topLeft = Offset(textX, boxY + inner * 0.75f), alpha = progress)
@@ -111,7 +110,7 @@ private fun valueText(c: Callout, to: TwinScan, from: TwinScan?, e: Float): Stri
         val start = from?.get(t) ?: end
         return start + (end - start) * e
     }
-    return v(c.trait)?.let { formatTrait(c.trait, it) } ?: "—"
+    return v(c.trait)?.let { formatTrait(c.trait, it) } ?: "-"
 }
 
 private fun formatTrait(t: TwinTrait, v: Double): String = when (t) {

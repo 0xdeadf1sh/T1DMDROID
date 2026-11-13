@@ -22,8 +22,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -78,7 +80,7 @@ private enum class ScanPhase { SEARCH, CAPTURE }
 
 /** Front camera → checks → baked frontal face; [onCaptured] gets null if baking failed. */
 @Composable
-fun TwinScanScreen(onCaptured: (face: ByteArray?) -> Unit, modifier: Modifier = Modifier) {
+fun TwinScanScreen(onCaptured: (face: ByteArray?) -> Unit, onCancel: () -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var granted by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
@@ -177,6 +179,10 @@ fun TwinScanScreen(onCaptured: (face: ByteArray?) -> Unit, modifier: Modifier = 
                 ScanPhase.CAPTURE -> frozen?.let { drawCapture(hud, measurer, it, (now - capturedNs) / 1e9f) }
             }
         }
+        OutlinedButton(
+            onClick = { haptics.perform(HapticEvent.Tap); onCancel() },
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 36.dp),
+        ) { Text("Cancel") }
     }
 }
 
@@ -341,7 +347,7 @@ private fun verdict(f: FaceFrame?, modelFailed: Boolean): Verdict {
     }
     val tilt = f?.let { maxOf(abs(it.yawDeg), abs(it.pitchDeg)) }
     fun issueIn(g: FaceIssue.Group) = issue?.takeIf { it.group == g }
-    check(Check.FACE, f != null, if (modelFailed) "Face model failed to load" else "No face · look at the screen", null)
+    check(Check.FACE, f != null, if (modelFailed) "Face model failed to load" else "No face | look at the screen", null)
     check(
         Check.DISTANCE, f?.let { it.widthFraction() > MIN_FACE_WIDTH }, "Move closer",
         f?.let { Meter(it.widthFraction(), MIN_FACE_WIDTH, 0.6f, higherIsBetter = true) },
@@ -451,7 +457,7 @@ private fun DrawScope.drawSearch(s: HudStyle, m: TextMeasurer, f: FaceFrame?, v:
         else -> s.bad
     }
     val prompt = m.measure(
-        if (v.ready) "Hold still · %d%%".format(Locale.ROOT, (lock * 100).toInt()) else v.prompt,
+        if (v.ready) "Hold still | %d%%".format(Locale.ROOT, (lock * 100).toInt()) else v.prompt,
         s.big.copy(color = promptColor),
         constraints = Constraints(maxWidth = (size.width - pad * 2).toInt()),
     )
@@ -465,9 +471,9 @@ private fun DrawScope.drawSearch(s: HudStyle, m: TextMeasurer, f: FaceFrame?, v:
     val rows = Check.entries.map { c ->
         val state = v.states[c] ?: CheckState.WAIT
         val (mark, color) = when (state) {
-            CheckState.OK -> "✓" to s.ok
-            CheckState.FAIL -> "✕" to s.bad
-            CheckState.WAIT -> "–" to s.small.color.copy(alpha = 0.6f)
+            CheckState.OK -> "+" to s.ok
+            CheckState.FAIL -> "x" to s.bad
+            CheckState.WAIT -> "-" to s.small.color.copy(alpha = 0.6f)
         }
         m.measure("$mark  ${c.label}", s.mono.copy(color = color))
     }
@@ -491,7 +497,7 @@ private fun DrawScope.drawMeter(s: HudStyle, m: TextMeasurer, meter: Meter, x: F
     drawLine(s.big.color, Offset(tick, cy - 8.dp.toPx()), Offset(tick, cy + 8.dp.toPx()), 2.dp.toPx())
     fun fmt(v: Float) = if (meter.max <= 1f) "%.2f".format(Locale.ROOT, v) else "%.0f".format(Locale.ROOT, v)
     val label = m.measure(
-        "${fmt(meter.value)} · need ${if (meter.higherIsBetter) "≥" else "≤"} ${fmt(meter.limit)}",
+        "${fmt(meter.value)} | need ${if (meter.higherIsBetter) ">=" else "<="} ${fmt(meter.limit)}",
         s.mono.copy(color = color),
     )
     drawText(label, topLeft = Offset(x + w + 10.dp.toPx(), cy - label.size.height / 2))
@@ -532,12 +538,12 @@ private fun DrawScope.drawCapture(s: HudStyle, m: TextMeasurer, f: FaceFrame, t:
         val start = i * STAGE_S
         if (t < start) break
         val ok = t > start + STAGE_S * 0.8f
-        val l = m.measure((if (ok) "✓ " else "▸ ") + stage, if (ok) s.mono else s.big.copy(fontSize = s.mono.fontSize))
+        val l = m.measure((if (ok) "+ " else "> ") + stage, if (ok) s.mono else s.big.copy(fontSize = s.mono.fontSize))
         drawText(l, topLeft = Offset(pad, y))
         y += l.size.height + 4.dp.toPx()
     }
     drawText(m.measure("FACE SCAN", s.small), topLeft = Offset(pad, pad))
-    drawText(m.measure("Mock pipeline · nothing leaves the phone", s.small), topLeft = Offset(pad, pad + 16.dp.toPx()))
+    drawText(m.measure("Mock pipeline | nothing leaves the phone", s.small), topLeft = Offset(pad, pad + 16.dp.toPx()))
 }
 
 private fun DrawScope.drawScanlines(s: HudStyle) {
@@ -565,10 +571,10 @@ private fun DrawScope.drawBrackets(c: Color, r: Rect, len: Float) {
 
 private val STAGES = listOf(
     "Mesh 478 pts",
-    "Features · mock",
-    "Encrypt · mock",
-    "Server · mock",
-    "Decrypt · mock",
+    "Features | mock",
+    "Encrypt | mock",
+    "Server | mock",
+    "Decrypt | mock",
 )
 private const val STAGE_S = 0.55f
 private const val LOCK_S = 1.6f

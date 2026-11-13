@@ -66,10 +66,15 @@ fun TwinView(
         view.kick()
     }
     LaunchedEffect(face) {
-        val bitmap = face?.let {
-            withContext(Dispatchers.Default) { BitmapFactory.decodeByteArray(it, 0, it.size) }
+        val (bitmap, skin) = withContext(Dispatchers.Default) {
+            val b = face?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+            b to (b?.let(::meanSquaredLuma) ?: 0f)
         }
-        view.renderer.setFace(bitmap)
+        view.renderer.setFace(bitmap, skin)
+        view.kick()
+    }
+    LaunchedEffect(callouts) {
+        view.renderer.shiftTarget = if (callouts) CALLOUT_BODY_SHIFT else 0f
         view.kick()
     }
     LaunchedEffect(scan?.outputs) {
@@ -99,6 +104,9 @@ fun TwinView(
         }
     }
 }
+
+/** NDC; clears the callout column on the right. */
+private const val CALLOUT_BODY_SHIFT = -0.3f
 
 private fun Color.rgb() = floatArrayOf(red, green, blue)
 

@@ -56,6 +56,23 @@ void main() {
 }
 """
 
+/** Idle pose over the morphed body; shared by all body-space shaders so organs follow it. */
+private const val IDLE_GLSL = """
+uniform vec3 uIdle; // breath 0..1, hip shift dm (+x), head turn rad
+uniform vec3 uFrame; // floor y, head bottom y, stature; dm
+vec3 idle(vec3 p) {
+    float h = (p.y - uFrame.x) / uFrame.z;
+    float chest = smoothstep(0.6, 0.68, h) * (1.0 - smoothstep(0.76, 0.82, h))
+        * (1.0 - smoothstep(1.1, 1.7, abs(p.x)));
+    p.z *= 1.0 + uIdle.x * 0.07 * chest;
+    p.y += uIdle.x * 0.04 * smoothstep(0.68, 0.8, h);
+    float a = uIdle.z * smoothstep(uFrame.y - 0.3, uFrame.y + 0.2, p.y);
+    p.xz = mat2(cos(a), -sin(a), sin(a), cos(a)) * p.xz;
+    p.x += uIdle.y * exp(-pow((h - 0.5) / 0.3, 2.0));
+    return p;
+}
+"""
+
 internal const val BODY_VS = """#version 300 es
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aBary;
@@ -64,11 +81,12 @@ uniform mat4 uMvp;
 out vec3 vW;
 out vec3 vB;
 out vec2 vUv;
+$IDLE_GLSL
 void main() {
-    vW = aPos;
+    vW = idle(aPos);
     vB = aBary;
     vUv = aUv;
-    gl_Position = uMvp * vec4(aPos, 1.0);
+    gl_Position = uMvp * vec4(vW, 1.0);
 }
 """
 
@@ -84,6 +102,7 @@ uniform vec3 uC1;
 uniform vec3 uC2;
 uniform sampler2D uFace;
 uniform float uFaceOn;
+uniform float uSkin; // mean squared luminance of the baked face
 uniform float uHeadY;
 uniform float uHeadFade;
 out vec4 o;
@@ -103,8 +122,10 @@ void main() {
     // Premultiplied texels; UVs off the face clamp to the texture's transparent border.
     vec4 f = texture(uFace, vec2(vUv.x, 1.0 - vUv.y)) * uFaceOn;
     float lum = dot(f.rgb, vec3(0.299, 0.587, 0.114)) / max(f.a, 1e-3);
-    vec3 tint = uC1 * (0.08 + 1.1 * lum * lum) * (0.7 + 0.3 * diff);
-    c = mix(c, tint + uC1 * edge * 0.35, f.a * 0.85);
+    float shade = 0.7 + 0.3 * diff;
+    float head = uFaceOn * smoothstep(uHeadY - 0.15, uHeadY + 0.25, vW.y);
+    c = mix(c, uC1 * (0.08 + 1.1 * uSkin) * shade + uC1 * edge * 0.35, head * 0.85);
+    c = mix(c, uC1 * (0.08 + 1.1 * lum * lum) * shade + uC1 * edge * 0.35, f.a * 0.85);
     // Zoomed to the face the head thins to its wireframe: screen-door, so depth stays opaque.
     float hf = smoothstep(uHeadY - 0.2, uHeadY + 0.3, vW.y) * uHeadFade;
     ivec2 q = ivec2(gl_FragCoord.xy) & 3;
@@ -126,10 +147,11 @@ uniform float uAtria;
 uniform float uVentricles;
 out vec3 vW;
 out vec3 vB;
+$IDLE_GLSL
 void main() {
     // Each chamber squeezes toward its own centre: atria first, then the ventricles.
     float squeeze = aMotion.w < 0.5 ? uAtria * 0.14 : (aMotion.w < 1.5 ? uVentricles * 0.12 : 0.0);
-    vW = uCentre + mix(aPos, aMotion.xyz, squeeze) * uScale;
+    vW = idle(uCentre + mix(aPos, aMotion.xyz, squeeze) * uScale);
     vB = aBary;
     gl_Position = uMvp * vec4(vW, 1.0);
 }
@@ -161,11 +183,12 @@ uniform mat4 uMvp;
 out vec3 vW;
 out float vD;
 out float vC;
+$IDLE_GLSL
 void main() {
-    vW = aPos;
+    vW = idle(aPos);
     vD = aAttr.x;
     vC = aAttr.y;
-    gl_Position = uMvp * vec4(aPos, 1.0);
+    gl_Position = uMvp * vec4(vW, 1.0);
 }
 """
 
@@ -216,9 +239,10 @@ uniform mat4 uMvp;
 uniform vec3 uCentre;
 uniform float uScale;
 out vec4 vDist;
+$IDLE_GLSL
 void main() {
     vDist = aDist;
-    gl_Position = uMvp * vec4(uCentre + aPos * uScale, 1.0);
+    gl_Position = uMvp * vec4(idle(uCentre + aPos * uScale), 1.0);
 }
 """
 

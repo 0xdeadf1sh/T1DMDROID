@@ -1198,11 +1198,14 @@ private fun T1dmNavHost(
             TwinTrendsScreen(scans)
         }
         composable("twin/scan") {
-            TwinScanScreen(onCaptured = { face ->
-                face?.let(container::saveTwinFace)
-                container.mockTwinScan()
-                navController.popBackStack("twin", inclusive = false)
-            })
+            TwinScanScreen(
+                onCaptured = { face ->
+                    face?.let(container::saveTwinFace)
+                    container.mockTwinScan()
+                    navController.popBackStack("twin", inclusive = false)
+                },
+                onCancel = { navController.popBackStack("twin", inclusive = false) },
+            )
         }
         composable("circadian") {
             val inference by container.inferenceState.collectAsState(InferenceState())
