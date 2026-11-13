@@ -3,52 +3,49 @@ package com.t1dm.feature.twin
 import com.t1dm.core.model.TwinScan
 import com.t1dm.core.model.TwinTrait
 
-/** Scan outputs → morph weights in [TwinBody.morphNames] order; a missing output stays at 0. */
+/** Scan outputs → morph weights; origin and span mirror `tools/twin-mesh/build.py`. */
 object TwinMorphs {
-    private const val YOUNG_Y = 25.0
-    private const val OLD_Y = 90.0
-    private const val NEUTRAL_BMI = 22.0
-    private const val BMI_SPAN_UP = 13.0
-    private const val BMI_SPAN_DOWN = 5.0
+    private const val REF_CM = 170.0
+    private const val REF_KG = 70.0
+    private const val REF_AGE = 40.0
+    private const val SPAN = 10.0
 
-    /** MakeHuman's weight and muscle targets move at most ~2 cm; extrapolate so the edit shows. */
-    private const val SHAPE_GAIN = 3.0
-
+    /** Morphs are linear in these features (fitted to ANSUR II and NHANES); missing = origin. */
     fun weights(scan: TwinScan?, body: TwinBody): FloatArray {
         val w = FloatArray(body.morphNames.size)
         if (scan == null) return w
-        fun set(name: String, v: Double, gain: Double = 1.0) {
+        fun set(name: String, v: Double) {
             val i = body.morphIndex(name)
-            if (i >= 0) w[i] = (v.coerceIn(-1.0, 1.0) * gain).toFloat()
+            if (i >= 0) w[i] = v.toFloat()
         }
-        scan[TwinTrait.SEX]?.let { set("sex", 2 * it - 1) }
-        scan[TwinTrait.AGE]?.let { set("age", ((it - YOUNG_Y) / (OLD_Y - YOUNG_Y)).coerceAtLeast(0.0)) }
-        scan[TwinTrait.MUSCLE]?.let { m ->
-            set("muscle_up", (2 * (m - 0.5)).coerceAtLeast(0.0), SHAPE_GAIN)
-            set("muscle_down", (2 * (0.5 - m)).coerceAtLeast(0.0), SHAPE_GAIN)
+        val h = scan[TwinTrait.HEIGHT]?.let { (it - REF_CM) / SPAN } ?: 0.0
+        val m = scan[TwinTrait.WEIGHT]?.let { (it - REF_KG) / SPAN } ?: 0.0
+        val a = scan[TwinTrait.AGE]?.let { (it - REF_AGE) / SPAN } ?: 0.0
+        val p = scan[TwinTrait.SEX]?.let { it - 0.5 } ?: 0.0
+        set("stature", h)
+        set("mass", m)
+        set("age", a)
+        set("male", p)
+        set("male_stature", p * h)
+        set("male_mass", p * m)
+        set("male_age", p * a)
+        scan[TwinTrait.MUSCLE]?.let { mu ->
+            set("muscle_up", (2 * (mu - 0.5)).coerceIn(0.0, 1.0))
+            set("muscle_down", (2 * (0.5 - mu)).coerceIn(0.0, 1.0))
         }
-        val h = scan[TwinTrait.HEIGHT]
-        val kg = scan[TwinTrait.WEIGHT]
-        if (h != null && kg != null) {
-            val bmi = kg / ((h / 100) * (h / 100))
-            set("weight_up", ((bmi - NEUTRAL_BMI) / BMI_SPAN_UP).coerceAtLeast(0.0), SHAPE_GAIN)
-            set("weight_down", ((NEUTRAL_BMI - bmi) / BMI_SPAN_DOWN).coerceAtLeast(0.0), SHAPE_GAIN)
-        }
-        if (h != null) fitHeight(w, h.toFloat(), body)
+        scan[TwinTrait.HEIGHT]?.let { fitHeight(w, it.toFloat(), body) }
         return w
     }
 
-    /** Height morphs are near-linear in cm, so one secant step lands within a millimetre. */
+    /** Stature is near-linear in cm; one secant step absorbs what the other morphs add. */
     private fun fitHeight(w: FloatArray, targetCm: Float, body: TwinBody) {
-        val up = body.morphIndex("height_up")
-        val down = body.morphIndex("height_down")
-        if (up < 0 || down < 0) return
+        val i = body.morphIndex("stature")
+        if (i < 0) return
         val base = body.heightCm(w)
         val probe = w.copyOf()
-        val i = if (targetCm >= base) up else down
-        probe[i] = 1f
+        probe[i] += 1f
         val gain = body.heightCm(probe) - base
-        if (gain == 0f) return
-        w[i] = ((targetCm - base) / gain).coerceIn(0f, 1f)
+        if (gain <= 0f) return
+        w[i] += (targetCm - base) / gain
     }
 }
