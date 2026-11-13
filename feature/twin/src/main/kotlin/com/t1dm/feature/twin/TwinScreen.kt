@@ -26,6 +26,7 @@ import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.TwinScan
 import com.t1dm.core.model.TwinSource
+import com.t1dm.core.model.TwinTrait
 import java.util.Locale
 
 /** [latest] null: no scan yet, and the twin stands at MakeHuman's neutral. */
@@ -54,6 +55,10 @@ fun TwinScreen(
         draft.keys.toList().forEach { k -> if (overrides[k] == draft[k]) draft.remove(k) }
     }
     val effective = effectiveScan(latest, overrides, draft)
+    var trait by remember { mutableStateOf(TwinTrait.HEIGHT) }
+    // Read at event time, not from `effective`: several drag events land between recompositions.
+    fun current(t: TwinTrait) = draft[t.key] ?: overrides[t.key] ?: latest?.get(t) ?: t.mid()
+    val edited = overrides.keys + draft.keys
 
     Box(modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -63,7 +68,19 @@ fun TwinScreen(
                     Modifier.fillMaxSize(),
                     onOrbit = { tut.orbitRad += it },
                     onZoom = { tut.zoomLog += it },
+                    onEditDrag = if (editing && effective != null) {
+                        { up -> draft[trait.key] = nudged(trait, current(trait), up) }
+                    } else {
+                        null
+                    },
+                    onEditEnd = {
+                        draft[trait.key]?.let { onOverride(trait.key, it) }
+                        tut.slides++
+                    },
                 )
+                if (editing && effective != null) {
+                    TwinEditGauge(trait, effective[trait] ?: trait.mid(), trait.key in edited, Modifier.fillMaxSize())
+                }
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -87,20 +104,15 @@ fun TwinScreen(
             }
             if (editing && effective != null) {
                 BackHandler { editing = false }
-                TwinEditPanel(
-                    effective = effective,
-                    edited = overrides.keys + draft.keys,
-                    onDrag = { t, v -> draft[t.key] = v },
-                    onCommit = { t ->
-                        draft[t.key]?.let { onOverride(t.key, it) }
-                        tut.slides++
-                    },
+                TwinEditBar(
+                    selected = trait,
+                    edited = edited,
+                    onSelect = { haptics.perform(HapticEvent.Tap); trait = it },
                     onReset = {
                         draft.clear()
                         onResetOverrides()
                     },
                     onDone = { editing = false },
-                    modifier = Modifier.tutorialTarget(tut, TutorialTarget.PANEL),
                 )
             } else {
                 Row(

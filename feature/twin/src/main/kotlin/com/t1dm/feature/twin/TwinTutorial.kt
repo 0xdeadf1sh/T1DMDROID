@@ -60,7 +60,7 @@ import kotlinx.coroutines.delay
 import kotlin.math.PI
 import kotlin.math.sin
 
-internal enum class TutorialTarget { BODY, MOCK, EDIT, PANEL }
+internal enum class TutorialTarget { BODY, MOCK, EDIT }
 
 /** What the tutorial watches: gesture totals from the twin, slider commits, target bounds. */
 @Stable
@@ -79,11 +79,11 @@ private enum class Step(val text: String, val target: TutorialTarget?, val hint:
     ZOOM("Pinch to zoom on the face", TutorialTarget.BODY, Hint.PINCH),
     SAMPLE("Tap Mock for a sample twin", TutorialTarget.MOCK, Hint.TAP),
     OPEN_EDIT("Tap Edit", TutorialTarget.EDIT, Hint.TAP),
-    SLIDE("Drag a slider · the twin reshapes", TutorialTarget.PANEL, Hint.NONE),
+    SLIDE("Drag the twin up or down · it reshapes", TutorialTarget.BODY, Hint.DRAG_V),
     FINISH("Scan face reads a new twin · Trends charts each scan", null, Hint.NONE),
 }
 
-private enum class Hint { SWIPE, PINCH, TAP, NONE }
+private enum class Hint { SWIPE, DRAG_V, PINCH, TAP, NONE }
 
 private const val ORBIT_GOAL_RAD = 1.5f
 private const val ZOOM_GOAL_LOG = 0.6f
@@ -222,6 +222,12 @@ private fun DrawScope.drawHint(hint: Hint, r: Rect, p: Float, color: Color) {
             val span = r.width * 0.22f
             for (k in 3 downTo 1) finger(Offset(c.x + span * sin((p - k * 0.03f) * 2 * PI.toFloat()), c.y), 0.25f / k)
             finger(Offset(c.x + span * wave, c.y), 1f)
+        }
+        Hint.DRAG_V -> {
+            val c = Offset(r.center.x, r.center.y)
+            val span = r.height * 0.15f
+            for (k in 3 downTo 1) finger(Offset(c.x, c.y + span * sin((p - k * 0.03f) * 2 * PI.toFloat())), 0.25f / k)
+            finger(Offset(c.x, c.y + span * wave), 1f)
         }
         Hint.PINCH -> {
             val c = Offset(r.center.x, r.top + r.height * 0.2f)
