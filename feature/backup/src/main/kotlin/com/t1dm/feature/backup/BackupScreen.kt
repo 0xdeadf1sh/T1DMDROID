@@ -107,7 +107,7 @@ fun BackupScreen(
                         OutlinedButton(
                             onClick = { haptics.perform(HapticEvent.Tap); onPickFolder() },
                             enabled = enabled,
-                        ) { Text(if (state.folderLabel == null) "Choose…" else "Change…") }
+                        ) { Text(if (state.folderLabel == null) "Choose..." else "Change...") }
                     }
                     Note("Outside app storage, so it survives uninstall")
 
@@ -135,14 +135,14 @@ fun BackupScreen(
 
                     if (state.lastOkAtMs != null) {
                         Note(
-                            "Last ${relativeAge(state.nowMs, state.lastOkAtMs)} · " +
-                                "${formatBytes(state.lastOkBytes)} · ${formatRows(state.lastOkRows)} rows",
+                            "Last ${relativeAge(state.nowMs, state.lastOkAtMs)} | " +
+                                "${formatBytes(state.lastOkBytes)} | ${formatRows(state.lastOkRows)} rows",
                         )
                     }
                     // Alongside the last success, not instead of it.
                     if (state.lastError != null && state.lastErrorAtMs != null) {
                         Text(
-                            "Failed ${relativeAge(state.nowMs, state.lastErrorAtMs)} — ${state.lastError}",
+                            "Failed ${relativeAge(state.nowMs, state.lastErrorAtMs)} - ${state.lastError}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
                         )
@@ -158,15 +158,15 @@ fun BackupScreen(
                 Button(
                     onClick = { haptics.perform(HapticEvent.Tap); onExport() },
                     enabled = enabled,
-                ) { Text("Export…") }
+                ) { Text("Export...") }
                 OutlinedButton(
                     onClick = { haptics.perform(HapticEvent.Tap); onImport() },
                     enabled = enabled,
-                ) { Text("Import…") }
+                ) { Text("Import...") }
             }
         }
 
-        item { Note("Restore merges — it never overwrites what is already here") }
+        item { Note("Restore merges - it never overwrites what is already here") }
 
         if (state.busy != null) {
             item {
@@ -245,7 +245,7 @@ private fun BackupRow(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                "${relativeAge(nowMs, entry.modifiedAtMs)} · ${formatBytes(entry.sizeBytes)}",
+                "${relativeAge(nowMs, entry.modifiedAtMs)} | ${formatBytes(entry.sizeBytes)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

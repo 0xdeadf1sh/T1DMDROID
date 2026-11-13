@@ -22,7 +22,7 @@ object OnBoardReadout {
 
     const val SENSITIVITY_NA = "ICR/ISF N/A"
 
-    fun separator(compact: Boolean): String = if (compact) " · " else "   ·   "
+    fun separator(compact: Boolean): String = if (compact) " | " else "   |   "
 
     fun iob(iobU: Double, compact: Boolean): String =
         if (compact) "IOB ${"%.1f".format(iobU)}U" else "IOB ${"%.2f".format(iobU)} U"

@@ -20,7 +20,7 @@ class ConfirmLogDialogTest {
         val f = fields(PendingLog.Meal(grams = 45.0, gi = 60.0))
         assertEquals("45 g", f["Carbs"])
         assertEquals("60", f["Glycemic index"])
-        assertEquals("14:32 · 5-min slot 14:30", f["Time"])
+        assertEquals("14:32 | 5-min slot 14:30", f["Time"])
     }
 
     @Test
@@ -62,7 +62,7 @@ class ConfirmLogDialogTest {
     fun `the grid line snaps to the nearest slot, in both directions`() {
         val justPastTheHalfStep = 14 * 3_600_000L + 33 * 60_000L
         val f = fields(PendingLog.Meal(20.0, 50.0), justPastTheHalfStep)
-        assertEquals("14:33 · 5-min slot 14:35", f["Time"])
+        assertEquals("14:33 | 5-min slot 14:35", f["Time"])
     }
 
     @Test

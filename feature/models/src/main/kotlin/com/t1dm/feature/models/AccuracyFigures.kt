@@ -332,8 +332,8 @@ internal fun ErrorGridFigure(
             }
 
             val caption = buildString {
-                append("x truth · y pred · mg/dL · $horizonMin min · n=${points.size}")
-                if (offScale > 0) append(" · $offScale off-scale")
+                append("x truth | y pred | mg/dL | $horizonMin min | n=${points.size}")
+                if (offScale > 0) append(" | $offScale off-scale")
             }
             label(measurer, caption, axisStyle, left + side / 2f, bottom + tickRow + 2.dp.toPx(), centreX = true)
         }
@@ -559,7 +559,7 @@ internal fun TrendMatrixFigure(m: TrendMatrix, binLabels: List<String>) {
     val font = LocalT1dmFonts.current.text
     val ink = p.inRange
 
-    Legend(listOf(LegendItem(ink.copy(alpha = CELL_ALPHA_MAX), "pairs")), trailing = "x truth · y forecast · mg/dL/min")
+    Legend(listOf(LegendItem(ink.copy(alpha = CELL_ALPHA_MAX), "pairs")), trailing = "x truth | y forecast | mg/dL/min")
     Canvas(Modifier.fillMaxWidth().height(MatrixHeight)) {
         if (m.isEmpty) return@Canvas
         val axisStyle = TextStyle(color = cs.onSurfaceVariant, fontSize = LabelSp, fontFamily = font)

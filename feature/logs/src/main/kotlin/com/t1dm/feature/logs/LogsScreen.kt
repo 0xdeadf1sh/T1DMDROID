@@ -125,17 +125,17 @@ private fun PageBar(firstRow: Int, rows: Int, hasNext: Boolean, onPrev: () -> Un
         verticalAlignment = Alignment.CenterVertically,
     ) {
         TextButton(onClick = { haptics.perform(HapticEvent.Tap); onPrev() }, enabled = firstRow > 0) {
-            Text("‹", style = MaterialTheme.typography.titleLarge)
+            Text("<", style = MaterialTheme.typography.titleLarge)
         }
-        Text("${firstRow + 1}–${firstRow + rows}", style = MaterialTheme.typography.labelLarge)
+        Text("${firstRow + 1}-${firstRow + rows}", style = MaterialTheme.typography.labelLarge)
         TextButton(onClick = { haptics.perform(HapticEvent.Tap); onNext() }, enabled = hasNext) {
-            Text("›", style = MaterialTheme.typography.titleLarge)
+            Text(">", style = MaterialTheme.typography.titleLarge)
         }
     }
 }
 
 /** 1..5, worst→best; the value written to `sample.mood`. */
-private val MOODS = listOf(1 to "😞", 2 to "🙁", 3 to "😐", 4 to "🙂", 5 to "😀")
+private val MOODS = listOf(1 to "--", 2 to "-", 3 to "0", 4 to "+", 5 to "++")
 
 /** The write is silent: mood overwrites the current bucket rather than appending a clinical row. */
 @Composable

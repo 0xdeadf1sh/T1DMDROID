@@ -32,7 +32,7 @@ class SettingsSearchRoutingTest {
             val rendered = crumbsFor(settingsRouteFor(screen), null)
                 .map { it.label }
                 .filterNot { it == "Settings" }
-                .joinToString(" › ")
+                .joinToString(" > ")
                 .ifEmpty { "Settings" }
             assertEquals("$screen advertises a stale path", rendered, screen.breadcrumb)
         }

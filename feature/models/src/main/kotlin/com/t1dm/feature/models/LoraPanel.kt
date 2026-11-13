@@ -57,11 +57,11 @@ data class LoraFitSpec(
 
 /** Held-out metric, frozen → adapter; null [objective] falls back to held-out pinball. */
 fun loraMetricLine(objective: LoraObjective?, before: Double?, after: Double?): String {
-    fun f(v: Double?, fmt: String) = v?.takeIf { it.isFinite() }?.let { fmt.format(it) } ?: "—"
+    fun f(v: Double?, fmt: String) = v?.takeIf { it.isFinite() }?.let { fmt.format(it) } ?: "-"
     return when (objective) {
-        LoraObjective.MEAN_RMSE -> "median RMSE ${f(before, "%.1f")} → ${f(after, "%.1f")} mg/dL"
-        LoraObjective.DTS_A -> "median DTS A ${f(before, "%.1f")} → ${f(after, "%.1f")}%"
-        LoraObjective.DOSE_RESPONSE, null -> "pinball ${f(before, "%.4f")} → ${f(after, "%.4f")}"
+        LoraObjective.MEAN_RMSE -> "median RMSE ${f(before, "%.1f")} -> ${f(after, "%.1f")} mg/dL"
+        LoraObjective.DTS_A -> "median DTS A ${f(before, "%.1f")} -> ${f(after, "%.1f")}%"
+        LoraObjective.DOSE_RESPONSE, null -> "pinball ${f(before, "%.4f")} -> ${f(after, "%.4f")}"
     }
 }
 
@@ -189,7 +189,7 @@ fun LoraPanel(
                 Column(Modifier.fillMaxWidth()) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            if (a.attached) "● ${a.name}" else a.name,
+                            if (a.attached) "* ${a.name}" else a.name,
                             style = MaterialTheme.typography.bodyLarge,
                             fontFamily = LocalT1dmFonts.current.mono,
                         )
@@ -229,7 +229,7 @@ fun LoraPanel(
                         )
                     }
                     Text(
-                        "${a.kind.label} · r${a.rank} · ${a.nParams} params · ${a.nTrain}+${a.nHoldout} windows",
+                        "${a.kind.label} | r${a.rank} | ${a.nParams} params | ${a.nTrain}+${a.nHoldout} windows",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Text(
@@ -237,7 +237,7 @@ fun LoraPanel(
                             loraMetricLine(null, a.holdoutBefore, a.holdoutAfter)
                         } else {
                             loraMetricLine(a.objective, a.metricBefore, a.metricAfter)
-                        }) + if (a.improved) "" else " · no gain",
+                        }) + if (a.improved) "" else " | no gain",
                         style = MaterialTheme.typography.bodySmall,
                         color = if (a.improved) {
                             MaterialTheme.colorScheme.onSurface
@@ -333,7 +333,7 @@ fun LoraPanel(
             text = {
                 Text(
                     if (a.attached) {
-                        "\"${a.name}\" is attached — ${a.kind.label.lowercase()} goes back to the frozen model."
+                        "\"${a.name}\" is attached - ${a.kind.label.lowercase()} goes back to the frozen model."
                     } else {
                         "Delete \"${a.name}\"? A fit cannot be recovered without a backup."
                     },

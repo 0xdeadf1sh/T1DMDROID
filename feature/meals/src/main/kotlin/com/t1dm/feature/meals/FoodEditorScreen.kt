@@ -115,7 +115,7 @@ fun FoodEditorScreen(
                 CurveEditor(curve = kept, onChange = { drawn = it })
                 if (degenerate) {
                     Text(
-                        "Flat curve encodes no carbs — draw a hump or turn it off",
+                        "Flat curve encodes no carbs - draw a hump or turn it off",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                     )

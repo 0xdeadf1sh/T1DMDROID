@@ -38,12 +38,12 @@ class ExerciseServiceTest {
     @Test
     fun `a reason the line does not carry does not rebuild it`() {
         val a = active(30_000L, 100.0)
-        assertEquals(progressKey(a), progressKey(a.copy(degraded = "Location off — no track")))
+        assertEquals(progressKey(a), progressKey(a.copy(degraded = "Location off - no track")))
     }
 
     @Test
     fun `the line the user reads keeps its metres`() {
-        assertEquals("3 min · 412 m", progressText(active(200_000L, 411.6)))
+        assertEquals("3 min | 412 m", progressText(active(200_000L, 411.6)))
         assertEquals("0 min", progressText(active(0L, 0.0)))
     }
 
@@ -104,8 +104,8 @@ class ExerciseServiceTest {
 
     @Test
     fun `a start that failed names the fault`() {
-        assertEquals("Didn't start — disk full", startFailureText(IllegalStateException("disk full")))
-        assertEquals("Didn't start — IllegalStateException", startFailureText(IllegalStateException()))
+        assertEquals("Didn't start - disk full", startFailureText(IllegalStateException("disk full")))
+        assertEquals("Didn't start - IllegalStateException", startFailureText(IllegalStateException()))
     }
 
     @Test

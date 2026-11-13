@@ -371,7 +371,7 @@ private fun EndCard(hud: GolfHudState, modifier: Modifier, onRestart: () -> Unit
         ) {
             Text("Holed", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             val score = if (h.penalties > 0) {
-                "${h.score} strokes · ${h.penalties} in water"
+                "${h.score} strokes | ${h.penalties} in water"
             } else {
                 "${h.score} strokes"
             }

@@ -62,7 +62,7 @@ fun DisplaySettingsScreen(
                 onClick = { haptics.perform(HapticEvent.Tap); onImportCustomTheme() },
                 modifier = Modifier.padding(top = 4.dp),
             ) {
-                Text(if (customThemeName != null) "Replace custom theme (JSON)…" else "Import custom theme (JSON)…")
+                Text(if (customThemeName != null) "Replace custom theme (JSON)..." else "Import custom theme (JSON)...")
             }
             if (importStatus != null) {
                 Text(importStatus, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -88,17 +88,17 @@ fun DisplaySettingsScreen(
         ) { onSetUnitSpace(it) }
 
         SettingsSectionHeader("Target range")
-        SettingsNote("For stats and the graph — independent of the alarm thresholds.")
+        SettingsNote("For stats and the graph - independent of the alarm thresholds.")
         IntStepper(displayTargetLow, targetLow, "mg/dL", step = 5, min = 0) { onSetTargetRange(it, targetHigh) }
         IntStepper(displayTargetHigh, targetHigh, "mg/dL", step = 5, min = 0) { onSetTargetRange(targetLow, it) }
 
         SettingsSectionHeader("Device temperature")
-        SettingsNote("The battery sensor's reading — no truer sensor is readable on this device.")
+        SettingsNote("The battery sensor's reading - no truer sensor is readable on this device.")
         ChipPicker(
             displayTemperatureUnit,
             listOf(
-                TempUnit.CELSIUS to "Celsius (°C)",
-                TempUnit.FAHRENHEIT to "Fahrenheit (°F)",
+                TempUnit.CELSIUS to "Celsius (C)",
+                TempUnit.FAHRENHEIT to "Fahrenheit (F)",
                 TempUnit.KELVIN to "Kelvin (K)",
             ),
             temperatureUnit,
@@ -117,7 +117,7 @@ fun DisplaySettingsScreen(
                     }
                 }
             } else {
-                SettingsNote("This launcher can't add widgets from the app — long-press the home screen, Widgets, T1DM.")
+                SettingsNote("This launcher can't add widgets from the app - long-press the home screen, Widgets, T1DM.")
             }
         }
 
@@ -200,7 +200,7 @@ private val displayTargetLow = SettingsKnob(
     screen = SettingsScreenKey.DISPLAY,
     section = "Target range",
     label = "Target low",
-    subtitle = "Bottom of the in-range band — not an alarm threshold",
+    subtitle = "Bottom of the in-range band - not an alarm threshold",
     synonyms = listOf(
         "target", "target range", "in range", "in-range", "time in range", "tir", "band", "goal",
         "stats", "a1c", "hba1c", "gmi", "green band", "low",
@@ -212,7 +212,7 @@ private val displayTargetHigh = SettingsKnob(
     screen = SettingsScreenKey.DISPLAY,
     section = "Target range",
     label = "Target high",
-    subtitle = "Top of the in-range band — not an alarm threshold",
+    subtitle = "Top of the in-range band - not an alarm threshold",
     synonyms = listOf(
         "target", "target range", "in range", "in-range", "time in range", "tir", "band", "goal",
         "stats", "a1c", "hba1c", "gmi", "green band", "high",
@@ -248,7 +248,7 @@ private val displaySensorNames = SettingsKnob(
     screen = SettingsScreenKey.DISPLAY,
     section = "Privacy",
     label = "Show sensor names",
-    subtitle = "Off shows CGM #0 — a sensor's name can be its serial",
+    subtitle = "Off shows CGM #0 - a sensor's name can be its serial",
     synonyms = listOf(
         "sensor name", "sensor names", "serial", "serial number", "privacy", "hide", "anonymise",
         "anonymize", "redact", "screenshot", "identifier", "device name", "mask",

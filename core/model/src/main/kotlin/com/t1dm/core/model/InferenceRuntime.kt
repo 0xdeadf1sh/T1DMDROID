@@ -10,8 +10,8 @@ enum class BackendId {
 }
 
 fun BackendId.displayName(): String = when (this) {
-    BackendId.EXECUTORCH_XNNPACK_FP32 -> "XNNPACK CPU · fp32"
-    BackendId.STUB -> "Stub · no .pte"
+    BackendId.EXECUTORCH_XNNPACK_FP32 -> "XNNPACK CPU | fp32"
+    BackendId.STUB -> "Stub | no .pte"
     BackendId.UNKNOWN -> "unknown backend"
 }
 

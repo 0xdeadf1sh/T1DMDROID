@@ -70,7 +70,7 @@ internal fun valueRange(topic: CgmLogTopic, lo: Int?, hi: Int?): String {
         CgmLogTopic.RSSI, CgmLogTopic.ADVERT -> "dBm"
         else -> "mg/dL"
     }
-    return if (lo == hi) "$lo $unit" else "$lo–$hi $unit"
+    return if (lo == hi) "$lo $unit" else "$lo-$hi $unit"
 }
 
 private const val LINE_TAG = "cgm-log-line"
@@ -106,9 +106,9 @@ fun writeCgmLogExport(
     zone: ZoneId,
     nowMs: Long,
 ) {
-    out.append("# T1DM CGM log · ").append(name).append(" (").append(id).append(") · exported ")
+    out.append("# T1DM CGM log | ").append(name).append(" (").append(id).append(") | exported ")
         .append(STAMP.format(Instant.ofEpochMilli(nowMs).atZone(zone))).append(' ').append(zone.id)
-        .append(" · ").append(entries.size.toString()).append(" lines\n")
+        .append(" | ").append(entries.size.toString()).append(" lines\n")
     var prev: CgmLogEntry? = null
     for (e in entries) {
         out.append(STAMP.format(Instant.ofEpochMilli(e.wallMs).atZone(zone))).append(' ')

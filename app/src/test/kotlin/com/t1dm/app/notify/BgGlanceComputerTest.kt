@@ -179,8 +179,8 @@ class BgGlanceComputerTest {
 
     @Test fun `the summary draws the arrow it was given, and none for none`() {
         val expected = mapOf(
-            GlanceTrend.RISING_FAST to "123 ↑↑", GlanceTrend.RISING to "123 ↑", GlanceTrend.FLAT to "123 →",
-            GlanceTrend.FALLING to "123 ↓", GlanceTrend.FALLING_FAST to "123 ↓↓", null to "123",
+            GlanceTrend.RISING_FAST to "123 ^^", GlanceTrend.RISING to "123 ^", GlanceTrend.FLAT to "123 ->",
+            GlanceTrend.FALLING to "123 v", GlanceTrend.FALLING_FAST to "123 vv", null to "123",
         )
         for ((trend, summary) in expected) {
             val g = BgGlanceComputer.compute(GlanceReadings.create(listOf(reading(123))), InferenceState(), thresholds, edges, lossMin = 20, staleMin = 15, nowMs = now, trend = trend)

@@ -5,14 +5,14 @@ import kotlin.math.hypot
 
 /** What blocks a capture, in the order the scan asks for it. */
 internal enum class FaceIssue(val prompt: String, val group: Group) {
-    DARK("Too dark · find more light", Group.LIGHT),
-    BACKLIT("Light behind you · turn to face it", Group.LIGHT),
-    BRIGHT("Too bright · step out of direct light", Group.LIGHT),
-    UNEVEN("Light on one side · face the light", Group.LIGHT),
-    GLASSES("Glasses · take them off", Group.VIEW),
-    COVERED("Mouth covered · remove mask", Group.VIEW),
-    FOREHEAD("Forehead covered · push back hat or hair", Group.VIEW),
-    BLUR("Blurry · hold still", Group.FOCUS),
+    DARK("Too dark | find more light", Group.LIGHT),
+    BACKLIT("Light behind you | turn to face it", Group.LIGHT),
+    BRIGHT("Too bright | step out of direct light", Group.LIGHT),
+    UNEVEN("Light on one side | face the light", Group.LIGHT),
+    GLASSES("Glasses | take them off", Group.VIEW),
+    COVERED("Mouth covered | remove mask", Group.VIEW),
+    FOREHEAD("Forehead covered | push back hat or hair", Group.VIEW),
+    BLUR("Blurry | hold still", Group.FOCUS),
     ;
 
     enum class Group { LIGHT, VIEW, FOCUS }

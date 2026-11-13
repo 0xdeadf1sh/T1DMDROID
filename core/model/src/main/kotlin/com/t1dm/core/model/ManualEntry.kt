@@ -12,7 +12,7 @@ data class IobCobReadout(
 
 /** Only GI-bearing logged meals qualify: multi-food builder meals carry a custom curve, null GI. */
 data class RecentMeal(val grams: Double, val gi: Double) {
-    val label: String get() = "${grams.toInt()} g · GI ${gi.toInt()}"
+    val label: String get() = "${grams.toInt()} g | GI ${gi.toInt()}"
 }
 
 enum class GiChip(val label: String, val gi: Double) {

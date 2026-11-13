@@ -30,7 +30,7 @@ import java.time.format.DateTimeFormatter
 
 private const val NOT_RECORDED = "not recorded"
 
-private val TS_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM d · HH:mm")
+private val TS_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM d | HH:mm")
 
 fun logAmountLabel(entry: LoggedEntry): String = when (entry.kind) {
     CurveKind.CARB -> "${fmtNum(entry.amount)} g carbs"
@@ -66,7 +66,7 @@ internal fun fmtGi(gi: Double): String = Math.round(gi).toString()
 fun logDetailLabel(entry: LoggedEntry): String? = when (entry.kind) {
     CurveKind.CARB ->
         listOfNotNull(entry.gi?.let { "GI ${fmtGi(it)}" }, logNote(entry))
-            .takeIf { it.isNotEmpty() }?.joinToString(" · ")
+            .takeIf { it.isNotEmpty() }?.joinToString(" | ")
     CurveKind.INSULIN -> logNote(entry)
     // Already in the headline; repeating it under would read as a second fact.
     CurveKind.EXERCISE -> null

@@ -131,7 +131,7 @@ class CgmScanService : LifecycleService() {
         val missing = missingGrants(this)
         if (missing.isNotEmpty()) {
             Timber.w(
-                "CgmScanService: missing %s — the connected CGM session cannot start yet; stopping. " +
+                "CgmScanService: missing %s - the connected CGM session cannot start yet; stopping. " +
                     "It restarts once the permissions are granted.",
                 missing.joinToString { it.substringAfterLast('.') },
             )
@@ -467,7 +467,7 @@ class CgmScanService : LifecycleService() {
         if (alarm == null) return
         // Urgent tiers are snooze-only; SnoozeState.dismiss refuses too, bails before the gate.
         if (dismiss && !alarm.isDismissable()) {
-            Timber.tag(TAG).i("ALARM_ACTION DISMISS ignored — %s is not dismissable (urgent tier)", kind)
+            Timber.tag(TAG).i("ALARM_ACTION DISMISS ignored - %s is not dismissable (urgent tier)", kind)
             return
         }
         val scope = alarmScope ?: lifecycleScope

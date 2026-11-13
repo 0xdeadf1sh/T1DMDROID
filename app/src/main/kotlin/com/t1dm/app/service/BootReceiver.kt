@@ -35,7 +35,7 @@ private val RESUME_ACTIONS = setOf(
 
 /** An extension: `goAsync` is only legal on the receiver currently inside `onReceive`. */
 private fun BroadcastReceiver.resumeMonitoring(context: Context) {
-    Timber.tag("CgmScan").i("boot/unlock/update — restarting CgmScanService")
+    Timber.tag("CgmScan").i("boot/unlock/update - restarting CgmScanService")
     runCatching { CgmScanService.start(context) }
         .onFailure { Timber.tag("CgmScan").w(it, "boot restart failed") }
     CgmWatchdog.enqueue(context)

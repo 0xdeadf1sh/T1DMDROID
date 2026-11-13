@@ -103,7 +103,7 @@ private fun BuilderSummary(
     if (isEmpty) {
         justLoggedCarbs?.let {
             Text(
-                "✓ Logged ${"%.0f".format(it)} g carbs",
+                "Logged ${"%.0f".format(it)} g carbs",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.primary,
             )
@@ -153,7 +153,7 @@ private fun BuilderSummary(
         OutlinedTextField(
             value = mealName,
             onValueChange = { mealName = it },
-            label = { Text("Save as…") },
+            label = { Text("Save as...") },
             singleLine = true,
             modifier = Modifier.weight(1f),
         )
@@ -197,7 +197,7 @@ private fun SavedMeals(
             Column(Modifier.weight(1f).hapticClickable(HapticEvent.Confirm) { onLoad(meal) }) {
                 Text(meal.name, style = MaterialTheme.typography.bodyMedium)
                 Text(
-                    "${meal.components.size} items · ${"%.0f".format(meal.totalCarbs)} g",
+                    "${meal.components.size} items | ${"%.0f".format(meal.totalCarbs)} g",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                 )
@@ -259,7 +259,7 @@ private fun FoodBuilder(
         CurveEditor(curve = curve, onChange = { curve = it })
         if (curveDegenerate) {
             Text(
-                "Flat curve encodes no carbs — draw a hump or turn it off",
+                "Flat curve encodes no carbs - draw a hump or turn it off",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
             )

@@ -111,7 +111,6 @@ fun MealsScreen(
                             gi = m.gi.roundToInt().toFloat()
                         },
                         label = { Text(m.label) },
-                        leadingIcon = { Text("↺", style = MaterialTheme.typography.labelLarge) },
                         colors = AssistChipDefaults.assistChipColors(),
                     )
                 }
@@ -141,7 +140,7 @@ fun MealsScreen(
 
         if (previewCurve != null && grams != null && grams > 0.0) {
             Text(
-                "Appearance (Ra) — grams per 5 min",
+                "Appearance (Ra) - grams per 5 min",
                 style = MaterialTheme.typography.labelMedium,
                 modifier = Modifier.padding(top = 8.dp),
             )

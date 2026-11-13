@@ -61,15 +61,15 @@ class GlucoseWidget : GlanceAppWidget() {
         val nowMs = System.currentTimeMillis()
         val live = boundedWidgetPull(
             SNAPSHOT_BUDGET_MS,
-            onTimeout = { Timber.tag(TAG).w("live snapshot exceeded ${SNAPSHOT_BUDGET_MS}ms — falling back to last known") },
-            onError = { Timber.tag(TAG).w(it, "live snapshot pull threw — falling back to last known") },
+            onTimeout = { Timber.tag(TAG).w("live snapshot exceeded ${SNAPSHOT_BUDGET_MS}ms - falling back to last known") },
+            onError = { Timber.tag(TAG).w(it, "live snapshot pull threw - falling back to last known") },
         ) { currentWidgetSnapshot(context) }
         val cached = if (live != null) null else runCatching { lastKnown(context, id) }.getOrNull()
 
         // Before composing: palette holders read at composition time; nothing known writes nothing.
         themeOf(live, cached)?.let { (themeId, customThemeJson) ->
             runCatching { applyWidgetPalette(resolvePalette(themeId, customThemeJson)) }
-                .onFailure { Timber.tag(TAG).w(it, "widget palette seed failed — keeping the current palette") }
+                .onFailure { Timber.tag(TAG).w(it, "widget palette seed failed - keeping the current palette") }
         }
 
         if (live != null) {
@@ -85,7 +85,7 @@ class GlucoseWidget : GlanceAppWidget() {
 
     /** The default replaces the tile with Glance's error layout; a stale number beats error. */
     override fun onCompositionError(context: Context, glanceId: GlanceId, appWidgetId: Int, throwable: Throwable) {
-        Timber.tag(TAG).w(throwable, "widget composition failed — leaving the previous tile in place")
+        Timber.tag(TAG).w(throwable, "widget composition failed - leaving the previous tile in place")
     }
 
     private suspend fun lastKnown(context: Context, id: GlanceId): Preferences =
@@ -167,7 +167,7 @@ private fun CompactContent(snap: WidgetSnapshot, p: T1dmPalette) {
         BgRow(snap, p, numberSp = 34, arrowSp = 24)
         val unit = BgFormat.unitLabel(snap.unit)
         Text(
-            if (snap.glance.stale) "$unit · ${ageText(snap.glance)}" else unit,
+            if (snap.glance.stale) "$unit | ${ageText(snap.glance)}" else unit,
             maxLines = 1,
             style = TextStyle(fontSize = 11.sp, color = ColorProvider(p.inkMuted)),
         )
@@ -281,13 +281,13 @@ private fun GlyBadge(snap: WidgetSnapshot, p: T1dmPalette) {
 @Composable
 private fun PrimaryMetrics(snap: WidgetSnapshot, p: T1dmPalette) {
     Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Metric("IOB", snap.iobU?.let { "${oneDp(it)}U" } ?: "—", p)
+        Metric("IOB", snap.iobU?.let { "${oneDp(it)}U" } ?: "-", p)
         Spacer(GlanceModifier.defaultWeight())
-        Metric("COB", snap.cobG?.let { "${it.roundToInt()}g" } ?: "—", p)
+        Metric("COB", snap.cobG?.let { "${it.roundToInt()}g" } ?: "-", p)
         Spacer(GlanceModifier.defaultWeight())
-        Metric("GMI", snap.gmi?.let { "${oneDp(it)}%" } ?: "—", p)
+        Metric("GMI", snap.gmi?.let { "${oneDp(it)}%" } ?: "-", p)
         Spacer(GlanceModifier.defaultWeight())
-        Metric("STEPS", snap.steps?.let { humanSteps(it) } ?: "—", p)
+        Metric("STEPS", snap.steps?.let { humanSteps(it) } ?: "-", p)
         Spacer(GlanceModifier.defaultWeight())
         SignalMetric(snap.rssi, p)
     }
@@ -296,7 +296,7 @@ private fun PrimaryMetrics(snap: WidgetSnapshot, p: T1dmPalette) {
 @Composable
 private fun SecondaryMetrics(snap: WidgetSnapshot, p: T1dmPalette) {
     Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Metric("CLOCK", snap.clockHour?.let { formatClock(it) } ?: "—", p)
+        Metric("CLOCK", snap.clockHour?.let { formatClock(it) } ?: "-", p)
     }
 }
 
@@ -342,7 +342,7 @@ private fun ageText(g: BgGlance): String = if (g.hasReading) BgFormat.age(g.read
 
 private fun forecastText(g: BgGlance): String = when {
     g.approaching != null -> BgFormat.crossingLine(g.approaching)
-    g.warmup -> "Collecting context…"
+    g.warmup -> "Collecting context..."
     g.signalLoss -> "Signal lost"
     g.forecastEligible && g.fcEndMgdl != null -> g.summary
     else -> "Forecast unavailable"

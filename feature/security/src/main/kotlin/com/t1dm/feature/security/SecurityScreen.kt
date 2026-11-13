@@ -80,12 +80,12 @@ private fun DeviceCard(
     LaunchedEffect(d.lastError) { if (d.lastError != null) haptics.perform(HapticEvent.Warn) }
     Card(Modifier.fillMaxWidth(), colors = panelCardColors()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Kv("Device", d.name ?: "—")
+            Kv("Device", d.name ?: "-")
             Kv("Link", d.phase)
             Kv("Records", if (d.extended) "all" else "glance")
             Kv("Session", d.sessionState)
             Kv("Epoch", d.epoch.toString())
-            Kv("Key fingerprint", d.keyFingerprint ?: "—")
+            Kv("Key fingerprint", d.keyFingerprint ?: "-")
             Kv("Send nonce (seq)", d.sendSeq.toString())
             Kv("Recv nonce (seq)", d.recvSeq.toString())
             d.lastAckSeq?.let { Kv("Last PUSH_ACK", it.toString()) }
@@ -111,7 +111,7 @@ private fun DeviceCard(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 // Commit, not Confirm: cannot be walked back without a rotation.
                 if (d.canConfirmSas) {
-                    Button(onClick = { haptics.perform(HapticEvent.Commit); onConfirmSas() }) { Text("Codes match — confirm") }
+                    Button(onClick = { haptics.perform(HapticEvent.Commit); onConfirmSas() }) { Text("Codes match - confirm") }
                 }
                 if (d.canRotate && onRotate != null) {
                     OutlinedButton(onClick = { haptics.perform(HapticEvent.Confirm); onRotate() }) { Text("Rotate keys") }

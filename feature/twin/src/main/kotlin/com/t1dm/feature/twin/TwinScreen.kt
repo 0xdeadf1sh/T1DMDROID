@@ -81,7 +81,7 @@ fun TwinScreen(
                         else -> latest.source.uppercase(Locale.ROOT)
                     }
                     Text(
-                        if (overrides.isEmpty()) tag else "$tag · EDITED",
+                        if (overrides.isEmpty()) tag else "$tag | EDITED",
                         style = MaterialTheme.typography.labelMedium,
                         color = cs.secondary,
                     )

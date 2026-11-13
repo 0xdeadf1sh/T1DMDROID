@@ -97,7 +97,7 @@ class StatsViewModel(
                     recomputing = false,
                     composite = composite,
                     emptyReason = if (local.isEmpty) {
-                        "Not enough history for ${window.wire} yet — still collecting readings"
+                        "Not enough history for ${window.wire} yet - still collecting readings"
                     } else {
                         null
                     },

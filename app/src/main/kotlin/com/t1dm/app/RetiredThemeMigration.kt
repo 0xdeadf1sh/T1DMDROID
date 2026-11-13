@@ -10,7 +10,7 @@ object RetiredThemeMigration {
         val container = app.container
         container.appScope.launch {
             container.settingsStore.coerceRetiredThemeId()?.let {
-                Timber.i("persisted theme id no longer resolves — coerced to %s", it)
+                Timber.i("persisted theme id no longer resolves - coerced to %s", it)
             }
         }
     }

@@ -56,14 +56,14 @@ fun SettingsScreen(
                 SettingsNavRow("Games", "Drive & Golf scenery", onClick = onOpenGames)
 
                 SettingsSectionHeader("Alarms")
-                SettingsNavRow("Alarm thresholds", "Urgent-low / low / high / urgent-high — unbounded", onClick = onOpenAlarmThresholds)
+                SettingsNavRow("Alarm thresholds", "Urgent-low / low / high / urgent-high - unbounded", onClick = onOpenAlarmThresholds)
                 SettingsNavRow("Signal & freshness", "Loss-of-signal windows, weak signal", onClick = onOpenSignalSafety)
                 SettingsNavRow("Alert sound & vibration", "Per-tier tone, K90 vibration, DND bypass, repeat", onClick = onOpenAlerts)
-                SettingsNavRow("Device temperature alert", "Warn when the phone runs hot — fires even in Death mode", onClick = onOpenDeviceTemp)
+                SettingsNavRow("Device temperature alert", "Warn when the phone runs hot - fires even in Death mode", onClick = onOpenDeviceTemp)
 
                 SettingsSectionHeader("Forecast")
                 SettingsNavRow("Forecast", "Warmup, cadence, models at once, thermal gate", onClick = onOpenForecast)
-                SettingsNavRow("Dose calculator", "Objective, asymmetry, rails, thresholds — unbounded", onClick = onOpenCalculator)
+                SettingsNavRow("Dose calculator", "Objective, asymmetry, rails, thresholds - unbounded", onClick = onOpenCalculator)
                 SettingsNavRow("Curve & PK parameters", "Carb & insulin presets, Bézier designers", onClick = onOpenCurveParams)
                 SettingsNavRow("Models & backend", "Running model; backend", onClick = onOpenModels)
 
@@ -87,7 +87,7 @@ fun SettingsScreen(
                 if (deathModeSupported) {
                     SettingsNavRow(
                         "Death mode",
-                        "Silence every alarm, drop every rail — irrevocable until rescinded",
+                        "Silence every alarm, drop every rail - irrevocable until rescinded",
                         onClick = onOpenDeath,
                     )
                 }

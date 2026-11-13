@@ -13,7 +13,7 @@ fun DeathClockSettingsScreen(
     onSetDeath: (Double) -> Unit,
 ) {
     SettingsScaffold(SettingsScreenKey.DEATH_CLOCK) {
-        SettingsNote("Each offset chains from the previous landmark — reflection only")
+        SettingsNote("Each offset chains from the previous landmark - reflection only")
         DoubleStepper(deathClockDka, dkaAfterIobZeroH, "h", step = 0.5, min = 0.0) { onSetDka(it) }
         DoubleStepper(deathClockComa, comaAfterDkaH, "h", step = 0.5, min = 0.0) { onSetComa(it) }
         DoubleStepper(deathClockDeath, deathAfterComaH, "h", step = 0.5, min = 0.0) { onSetDeath(it) }

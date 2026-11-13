@@ -79,8 +79,8 @@ private enum class Step(val text: String, val target: TutorialTarget?, val hint:
     ZOOM("Pinch to zoom on the face", TutorialTarget.BODY, Hint.PINCH),
     SAMPLE("Tap Mock for a sample twin", TutorialTarget.MOCK, Hint.TAP),
     OPEN_EDIT("Tap Edit", TutorialTarget.EDIT, Hint.TAP),
-    SLIDE("Pick a trait, drag the slider · the twin reshapes", TutorialTarget.PANEL, Hint.SWIPE),
-    FINISH("Scan face reads a new twin · Trends charts each scan", null, Hint.NONE),
+    SLIDE("Pick a trait, drag the slider | the twin reshapes", TutorialTarget.PANEL, Hint.SWIPE),
+    FINISH("Scan face reads a new twin | Trends charts each scan", null, Hint.NONE),
 }
 
 private enum class Hint { SWIPE, PINCH, TAP, NONE }
@@ -180,7 +180,7 @@ private fun TutorialCard(
         AnimatedContent(step, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "step") { s ->
             Column {
                 Text(
-                    "$number/$count" + if (complete) " · DONE" else "",
+                    "$number/$count" + if (complete) " | DONE" else "",
                     style = MaterialTheme.typography.labelMedium,
                     color = cs.secondary,
                 )

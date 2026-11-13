@@ -171,7 +171,7 @@ internal fun interruptedNote(session: ExerciseSession): String? {
     if (!session.interrupted) return null
     val ranMs = (session.endMs ?: session.startMs) - session.startMs
     return if (ranMs >= EXERCISE_MAX_BOUT_MS) "Ended at the ${EXERCISE_MAX_BOUT_MS / 3_600_000L} h limit"
-    else "Ended early — app stopped"
+    else "Ended early - app stopped"
 }
 
 /** Six 5-min grid slots: fewer and a short bout's trace is one or two readings. */

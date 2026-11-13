@@ -72,7 +72,7 @@ fun ModelsScreen(
         ) {
             item {
                 Text(
-                    "${state.running.size} loaded · tap a row for detail",
+                    "${state.running.size} loaded | tap a row for detail",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 state.note?.let {
@@ -181,13 +181,13 @@ private fun ModelRow(
                 onClick = { haptics.perform(HapticEvent.Tap); onRequestDelete(model.modelId) },
                 modifier = Modifier.size(40.dp),
             ) {
-                Text("✕", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
+                Text("x", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
             }
         }
         Text(
             // displayName() already ends in the precision; appending the enum repeats it.
             model.backend.displayName() +
-                (prediction?.let { " · anchor ${it.lastBg.toInt()} mg/dL" } ?: ""),
+                (prediction?.let { " | anchor ${it.lastBg.toInt()} mg/dL" } ?: ""),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -240,11 +240,11 @@ private fun ZooRow(
                 onClick = { haptics.perform(HapticEvent.Tap); onRequestDelete(id) },
                 modifier = Modifier.size(40.dp),
             ) {
-                Text("✕", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
+                Text("x", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
             }
         }
         Text(
-            "zoo · $family · no dosing" + (prediction?.medianBg?.getOrNull(5)?.let { " · 30 min ${it.toInt()} mg/dL" } ?: ""),
+            "zoo | $family | no dosing" + (prediction?.medianBg?.getOrNull(5)?.let { " | 30 min ${it.toInt()} mg/dL" } ?: ""),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = 36.dp),
@@ -269,7 +269,7 @@ private fun CompareSection(comparison: ModelComparison?, onCompare: (Int?) -> Un
         when (comparison) {
             null -> {}
             is ModelComparison.Running -> Text(
-                "${comparison.model}/${comparison.models} · ${comparison.modelId}",
+                "${comparison.model}/${comparison.models} | ${comparison.modelId}",
                 style = MaterialTheme.typography.bodySmall,
             )
             is ModelComparison.Refused -> Text(
@@ -285,7 +285,7 @@ private fun CompareSection(comparison: ModelComparison?, onCompare: (Int?) -> Un
 @Composable
 private fun CompareTable(done: ModelComparison.Done) {
     Text(
-        "${done.nShared} shared windows · RMSE mg/dL, Clarke A %",
+        "${done.nShared} shared windows | RMSE mg/dL, Clarke A %",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -316,7 +316,7 @@ private fun CompareLine(cells: List<String>, bold: Boolean) {
     }
 }
 
-private fun Double?.fmt1(): String = if (this == null || !isFinite()) "—" else "%.1f".format(this)
+private fun Double?.fmt1(): String = if (this == null || !isFinite()) "-" else "%.1f".format(this)
 
 private val COMPARE_DAYS = listOf(7, 30)
 private val COMPARE_HORIZONS = listOf(30, 60, 120)
@@ -330,9 +330,9 @@ internal fun metaLine(m: ModelMeta): String {
             m.nLayers?.let { "L$it" },
             m.nHeads?.let { "H$it" },
         )
-        if (dims.isNotEmpty()) add(dims.joinToString("·"))
+        if (dims.isNotEmpty()) add(dims.joinToString(" "))
     }
-    return if (parts.isEmpty()) "meta n/a (no descriptor model_card)" else parts.joinToString(" · ")
+    return if (parts.isEmpty()) "meta n/a (no descriptor model_card)" else parts.joinToString(" | ")
 }
 
 internal fun fmtParams(n: Long): String = when {

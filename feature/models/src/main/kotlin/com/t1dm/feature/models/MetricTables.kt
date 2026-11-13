@@ -129,12 +129,12 @@ private fun excursionCells(e: ExcursionAccuracy): List<String> =
 private fun cgEgaCells(name: String, r: CgEgaRegion): List<String> =
     listOf(name, f1(r.apPct), f1(r.bePct), f1(r.epPct), r.n.toString())
 
-internal fun f1(v: Double?): String = if (v == null || !v.isFinite()) "—" else "%.1f".format(v)
+internal fun f1(v: Double?): String = if (v == null || !v.isFinite()) "-" else "%.1f".format(v)
 
-internal fun f2(v: Double?): String = if (v == null || !v.isFinite()) "—" else "%.2f".format(v)
+internal fun f2(v: Double?): String = if (v == null || !v.isFinite()) "-" else "%.2f".format(v)
 
-private fun f3(v: Double?): String = if (v == null || !v.isFinite()) "—" else "%.3f".format(v)
+private fun f3(v: Double?): String = if (v == null || !v.isFinite()) "-" else "%.3f".format(v)
 
-private fun pct(v: Double): String = if (!v.isFinite()) "—" else "%.1f".format(v * 100)
+private fun pct(v: Double): String = if (!v.isFinite()) "-" else "%.1f".format(v * 100)
 
 private fun skill(b: PointBlock): String = f2(b.skillPoint)

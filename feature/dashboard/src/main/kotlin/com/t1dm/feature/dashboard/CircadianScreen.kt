@@ -99,11 +99,11 @@ fun CircadianScreen(
             ReadoutRow("Model hour", formatHour(predictedTime.predictedHour))
             ReadoutRow("Confidence (R)", "%.2f".format(predictedTime.resultantR))
             ReadoutRow("Local time", formatHour(localHour))
-            ReadoutRow("Model − local offset", formatOffset(predictedTime.predictedHour - localHour))
-            ReadoutRow("Bins", "${predictedTime.nBins} × ${"%.0f".format(predictedTime.binHours)} h")
+            ReadoutRow("Model - local offset", formatOffset(predictedTime.predictedHour - localHour))
+            ReadoutRow("Bins", "${predictedTime.nBins} x ${"%.0f".format(predictedTime.binHours)} h")
             if (predictedTime.resultantR < 0.05) {
                 Text(
-                    "Nearly uniform (R ≈ 0) — no strong circadian preference this cycle",
+                    "Nearly uniform (R ~ 0) - no strong circadian preference this cycle",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -186,15 +186,15 @@ private fun EmptyCircadian(
     val msg = when {
         // First: with nothing installed the other three flags still hold the last model's values.
         noModel ->
-            "Model time unavailable — no model installed"
+            "Model time unavailable - no model installed"
         !realBackendAvailable ->
-            "Model time unavailable — stub backend has no circadian probe"
+            "Model time unavailable - stub backend has no circadian probe"
         !hasTimeSection ->
-            "Model time unavailable — this model has no time section"
+            "Model time unavailable - this model has no time section"
         warmingUp ->
-            "Model time unavailable — warming up; needs ≈8 h BG"
+            "Model time unavailable - warming up; needs ~8 h BG"
         else ->
-            "Model time unavailable — probe output couldn't be decoded this cycle"
+            "Model time unavailable - probe output couldn't be decoded this cycle"
     }
     Text(msg, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
@@ -202,7 +202,7 @@ private fun EmptyCircadian(
 @Composable
 private fun LowContextCaveat() {
     Text(
-        "Low-confidence — a circadian belief, not a forecast",
+        "Low-confidence - a circadian belief, not a forecast",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.secondary,
     )
@@ -213,7 +213,7 @@ private fun formatOffset(deltaHours: Double): String {
     var d = deltaHours % 24.0
     if (d < -12.0) d += 24.0
     if (d >= 12.0) d -= 24.0
-    val sign = if (d < 0) "−" else "+"
+    val sign = if (d < 0) "-" else "+"
     val a = kotlin.math.abs(d)
     val hh = a.toInt()
     val mm = ((a - hh) * 60.0).toInt()

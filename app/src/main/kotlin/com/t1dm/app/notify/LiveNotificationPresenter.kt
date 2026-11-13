@@ -44,7 +44,7 @@ class LiveNotificationPresenter(
         if (!glance.hasReading) return "No reading yet"
         val v = BgFormat.value(glance.bgMgdl, unit)
         val arrow = BgFormat.arrow(glance.trend).let { if (it.isEmpty()) "" else "$it " }
-        return "${statusToken(glance)} · $v $arrow${BgFormat.unitLabel(unit)}"
+        return "${statusToken(glance)} | $v $arrow${BgFormat.unitLabel(unit)}"
     }
 
     private fun bodyLine(glance: BgGlance, predictedTime: PredictedTime?, nextForecastAtMs: Long?): String {

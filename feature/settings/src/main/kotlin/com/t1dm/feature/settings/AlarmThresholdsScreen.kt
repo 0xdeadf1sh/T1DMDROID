@@ -12,7 +12,7 @@ fun AlarmThresholdsScreen(
     onChange: (urgentLow: Int, low: Int, high: Int, urgentHigh: Int) -> Unit,
 ) {
     SettingsScaffold(SettingsScreenKey.ALARM_THRESHOLDS) {
-        SettingsNote("mg/dL · urgent bands bypass DND")
+        SettingsNote("mg/dL | urgent bands bypass DND")
 
         IntStepper(alarmUrgentLow, urgentLow, "mg/dL", step = 5, min = 0) { onChange(it, low, high, urgentHigh) }
         IntStepper(alarmLow, low, "mg/dL", step = 5, min = 0) { onChange(urgentLow, it, high, urgentHigh) }
@@ -22,7 +22,7 @@ fun AlarmThresholdsScreen(
         val ordered = urgentLow <= low && low <= high && high <= urgentHigh
         if (!ordered) {
             DangerBanner(
-                "Out of order — bands will classify oddly",
+                "Out of order - bands will classify oddly",
             )
         }
     }
@@ -35,7 +35,7 @@ private val alarmUrgentLow = SettingsKnob(
     screen = SettingsScreenKey.ALARM_THRESHOLDS,
     section = ALARM_SECTION,
     label = "Urgent low",
-    subtitle = "The critical hypo band, in mg/dL — bypasses Do-Not-Disturb",
+    subtitle = "The critical hypo band, in mg/dL - bypasses Do-Not-Disturb",
     synonyms = listOf(
         "urgent low", "critical low", "severe low", "hypo", "hypoglycemia", "hypoglycaemia",
         "alarm", "threshold", "band", "danger", "55", "emergency",
@@ -71,7 +71,7 @@ private val alarmUrgentHigh = SettingsKnob(
     screen = SettingsScreenKey.ALARM_THRESHOLDS,
     section = ALARM_SECTION,
     label = "Urgent high",
-    subtitle = "The critical hyper band, in mg/dL — bypasses Do-Not-Disturb",
+    subtitle = "The critical hyper band, in mg/dL - bypasses Do-Not-Disturb",
     synonyms = listOf(
         "urgent high", "critical high", "severe high", "hyper", "hyperglycemia", "hyperglycaemia",
         "alarm", "threshold", "band", "danger", "250", "dka",

@@ -41,9 +41,9 @@ fun CalculatorSettingsScreen(
         DoubleStepper(calcAimPoint, targetMid, "mg/dL", step = 5.0, min = 0.0) { onSetTarget(targetLow, targetHigh, it) }
 
         SettingsSectionHeader("Risk asymmetry")
-        SettingsNote("Relative penalty per direction — punish hypo harder than hyper, or the reverse.")
-        DoubleStepper(calcHypoWeight, hypoWeight, "×", step = 0.5, min = 0.0) { onSetAsymmetry(it, hyperWeight) }
-        DoubleStepper(calcHyperWeight, hyperWeight, "×", step = 0.5, min = 0.0) { onSetAsymmetry(hypoWeight, it) }
+        SettingsNote("Relative penalty per direction - punish hypo harder than hyper, or the reverse.")
+        DoubleStepper(calcHypoWeight, hypoWeight, "x", step = 0.5, min = 0.0) { onSetAsymmetry(it, hyperWeight) }
+        DoubleStepper(calcHyperWeight, hyperWeight, "x", step = 0.5, min = 0.0) { onSetAsymmetry(hypoWeight, it) }
 
         SettingsSectionHeader("Candidate grid")
         DoubleStepper(calcGridMax, gridMaxU, "U", step = 0.5, min = 0.0) { onSetGrid(it, gridStepU) }

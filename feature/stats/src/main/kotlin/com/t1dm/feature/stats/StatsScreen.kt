@@ -91,7 +91,7 @@ fun StatsScreen(
                             color = LocalContentColor.current,
                         )
                         Spacer(Modifier.width(8.dp))
-                        Text("Recomputing…")
+                        Text("Recomputing...")
                     } else {
                         Text("Recompute")
                     }
@@ -109,7 +109,7 @@ fun StatsScreen(
 
             val composite = state.composite
             if (composite == null) {
-                Text("Loading…", style = MaterialTheme.typography.bodyMedium)
+                Text("Loading...", style = MaterialTheme.typography.bodyMedium)
                 return@Column
             }
 
@@ -141,7 +141,7 @@ fun StatsScreen(
                 InfoCard("No local BG history in this window")
             }
 
-            SectionCard("Time in range — target ${composite.targetRange.lowMgdl}–${composite.targetRange.highMgdl} mg/dL") {
+            SectionCard("Time in range - target ${composite.targetRange.lowMgdl}-${composite.targetRange.highMgdl} mg/dL") {
                 TirBar(local.subBands)
                 Box(Modifier.height(10.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -185,7 +185,7 @@ fun StatsScreen(
                 }
                 Box(Modifier.height(6.dp))
                 Text(
-                    "GRADE — hypo ${fmtPct(local.grade.hypo)} · eu ${fmtPct(local.grade.eu)} · " +
+                    "GRADE - hypo ${fmtPct(local.grade.hypo)} | eu ${fmtPct(local.grade.eu)} | " +
                         "hyper ${fmtPct(local.grade.hyper)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = LocalContentColor.current.copy(alpha = 0.7f),
@@ -249,7 +249,7 @@ fun StatsScreen(
                 if (local.hypoEpisodes.count == 0 && local.hyperEpisodes.count == 0) {
                     Box(Modifier.height(4.dp))
                     Text(
-                        "No sustained excursions (≥2 readings) outside target",
+                        "No sustained excursions (>=2 readings) outside target",
                         style = MaterialTheme.typography.bodySmall,
                         color = LocalContentColor.current.copy(alpha = 0.7f),
                     )
@@ -362,7 +362,7 @@ private fun TargetRangeEditor(low: Int, high: Int, onChange: (Int, Int) -> Unit)
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("Target", style = MaterialTheme.typography.labelMedium, color = LocalContentColor.current.copy(alpha = 0.7f))
         Stepper(low) { onChange((low + it).coerceIn(40, high - 5), high) }
-        Text("–", style = MaterialTheme.typography.bodyMedium)
+        Text("-", style = MaterialTheme.typography.bodyMedium)
         Stepper(high) { onChange(low, (high + it).coerceIn(low + 5, 400)) }
         Text("mg/dL", style = MaterialTheme.typography.labelSmall, color = LocalContentColor.current.copy(alpha = 0.6f))
     }
@@ -375,7 +375,7 @@ private fun Stepper(value: Int, onDelta: (Int) -> Unit) {
         OutlinedButton(
             onClick = { haptics.perform(HapticEvent.SegmentTick); onDelta(-5) },
             contentPadding = androidx.compose.foundation.layout.PaddingValues(6.dp),
-        ) { Text("−") }
+        ) { Text("-") }
         Text("$value", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         OutlinedButton(
             onClick = { haptics.perform(HapticEvent.SegmentTick); onDelta(5) },
@@ -393,10 +393,10 @@ private fun TirLegend(label: String, frac: Double, color: Color) {
 }
 
 private fun todLabel(startMin: Int): String = when (startMin) {
-    0 -> "Night 00–06"
-    360 -> "Morning 06–12"
-    720 -> "Afternoon 12–18"
-    else -> "Evening 18–24"
+    0 -> "Night 00-06"
+    360 -> "Morning 06-12"
+    720 -> "Afternoon 12-18"
+    else -> "Evening 18-24"
 }
 
 @Composable
@@ -405,7 +405,7 @@ private fun DiurnalRow(b: TodBucket) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(todLabel(b.startMin), style = MaterialTheme.typography.bodySmall)
             Text(
-                if (b.n > 0) "in range ${fmtPct(b.tir)} · n=${b.n}" else "no readings",
+                if (b.n > 0) "in range ${fmtPct(b.tir)} | n=${b.n}" else "no readings",
                 style = MaterialTheme.typography.bodySmall,
                 color = LocalContentColor.current.copy(alpha = 0.7f),
             )
@@ -464,7 +464,7 @@ private fun EpisodeRow(label: String, e: EpisodeSummary, isHypo: Boolean, unit: 
             Text(label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
             if (e.count > 0) {
                 Text(
-                    "${e.count} · avg ${fmtDurationMin(e.meanDurationMs)} · " +
+                    "${e.count} | avg ${fmtDurationMin(e.meanDurationMs)} | " +
                         "${if (isHypo) "nadir" else "peak"} ${fmtLevel(e.meanExtreme, unit, kovatchevF)} " +
                         "(worst ${fmtLevel(e.worstExtreme, unit, kovatchevF)}) ${unitLabel(unit)}",
                     style = MaterialTheme.typography.bodySmall,

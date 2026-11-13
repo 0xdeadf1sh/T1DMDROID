@@ -133,7 +133,7 @@ fun SettingsNavRow(label: String, subtitle: String? = null, enabled: Boolean = t
                 Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        Text(if (enabled) "›" else "soon", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(if (enabled) ">" else "soon", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -187,7 +187,7 @@ fun IntStepper(
                 onChange((value - step).coerceAtLeast(min))
             },
             enabled = value > min,
-        ) { Text("−$step") }
+        ) { Text("-$step") }
         Button(
             onClick = {
                 haptics.perform(HapticEvent.SegmentTick)
@@ -226,7 +226,7 @@ fun DoubleStepper(
                 onChange((value - step).coerceAtLeast(min))
             },
             enabled = value > min,
-        ) { Text("−${fmt(step)}") }
+        ) { Text("-${fmt(step)}") }
         Button(
             onClick = {
                 haptics.perform(HapticEvent.SegmentTick)

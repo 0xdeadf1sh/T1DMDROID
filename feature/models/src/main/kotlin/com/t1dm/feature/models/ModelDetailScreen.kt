@@ -118,7 +118,7 @@ fun ModelDetailScreen(
             running?.let {
                 Text(
                     // displayName() carries precision; only a graph model is fp32 authority.
-                    it.backend.displayName() + if (it.selected) " · SELECTED (fp32-authoritative)" else "",
+                    it.backend.displayName() + if (it.selected) " | SELECTED (fp32-authoritative)" else "",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -161,7 +161,7 @@ fun ModelDetailScreen(
         val suite = shown?.suite
         val scored = suite?.horizons.orEmpty().filter { it.sufficient }
 
-        section("Realized accuracy — band τ.25–.75") {
+        section("Realized accuracy - band tau .25-.75") {
             if (backtestDone != null) AccuracySourcePicker(showingBacktest) { viewBacktest = it }
             Note(if (showingBacktest) "Replayed forecast vs realized BG" else "Forecast vs realized BG")
             when {
@@ -170,7 +170,7 @@ fun ModelDetailScreen(
                     // §6.2: band figure may not stand apart from coverage/width; table has both.
                     ErrorByHorizonFigure(scored)
                 }
-                shownLoading -> Note("Computing…")
+                shownLoading -> Note("Computing...")
                 else -> Note(emptyWhy(shown))
             }
             suite?.horizons.orEmpty().filterNot { it.sufficient }.forEach {
@@ -182,7 +182,7 @@ fun ModelDetailScreen(
                         onClick = { haptics.perform(HapticEvent.Tap); onRecomputeAccuracy() },
                     ) { Text("Recompute") }
                     if (accuracyLoading && scored.isNotEmpty()) {
-                        Note("Recomputing…")
+                        Note("Recomputing...")
                     }
                 }
             }
@@ -191,23 +191,23 @@ fun ModelDetailScreen(
         if (scored.isNotEmpty()) {
             // §6.2: realized coverage against what both bands claim.
             section("Calibration") { CalibrationFigure(scored) }
-            section("Clarke zones — band τ.25–.75") { ClarkeFigure(scored) }
+            section("Clarke zones - band tau .25-.75") { ClarkeFigure(scored) }
             // Five shares individually, never an A+B: the paper's panel declines to report one.
-            section("DTS zones — band τ.25–.75") {
+            section("DTS zones - band tau .25-.75") {
                 DtsFigure(scored)
                 Table(dtsTable(scored))
             }
             // Per horizon: trend agreement decays, pooling would hide that.
-            section("Trend risk categories — median line") {
-                Note("1 no risk · 2 under · 3 over · 4/5 extreme")
+            section("Trend risk categories - median line") {
+                Note("1 no risk | 2 under | 3 over | 4/5 extreme")
                 TrendCategoryFigure(scored)
                 Table(trendTable(scored))
             }
             // §6.2: the same block on the median line, kept a table apart from the band figures.
             section("Median line") { Table(medianTable(scored)) }
-            section("Outer band τ.05–.95 · persistence") { Table(outerTable(scored)) }
+            section("Outer band tau .05-.95 | persistence") { Table(outerTable(scored)) }
             section("Excursions vs alarm bands") {
-                Note("Hypo off the τ.25 edge, hyper off τ.75")
+                Note("Hypo off the tau .25 edge, hyper off tau .75")
                 Table(excursionTable(scored))
             }
         }
@@ -218,12 +218,12 @@ fun ModelDetailScreen(
 
         // One horizon for all three: a 30-min Clarke share never reads against a 120-min DTS one.
         gridSection(
-            "Clarke error grid — median line",
+            "Clarke error grid - median line",
             "Band projection clips to the truth; its grid reads as coverage",
             pick, gridRefusal, shown, { gridHorizonMin = it },
         ) { h ->
             when {
-                lattices == null -> Note("Computing…")
+                lattices == null -> Note("Computing...")
                 lattices.clarke.isEmpty -> Note("Zone regions unavailable")
                 h.medianLine.points.isEmpty() -> Note("No scored pairs")
                 else -> ErrorGridFigure(h.horizonMin, h.medianLine.points, { it.clarke.ordinal }, lattices.clarke, dotCache)
@@ -232,12 +232,12 @@ fun ModelDetailScreen(
 
         // Beside Clarke, not replacing: DTS zone A isn't Clarke's flat ±20%, edges are dts_risk's.
         gridSection(
-            "DTS error grid — median line",
-            "Klonoff 2024 · reading high scores worse than reading low",
+            "DTS error grid - median line",
+            "Klonoff 2024 | reading high scores worse than reading low",
             pick, gridRefusal, shown, { gridHorizonMin = it },
         ) { h ->
             when {
-                lattices == null -> Note("Computing…")
+                lattices == null -> Note("Computing...")
                 lattices.dts.isEmpty -> Note("Zone regions unavailable")
                 h.medianLine.points.isEmpty() -> Note("No scored pairs")
                 else -> ErrorGridFigure(h.horizonMin, h.medianLine.points, { it.dts.ordinal }, lattices.dts, dotCache)
@@ -246,7 +246,7 @@ fun ModelDetailScreen(
 
         // §6.2: band projection equals truth wherever covered; a rate off it sits on the diagonal.
         gridSection(
-            "Trend accuracy — median line",
+            "Trend accuracy - median line",
             "Rate over 15 min vs realized",
             pick, gridRefusal, shown, { gridHorizonMin = it },
         ) { h ->
@@ -262,7 +262,7 @@ fun ModelDetailScreen(
                     CgEgaFigure(shownCgEga)
                     Table(cgEgaTable(shownCgEga))
                 }
-                !showingBacktest && cgEgaLoading -> Note("Computing…")
+                !showingBacktest && cgEgaLoading -> Note("Computing...")
                 scored.isEmpty() -> Note("Needs scored windows")
                 showingBacktest -> Note("Nothing scoreable")
                 else -> TextButton(
@@ -272,23 +272,23 @@ fun ModelDetailScreen(
         }
 
         section("Band recalibration") {
-            Note("Display only — alarms and doses read the raw band")
+            Note("Display only - alarms and doses read the raw band")
             if (bandCalibration == null) {
-                Note("Not fitted — raw bands")
+                Note("Not fitted - raw bands")
             } else {
                 // The apply reads the same predicate; a lapsed correction's rows are a past record.
                 if (bandCalibration.expiredAt(System.currentTimeMillis())) {
-                    Note("Expired after ${bandCalibration.windowDays} d — raw bands")
+                    Note("Expired after ${bandCalibration.windowDays} d - raw bands")
                 }
                 KeyVal("fitted", "%tF %<tR".format(bandCalibration.fittedAtMs))
                 KeyVal("fit / held out", "${bandCalibration.nCal} / ${bandCalibration.nEval}")
                 KeyVal(
-                    "cov τ.05–.95",
-                    "${f2(bandCalibration.cov90Raw)} → ${f2(bandCalibration.cov90Cal)}",
+                    "cov tau .05-.95",
+                    "${f2(bandCalibration.cov90Raw)} -> ${f2(bandCalibration.cov90Cal)}",
                 )
                 KeyVal(
                     "band width",
-                    "${f1(bandCalibration.meanWidth90Raw)} → ${f1(bandCalibration.meanWidth90Cal)} mg/dL",
+                    "${f1(bandCalibration.meanWidth90Raw)} -> ${f1(bandCalibration.meanWidth90Cal)} mg/dL",
                 )
                 KeyVal("max shift", "${f1(bandCalibration.maxAbsDeltaMgdl)} mg/dL")
             }
@@ -297,7 +297,7 @@ fun ModelDetailScreen(
                 val fit = o.fit
                 when {
                     o.refusal == BandFitRefusal.BUSY -> Note("Fit already running")
-                    o.refusal == BandFitRefusal.HORIZON_UNKNOWN -> Note("No forecast yet — horizon unknown")
+                    o.refusal == BandFitRefusal.HORIZON_UNKNOWN -> Note("No forecast yet - horizon unknown")
                     fit == null -> Note(emptyWhy(accuracy))
                     !fit.sufficient -> Note("${fit.nCal} fit windows, need ${fit.minCalWindows}")
                     else -> Unit // The rows above already say it.
@@ -439,21 +439,21 @@ private fun BacktestControls(
     when (backtest) {
         is ModelBacktest.Done -> {
             Note(
-                "${backtestSpan(backtest.days)} · %,d / %,d forecasts · ".format(backtest.nForecasts, backtest.nOrigins) +
+                "${backtestSpan(backtest.days)} | %,d / %,d forecasts | ".format(backtest.nForecasts, backtest.nOrigins) +
                     fmtDuration(backtest.elapsedMs.toDouble()),
             )
             if (backtest.forecastsBySource.size > 1) {
                 // Never the raw id: it can carry the serial the name-privacy setting hides.
                 Note(
-                    backtest.forecastsBySource.entries.joinToString(" · ") { (id, n) ->
+                    backtest.forecastsBySource.entries.joinToString(" | ") { (id, n) ->
                         "${sensors.firstOrNull { it.id == id }?.label ?: "CGM"} %,d".format(n)
                     },
                 )
             }
-            if (backtest.adapterAttached) Note("Adapter attached — may be in-sample")
+            if (backtest.adapterAttached) Note("Adapter attached - may be in-sample")
             when (backtest.stopped) {
-                BacktestStop.TOO_HOT -> Note("Stopped — too hot")
-                BacktestStop.MODEL_CHANGED -> Note("Stopped — model reloaded")
+                BacktestStop.TOO_HOT -> Note("Stopped - too hot")
+                BacktestStop.MODEL_CHANGED -> Note("Stopped - model reloaded")
                 null -> Unit
             }
             TextButton(onClick = { haptics.perform(HapticEvent.Tap); onExport() }) { Text("Export PDF") }
@@ -488,16 +488,16 @@ private fun AccuracySourcePicker(backtest: Boolean, onSelect: (backtest: Boolean
 }
 
 internal fun emptyWhy(m: ModelMetrics?): String {
-    if (m == null) return "Insufficient history — nothing scored yet"
+    if (m == null) return "Insufficient history - nothing scored yet"
     val built = m.nMatured - m.nIncomplete
     return when {
         // Ahead of the history arms: after a sensor change there IS history.
         m.nForeignSource > 0 && m.nMatured == 0 ->
-            "${m.nForeignSource} forecasts from other sensors — refit after ~17 h"
-        m.nMatured == 0 -> "Insufficient history — no matured forecast yet"
-        built == 0 -> "CGM gaps — ${m.nIncomplete} of ${m.nMatured} forecasts dropped"
-        m.suite.nWindows == 0 -> "Fan not scoreable — $built forecasts rejected"
-        else -> "Insufficient history — ${m.suite.nWindows} scored windows"
+            "${m.nForeignSource} forecasts from other sensors - refit after ~17 h"
+        m.nMatured == 0 -> "Insufficient history - no matured forecast yet"
+        built == 0 -> "CGM gaps - ${m.nIncomplete} of ${m.nMatured} forecasts dropped"
+        m.suite.nWindows == 0 -> "Fan not scoreable - $built forecasts rejected"
+        else -> "Insufficient history - ${m.suite.nWindows} scored windows"
     }
 }
 
@@ -558,7 +558,7 @@ private fun Mono(text: String) {
 private fun List<Int>.joinToStringOrNa(): String = if (isEmpty()) "n/a" else joinToString(" / ")
 
 private fun rangeOrNa(lo: Int?, hi: Int?): String =
-    if (lo == null && hi == null) "n/a" else "${lo ?: "?"}–${hi ?: "?"}"
+    if (lo == null && hi == null) "n/a" else "${lo ?: "?"}-${hi ?: "?"}"
 
 private fun fmtMs(ms: Double): String = if (ms >= 100) "${ms.toInt()} ms" else "%.1f ms".format(ms)
 

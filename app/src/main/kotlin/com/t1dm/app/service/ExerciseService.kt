@@ -49,7 +49,7 @@ class ExerciseService : LifecycleService() {
         createChannel()
         // Fail closed: a `location` foreground service cannot start without a location permission.
         if (!locationGranted(this)) {
-            Timber.tag(TAG).w("no location permission — the exercise track cannot start; stopping")
+            Timber.tag(TAG).w("no location permission - the exercise track cannot start; stopping")
             container.exerciseRefusal.value = NO_PERMISSION
             refused = true
             stopSelf()
@@ -272,7 +272,7 @@ class ExerciseService : LifecycleService() {
         const val ACTION_STOP = "com.t1dm.app.STOP_EXERCISE"
         const val EXTRA_KIND = "kind"
 
-        const val NO_PERMISSION = "Location denied — no track"
+        const val NO_PERMISSION = "Location denied - no track"
 
         private fun locationGranted(context: Context): Boolean =
             hasLocationGrant { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
@@ -328,7 +328,7 @@ internal class BoutGate {
 internal fun progressText(active: ActiveExercise): String {
     val minutes = "${active.elapsedMs / 60_000L} min"
     val distance = distanceLabel(active.distanceM) ?: return minutes
-    return "$minutes · $distance"
+    return "$minutes | $distance"
 }
 
 /** Coarser than progressText: keying on metres would be ~75 notify calls per 5-min bucket. */
@@ -336,4 +336,4 @@ internal fun progressKey(active: ActiveExercise): String =
     "${active.session.id}|${active.elapsedMs / 60_000L}|${distanceLabel(active.distanceM) != null}"
 
 internal fun startFailureText(cause: Throwable): String =
-    "Didn't start — ${cause.message ?: cause::class.simpleName}"
+    "Didn't start - ${cause.message ?: cause::class.simpleName}"

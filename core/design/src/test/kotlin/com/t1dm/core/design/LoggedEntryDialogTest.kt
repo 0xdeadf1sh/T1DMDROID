@@ -75,8 +75,8 @@ class LoggedEntryDialogTest {
 
     @Test
     fun `the time is the offset the row was written at, not the reader's`() {
-        assertEquals("Jan 2 · 05:04", fields(meal(45.0, 60.0))["Time"])
-        assertEquals("Jan 2 · 03:04", logTimeLabel(ts, 0))
+        assertEquals("Jan 2 | 05:04", fields(meal(45.0, 60.0))["Time"])
+        assertEquals("Jan 2 | 03:04", logTimeLabel(ts, 0))
     }
 
     @Test
@@ -88,7 +88,7 @@ class LoggedEntryDialogTest {
     @Test
     fun `a meal states its index and its note, either alone or both`() {
         assertEquals("hospital canteen", logDetailLabel(meal(62.0, null, detail = "hospital canteen")))
-        assertEquals("GI 60 · hospital canteen", logDetailLabel(meal(45.0, 60.0, detail = "hospital canteen")))
+        assertEquals("GI 60 | hospital canteen", logDetailLabel(meal(45.0, 60.0, detail = "hospital canteen")))
     }
 
     @Test

@@ -216,7 +216,7 @@ private fun TollingRite(toll: FuneralToll, onComplete: () -> Unit) {
 
     Verse(
         listOf(
-            "Ring the bell thrice, and slowly —",
+            "Ring the bell thrice, and slowly -",
             "each toll a vow you cannot unsay.",
         ),
         accent = cs.error,
@@ -264,7 +264,7 @@ private fun TollingRite(toll: FuneralToll, onComplete: () -> Unit) {
 }
 
 private fun tollNumeral(count: Int): String = when (count) {
-    0 -> "·"
+    0 -> "-"
     1 -> "I"
     2 -> "II"
     else -> "III"
@@ -412,7 +412,7 @@ private fun SealedRite(onRescind: () -> Unit) {
         Text("Rescind the covenant")
     }
     Text(
-        "To rescind is to restore every alarm and every rail — the watch resumes.",
+        "To rescind is to restore every alarm and every rail - the watch resumes.",
         style = MaterialTheme.typography.bodySmall,
         color = cs.onSurface.copy(alpha = 0.55f),
         textAlign = TextAlign.Center,
@@ -557,7 +557,7 @@ private val deathModeRite = SettingsKnob(
     screen = SettingsScreenKey.DEATH_MODE,
     section = "The end",
     label = "Death mode",
-    subtitle = "Silence every alarm, drop every safety rail, and still the warnings — until rescinded",
+    subtitle = "Silence every alarm, drop every safety rail, and still the warnings - until rescinded",
     synonyms = listOf(
         "death", "death mode", "fail open", "silence", "mute all", "disable alarms",
         "disable safety", "rails off", "override", "covenant", "rite", "reaper", "danger",

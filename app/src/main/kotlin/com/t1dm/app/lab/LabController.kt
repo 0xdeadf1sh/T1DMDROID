@@ -47,12 +47,12 @@ class LabController(
         onEpoch: ((epoch: Int, epochs: Int) -> Unit)? = null,
     ): String {
         val desc = controller.descriptorOf(modelId) ?: return "Model not loaded"
-        val head = desc.head ?: return "This model ships no head file — no adapter can attach"
+        val head = desc.head ?: return "This model ships no head file - no adapter can attach"
         // RMSE and DTS read horizons only a forecast has; a fill fits on pinball alone.
         val objective = if (spec.kind == MaskGeometry.FORECAST) spec.objective else LoraObjective.DOSE_RESPONSE
         val windows = controller.loraSamples(modelId, spec.windows, spec.kind, onReplay)
         val samples = windows.samples
-        if (samples.size < 16) return "Only ${samples.size} usable windows — need more history"
+        if (samples.size < 16) return "Only ${samples.size} usable windows - need more history"
         val config = LoraConfig(
             rank = spec.rank,
             alpha = spec.rank * 2.0,
@@ -113,17 +113,17 @@ class LabController(
             ),
         )
         val r = result.report
-        return "${r.nTrain}+${r.nHoldout} windows (${windows.nAtEvent} at a meal or dose) · " +
+        return "${r.nTrain}+${r.nHoldout} windows (${windows.nAtEvent} at a meal or dose) | " +
             loraMetricLine(r.objective, r.metricBefore, r.metricAfter) +
-            (if (r.improved) " @ epoch ${r.bestEpoch}" else " · no gain") +
-            if (r.nEpochsGated > 0) " · ${r.nEpochsGated} epochs failed dose check" else ""
+            (if (r.improved) " @ epoch ${r.bestEpoch}" else " | no gain") +
+            if (r.nEpochsGated > 0) " | ${r.nEpochsGated} epochs failed dose check" else ""
     }
 
     suspend fun attach(modelId: String, id: Long): String? {
         val row = repository.loraById(id) ?: return "Adapter is gone"
         // Checked before the gate: an unloadable blob attaches clean, then runs as NOTHING.
         val head = controller.descriptorOf(modelId)?.head
-            ?: return "This model ships no head file — nothing to attach an adapter to"
+            ?: return "This model ships no head file - nothing to attach an adapter to"
         val w = native.loraDeserialize(row.blob) ?: return "This adapter will not load"
         if (w.headSha256 != head.sha256) return "This adapter belongs to another head"
         // Sites are written with the weights; a mismatch means edited/restored without them.
@@ -144,7 +144,7 @@ class LabController(
     ): String {
         val row = repository.loraById(id) ?: return "Adapter is gone"
         val desc = controller.descriptorOf(modelId) ?: return "Model not loaded"
-        val head = desc.head ?: return "This model ships no head file — no adapter can attach"
+        val head = desc.head ?: return "This model ships no head file - no adapter can attach"
         val w = native.loraDeserialize(row.blob) ?: return "This adapter will not load"
         // A verdict measured against another head describes an adapter that can never run here.
         if (w.headSha256 != head.sha256) return "This adapter belongs to another head"
@@ -201,7 +201,7 @@ class LabController(
 
     suspend fun import(modelId: String): String {
         val head = controller.descriptorOf(modelId)?.head
-            ?: return "This model ships no head file — nothing to attach an adapter to"
+            ?: return "This model ships no head file - nothing to attach an adapter to"
         val files = adaptersDir().listFiles { f -> f.isFile && f.name.endsWith(EXT) }.orEmpty()
         if (files.isEmpty()) return "No $EXT files in ${adaptersDir().absolutePath}"
         val have = repository.lorasFor(modelId).map { it.blob.toList() }.toSet()
@@ -255,7 +255,7 @@ class LabController(
         } else {
             // loraDeserialize returns null, not throws; unhandled, runMasked uses FROZEN silently.
             runCatching { native.loraDeserialize(attached.blob) }.getOrNull()
-                ?: return "Attached adapter could not be read — detach it first"
+                ?: return "Attached adapter could not be read - detach it first"
         }
         val s = desc.patchSize
         val nCtx = desc.minContextPatches
@@ -375,10 +375,10 @@ class LabController(
     suspend fun retau(spanStartMs: Long, tau: Double): String {
         val rows = repository.infillSpan(spanStartMs)
         if (rows.isEmpty()) return "Span is gone"
-        if (rows.any { it.promotedAtMs != null }) return "Span is promoted — demote it first"
+        if (rows.any { it.promotedAtMs != null }) return "Span is promoted - demote it first"
         val line = lineAt(rows, tau) ?: return "This fill was drawn before the fan was kept"
         if (!repository.retauInfillSpan(spanStartMs, tau, line)) return "Span is gone"
-        return "τ ${"%.2f".format(tau)}"
+        return "tau ${"%.2f".format(tau)}"
     }
 
     /** [retau]'s line without storing it — what the slider draws while the thumb is down. */

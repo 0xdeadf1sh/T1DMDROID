@@ -43,7 +43,7 @@ class LogReceiptTest {
     /** Caveats name what the undo could not unwind. */
     @Test
     fun `caveats are appended to the undo line`() {
-        val h = handle(caveats = listOf("Recommendation cleared — recompute to see it again"))
-        assertTrue(undoReceipt(h).endsWith("Recommendation cleared — recompute to see it again"))
+        val h = handle(caveats = listOf("Recommendation cleared - recompute to see it again"))
+        assertTrue(undoReceipt(h).endsWith("Recommendation cleared - recompute to see it again"))
     }
 }

@@ -23,7 +23,7 @@ fun WatchSettingsScreen(
         SettingsAnchor(watchPairing) {
             Button(
                 onClick = { haptics.perform(HapticEvent.NavSwitch); onOpenSecurity() },
-            ) { Text("Pairing & keys (Security panel) →") }
+            ) { Text("Pairing & keys (Security panel) ->") }
         }
     }
 }

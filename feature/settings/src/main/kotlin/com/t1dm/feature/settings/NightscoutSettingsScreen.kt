@@ -72,12 +72,12 @@ fun NightscoutSettingsScreen(
             OutlinedTextField(
                 value = secret,
                 onValueChange = { secret = it },
-                label = { Text(if (hasSecret) "API secret (stored — blank keeps)" else "API secret") },
+                label = { Text(if (hasSecret) "API secret (stored - blank keeps)" else "API secret") },
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
                 modifier = Modifier.fillMaxWidth(),
             )
-            SettingsNote("Token or its SHA-1 — either works")
+            SettingsNote("Token or its SHA-1 - either works")
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -94,7 +94,7 @@ fun NightscoutSettingsScreen(
                 OutlinedButton(
                     onClick = { haptics.perform(HapticEvent.Tap); onTest() },
                     enabled = !busy,
-                ) { Text(if (busy) "testing…" else "Test") }
+                ) { Text(if (busy) "testing..." else "Test") }
             }
         }
 

@@ -374,12 +374,12 @@ internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = nu
         "meals/builder/meal/{mealId}" -> listOf(
             Crumb("Meals", "meals"),
             Crumb("Meal builder", "meals/builder"),
-            Crumb(editLabel?.let { "Edit “$it”" } ?: "Edit meal", null),
+            Crumb(editLabel?.let { "Edit \"$it\"" } ?: "Edit meal", null),
         )
         "meals/builder/food/{foodId}" -> listOf(
             Crumb("Meals", "meals"),
             Crumb("Meal builder", "meals/builder"),
-            Crumb(editLabel?.let { "Edit “$it”" } ?: "Edit food", null),
+            Crumb(editLabel?.let { "Edit \"$it\"" } ?: "Edit food", null),
         )
         "insulin" -> listOf(Crumb("Insulin", null))
         "insulin/types" -> listOf(Crumb("Insulin", "insulin"), Crumb("Types & curves", null))
@@ -527,7 +527,7 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
             ) {
                 crumbs.forEachIndexed { i, crumb ->
                     if (i > 0) {
-                        Text("›", style = MaterialTheme.typography.titleMedium, color = cs.onSurfaceVariant)
+                        Text(">", style = MaterialTheme.typography.titleMedium, color = cs.onSurfaceVariant)
                     }
                     val isLast = i == crumbs.lastIndex
                     Text(
@@ -558,7 +558,7 @@ private fun Breadcrumb(navController: NavHostController, container: AppContainer
             GlycemicStatusBadge(status, status.text(nowMs))
             if (death) {
                 Text(
-                    "☠",
+                    "Death",
                     style = MaterialTheme.typography.titleMedium,
                     fontSize = 20.sp,
                     color = cs.error,
@@ -591,7 +591,7 @@ private fun crumbTrailWidth(crumbs: List<Crumb>): Dp {
         if (crumbs.isEmpty()) return@remember 0.dp
         var px = 0
         crumbs.forEachIndexed { i, crumb ->
-            if (i > 0) px += measurer.measure("›", style).size.width
+            if (i > 0) px += measurer.measure(">", style).size.width
             val weight = if (i == crumbs.lastIndex) FontWeight.Bold else FontWeight.Normal
             px += measurer.measure(crumb.label, style.copy(fontWeight = weight)).size.width
         }
@@ -823,9 +823,9 @@ private fun leadGlyphWidth(text: String, style: TextStyle): Dp {
 
 /** A promoted reconstruction is a cgm_reading row like any other; unlabelled reads as measured. */
 private fun readingSuffix(r: CgmReading): String = when {
-    r.flag == ReadingFlag.WARMUP -> "  • warmup"
-    r.provenance == ReadingProvenance.INTERPOLATED -> "  • interpolated"
-    r.provenance == ReadingProvenance.RECONSTRUCTED -> "  • reconstructed"
+    r.flag == ReadingFlag.WARMUP -> "  * warmup"
+    r.provenance == ReadingProvenance.INTERPOLATED -> "  * interpolated"
+    r.provenance == ReadingProvenance.RECONSTRUCTED -> "  * reconstructed"
     else -> ""
 }
 
@@ -858,7 +858,7 @@ private fun SensorPanel(
             overflow = TextOverflow.Ellipsis,
         )
         Text(
-            text = sourceSerial ?: "—",
+            text = sourceSerial ?: "-",
             style = MaterialTheme.typography.bodyMedium,
             fontFamily = LocalT1dmFonts.current.mono,
             color = if (viewingOther) cs.tertiary else muted,
@@ -867,7 +867,7 @@ private fun SensorPanel(
         )
         // Em dash, not a zero: no held link and no fresh advert is an unknown, not a floor.
         if (rssi == null) {
-            Text("—", style = MaterialTheme.typography.bodyMedium, color = muted)
+            Text("-", style = MaterialTheme.typography.bodyMedium, color = muted)
         } else {
             SignalBars(rssi)
         }
@@ -1239,7 +1239,7 @@ private fun T1dmNavHost(
                             com.t1dm.app.stats.StatsPdf.write(it, composite, container.nativeCore.clinicalCuts())
                         } ?: error("could not open file")
                         "Report exported"
-                    }.getOrElse { "Export failed — ${it.message ?: it::class.simpleName}" }
+                    }.getOrElse { "Export failed - ${it.message ?: it::class.simpleName}" }
                 }
             }
             LaunchedEffect(Unit) { container.statsViewModel.refresh() }
@@ -1356,7 +1356,7 @@ private fun T1dmNavHost(
                             container.writeBacktestPdf(modelId, it)
                         } ?: error("could not open file")
                         if (wrote) "Report exported" else "No backtest to export"
-                    }.getOrElse { "Export failed — ${it.message ?: it::class.simpleName}" }
+                    }.getOrElse { "Export failed - ${it.message ?: it::class.simpleName}" }
                 }
             }
             val bandCalibrations by container.bandCalibrations.collectAsState()
@@ -1419,7 +1419,7 @@ private fun T1dmNavHost(
             ) {
                 // Inside the screen's own scroll column; wrapped around it, measures zero height.
                 TextButton(onClick = { navHaptics.perform(HapticEvent.NavSwitch); navController.navigate("meals/builder") }) {
-                    Text("Meal builder →")
+                    Text("Meal builder ->")
                 }
             }
         }
@@ -1514,10 +1514,10 @@ private fun T1dmNavHost(
                 onLogBasal = { units, label -> container.appScope.launch { onLogged(container.logBasal(units, label)) } },
             ) {
                 TextButton(onClick = { navHaptics.perform(HapticEvent.NavSwitch); navController.navigate("insulin/types") }) {
-                    Text("Insulin types & curves →")
+                    Text("Insulin types & curves ->")
                 }
                 TextButton(onClick = { navHaptics.perform(HapticEvent.NavSwitch); navController.navigate("insulin/bolusCalc") }) {
-                    Text("Bolus advisor →")
+                    Text("Bolus advisor ->")
                 }
             }
         }
@@ -1566,7 +1566,7 @@ private fun T1dmNavHost(
                                 onLogged(
                                     h.copy(
                                         caveats = h.caveats +
-                                            "Recommendation cleared — recompute to see it again",
+                                            "Recommendation cleared - recompute to see it again",
                                     ),
                                 )
                             }
@@ -2097,7 +2097,7 @@ private fun T1dmNavHost(
         composable("settings/watch") {
             val devices by container.watchDevices.collectAsState()
             WatchSettingsScreen(
-                devices = devices.map { (it.deviceName ?: "—") to it.phase.name.lowercase().replace('_', ' ') },
+                devices = devices.map { (it.deviceName ?: "-") to it.phase.name.lowercase().replace('_', ' ') },
                 onOpenSecurity = { navController.navigate("security") },
             )
         }

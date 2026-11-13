@@ -64,7 +64,7 @@ class DoseCalcService : LifecycleService() {
             .setSmallIcon(com.t1dm.app.notify.NotificationIcons.res())
             .setColor(container.notificationAccentArgb)
             .setContentTitle("Bolus advisor")
-            .setContentText("Rolling candidate doses…")
+            .setContentText("Rolling candidate doses...")
             .setOngoing(true)
             .setCategory(Notification.CATEGORY_SERVICE)
             .build()

@@ -132,7 +132,7 @@ internal class FaceTracker(
             smoothed = m
             if (ts - lastLogTs > 1_000) {
                 lastLogTs = ts
-                Log.d(TAG, "quality $m → ${m.issue()}")
+                Log.d(TAG, "quality $m -> ${m.issue()}")
             }
             latest.set(FaceFrame(pts, w, h, m, if (keepPixels.get()) pixels.copyOf() else null))
         }

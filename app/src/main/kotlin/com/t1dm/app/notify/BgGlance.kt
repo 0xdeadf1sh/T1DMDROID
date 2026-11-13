@@ -259,7 +259,7 @@ object BgGlanceComputer {
         staleMin: Int,
     ): GlyStatus {
         state.warmup?.let {
-            return GlyStatus.Void("Collecting context — %.1f / %.0f h BG".format(it.measuredHours, it.requiredHours))
+            return GlyStatus.Void("Collecting context - %.1f / %.0f h BG".format(it.measuredHours, it.requiredHours))
         }
         val staleMs = staleMin * 60_000L
         if (readingAgeMs == null || readingAgeMs > staleMs) {
@@ -351,11 +351,11 @@ object BgGlanceComputer {
         status != null && status != ForecastStatus.OK -> "forecast unavailable"
         bg != null -> {
             val arrow = when (trend) {
-                GlanceTrend.RISING_FAST -> "↑↑"
-                GlanceTrend.RISING -> "↑"
-                GlanceTrend.FALLING_FAST -> "↓↓"
-                GlanceTrend.FALLING -> "↓"
-                GlanceTrend.FLAT -> "→"
+                GlanceTrend.RISING_FAST -> "^^"
+                GlanceTrend.RISING -> "^"
+                GlanceTrend.FALLING_FAST -> "vv"
+                GlanceTrend.FALLING -> "v"
+                GlanceTrend.FLAT -> "->"
                 null -> null
             }
             if (arrow == null) "$bg" else "$bg $arrow"

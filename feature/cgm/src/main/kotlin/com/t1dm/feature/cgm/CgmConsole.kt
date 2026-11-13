@@ -165,7 +165,7 @@ class CgmConsole(private val host: CgmConsoleHost) {
 
     private suspend fun dispatch(name: String, args: List<String>, view: CgmConsoleView): CgmConsoleReply {
         val command = commandNamed(name)
-            ?: return reply(err("unknown: $name · help lists commands"))
+            ?: return reply(err("unknown: $name | help lists commands"))
         return execute(command, args, view, confirmed = false)
     }
 
@@ -203,7 +203,7 @@ class CgmConsole(private val host: CgmConsoleHost) {
             "decrypt" -> if (row.hasFrameCrypto) decrypt(args, v) else reply(err(NO_FRAME_CRYPTO))
             "encrypt" -> if (row.hasFrameCrypto) encrypt(args) else reply(err(NO_FRAME_CRYPTO))
             "connect" -> when {
-                row.active && row.canReconnect -> reply(out("on, not linked · reconnect rebuilds it"))
+                row.active && row.canReconnect -> reply(out("on, not linked | reconnect rebuilds it"))
                 row.active -> reply(out("already on"))
                 else -> {
                     host.connect()
@@ -213,7 +213,7 @@ class CgmConsole(private val host: CgmConsoleHost) {
             "disconnect" -> destructive(
                 c, args, v, confirmed,
                 refusal = when {
-                    row.authoritative -> "main sensor · make another main first"
+                    row.authoritative -> "main sensor | make another main first"
                     !row.active -> "not on"
                     else -> null
                 },
@@ -246,7 +246,7 @@ class CgmConsole(private val host: CgmConsoleHost) {
                 c, args, v, confirmed,
                 refusal = when {
                     !row.hasActivate -> "no activation on this sensor"
-                    !row.canActivate -> "not now · ${statusWord(row.status)}"
+                    !row.canActivate -> "not now | ${statusWord(row.status)}"
                     else -> null
                 },
                 prompt = "activate ${row.name}?",
@@ -292,14 +292,14 @@ class CgmConsole(private val host: CgmConsoleHost) {
         if (refusal != null) return reply(err(refusal))
         if (!confirmed) {
             pending = Pending(c, args, v.nowMs)
-            return reply(warn("$prompt · yes to confirm, ${CONFIRM_WINDOW_MS / 1000} s"))
+            return reply(warn("$prompt | yes to confirm, ${CONFIRM_WINDOW_MS / 1000} s"))
         }
         return reply(out(act()))
     }
 
     /** Throttled: a reconnect drops every hold-off its family keeps on the sensor. */
     private fun reconnect(row: CgmSensorRow, nowMs: Long): CgmConsoleReply {
-        if (!row.active) return reply(err("not on · connect first"))
+        if (!row.active) return reply(err("not on | connect first"))
         val last = lastReconnectMs
         if (last != null && nowMs - last < RECONNECT_GAP_MS) {
             return reply(warn("again in ${(RECONNECT_GAP_MS - (nowMs - last) + 999) / 1000} s"))
@@ -313,7 +313,7 @@ class CgmConsole(private val host: CgmConsoleHost) {
         val range = CgmSourceDescriptor.WARMUP_WINDOW_RANGE
         if (args.isEmpty()) return reply(out("warm-up ${row.warmupWindowMin} min"))
         val min = args.singleOrNull()?.toIntOrNull()?.takeIf { it in range }
-            ?: return reply(err("warmup ${range.first}–${range.last} min"))
+            ?: return reply(err("warmup ${range.first}-${range.last} min"))
         host.setWarmupMin(min)
         return reply(out("warm-up $min min"))
     }
@@ -354,7 +354,7 @@ class CgmConsole(private val host: CgmConsoleHost) {
         val s = host.readingStats()
         if (s.total == 0) return listOf(out("no readings on record"))
         return buildList {
-            add(kv("readings", "${s.total} · ${s.measured} measured"))
+            add(kv("readings", "${s.total} | ${s.measured} measured"))
             s.firstMs?.let { add(kv("first", stampOf(it, v.zone))) }
             s.lastMs?.let { add(kv("last", stampOf(it, v.zone))) }
             if (s.firstMs != null && s.lastMs != null) add(kv("span", fullDuration(s.lastMs - s.firstMs)))
@@ -371,7 +371,7 @@ class CgmConsole(private val host: CgmConsoleHost) {
             )
             val parts = listOfNotNull(
                 stampOf(r.tsMs, zone),
-                r.bgMgdl?.let { "$it mg/dL" } ?: "—",
+                r.bgMgdl?.let { "$it mg/dL" } ?: "-",
                 r.trendTenthsPerMin?.let(::perMin),
                 tags.takeIf { it.isNotEmpty() }?.joinToString(" "),
             )
@@ -392,7 +392,7 @@ class CgmConsole(private val host: CgmConsoleHost) {
         const val YES = "yes"
         val WHITESPACE = Regex("\\s+")
         const val NO_FRAME_CRYPTO = "no encrypt or decrypt on this sensor"
-        const val BAD_HEX = "hex: whole bytes, 0–9 a–f"
+        const val BAD_HEX = "hex: whole bytes, 0-9 a-f"
 
         /** Received chunks read before the window, so a frame split over notifies opens whole. */
         const val ASSEMBLY_LOOKBACK = 4
@@ -432,7 +432,7 @@ internal fun completionOf(typed: String, row: CgmSensorRow?): String {
 private fun helpLine(c: Command): CgmReplyLine {
     val names = (listOf(c.name) + c.aliases).joinToString("|")
     val usage = if (c.args.isEmpty()) names else "$names ${c.args}"
-    return CgmReplyLine("${usage.padEnd(14)} ${c.help}${if (c.destructive) " · yes" else ""}")
+    return CgmReplyLine("${usage.padEnd(14)} ${c.help}${if (c.destructive) " | yes" else ""}")
 }
 
 private inline fun <T> CgmFrameResult<T>.orRefuse(done: (T) -> List<CgmReplyLine>): List<CgmReplyLine> = when (this) {
@@ -443,7 +443,7 @@ private inline fun <T> CgmFrameResult<T>.orRefuse(done: (T) -> List<CgmReplyLine
 
 /** [head] null for a typed frame; a null [f] is a chunk still waiting for the rest of its frame. */
 private fun frameLines(head: String?, f: CgmOpenedFrame?): List<CgmReplyLine> {
-    fun line(vararg parts: String) = listOfNotNull(head, *parts).joinToString(" · ")
+    fun line(vararg parts: String) = listOfNotNull(head, *parts).joinToString(" | ")
     return when {
         f == null -> listOf(dim(line("partial")))
         f.sequence == null -> listOf(warn(line("under 3 B")))
@@ -470,7 +470,7 @@ private fun bytesOf(words: List<String>): ByteArray? {
 
 private inline fun count(args: List<String>, default: Int, max: Int, lines: (Int) -> List<CgmReplyLine>): CgmConsoleReply {
     val n = if (args.isEmpty()) default else args.singleOrNull()?.toIntOrNull()?.takeIf { it in 1..max }
-    return if (n == null) reply(err("n 1–$max")) else reply(lines(n))
+    return if (n == null) reply(err("n 1-$max")) else reply(lines(n))
 }
 
 private fun roleOf(row: CgmSensorRow) = when {
@@ -480,18 +480,18 @@ private fun roleOf(row: CgmSensorRow) = when {
 }
 
 private fun info(row: CgmSensorRow, v: CgmConsoleView): List<CgmReplyLine> = buildList {
-    add(kv("name", "${row.name} · ${row.ordinalLabel}"))
+    add(kv("name", "${row.name} | ${row.ordinalLabel}"))
     add(kv("id", row.id))
     add(kv("role", roleOf(row)))
     addAll(status(row))
     row.sensorAgeMin?.let { add(kv("age", fullDuration(it * 60_000L))) }
     row.expiryMs?.let { at ->
         val left = at - v.nowMs
-        add(kv("expires", stampOf(at, v.zone) + if (left >= 0) " · in ${fullDuration(left)}" else " · passed", tone(left < 0)))
+        add(kv("expires", stampOf(at, v.zone) + if (left >= 0) " | in ${fullDuration(left)}" else " | passed", tone(left < 0)))
     }
     add(kv("warm-up", "${row.warmupWindowMin} min"))
     row.ratedCycleDays?.let { add(kv("rated", "$it d")) }
-    add(kv("rssi", row.rssiDbm?.let { "$it dBm" } ?: "—"))
+    add(kv("rssi", row.rssiDbm?.let { "$it dBm" } ?: "-"))
     if (!row.admitted) add(warn("over the ${v.panel.maxSessions}-link budget"))
 }
 
@@ -501,7 +501,7 @@ private fun status(row: CgmSensorRow): List<CgmReplyLine> = buildList {
         "fetching".takeIf { row.fetchingHistory },
         "sensor holds nothing newer".takeIf { row.historyExhausted },
     )
-    add(kv("status", flags.joinToString(" · ")))
+    add(kv("status", flags.joinToString(" | ")))
     row.failureNote?.let { add(kv("failure", it, CgmReplyTone.WARN)) }
 }
 
@@ -517,15 +517,15 @@ private fun caps(row: CgmSensorRow): List<CgmReplyLine> = listOf(
 
 private fun cap(name: String, has: Boolean, now: Boolean): CgmReplyLine = when {
     !has -> CgmReplyLine("${name.padEnd(11)}no", CgmReplyTone.DIM)
-    now -> CgmReplyLine("${name.padEnd(11)}yes · now")
-    else -> CgmReplyLine("${name.padEnd(11)}yes · not now")
+    now -> CgmReplyLine("${name.padEnd(11)}yes | now")
+    else -> CgmReplyLine("${name.padEnd(11)}yes | not now")
 }
 
 private fun telemetry(row: CgmSensorRow, zone: ZoneId): List<CgmReplyLine> {
     val t = row.telemetry ?: return listOf(out("no telemetry"))
     return buildList {
         add(kv("sampled", clockOf(t.sampledAtMs, zone)))
-        t.tempCx100?.let { add(kv("temp", "${hundredths(it)} °C")) }
+        t.tempCx100?.let { add(kv("temp", "${hundredths(it)} C")) }
         t.batteryRaw?.let { add(kv("battery", it.toString())) }
         t.iwX100?.let { add(kv("iw", hundredths(it))) }
         t.ibX100?.let { add(kv("ib", hundredths(it))) }
@@ -538,7 +538,7 @@ private fun telemetry(row: CgmSensorRow, zone: ZoneId): List<CgmReplyLine> {
 
 private fun links(v: CgmConsoleView): List<CgmReplyLine> = buildList {
     val on = v.panel.sensors.count { it.active }
-    add(kv("links", "$on on · ${v.panel.maxSessions} max", tone(on > v.panel.maxSessions)))
+    add(kv("links", "$on on | ${v.panel.maxSessions} max", tone(on > v.panel.maxSessions)))
     v.row?.let { row ->
         add(
             kv(
@@ -553,7 +553,7 @@ private fun links(v: CgmConsoleView): List<CgmReplyLine> = buildList {
         )
     }
     if (v.panel.unidentified > 0) {
-        val best = v.panel.unidentifiedRssiDbm?.let { " · best $it dBm" }.orEmpty()
+        val best = v.panel.unidentifiedRssiDbm?.let { " | best $it dBm" }.orEmpty()
         add(kv("unknown", "${v.panel.unidentified} heard$best"))
     }
     if (v.panel.scanning) add(kv("scan", "running"))
@@ -582,7 +582,7 @@ private fun decoded(n: Int, v: CgmConsoleView): List<CgmReplyLine> {
     }
     return chunks.flatMap { c ->
         val head = "${clockOf(c.wallMs, v.zone)} ${c.channel.orEmpty()}"
-        val lines = newestFirst[c.monoNs] ?: return@flatMap listOf(dim("$head · no decode"))
+        val lines = newestFirst[c.monoNs] ?: return@flatMap listOf(dim("$head | no decode"))
         listOf(dim(head)) + lines.asReversed().flatMap { e ->
             listOfNotNull(out(e.text), e.bytes?.takeIf { it.isNotEmpty() }?.let { dim(hexOf(it)) })
         }

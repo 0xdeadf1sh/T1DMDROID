@@ -35,7 +35,7 @@ fun DataSettingsScreen(
                 onClick = { haptics.perform(HapticEvent.Tap); onOpenBackup() },
             ) { Text("Open Backup") }
         }
-        SettingsNote("Back up before resetting — this screen cannot undo")
+        SettingsNote("Back up before resetting - this screen cannot undo")
 
         SettingsSectionHeader("Danger zone")
         // The confirm flow's state is local, so a search hit always lands here disarmed.
@@ -51,7 +51,7 @@ private fun ResetSection(resetting: Boolean, onReset: () -> Unit) {
     var typed by remember { mutableStateOf("") }
     val haptics = rememberT1dmHaptics()
 
-    SettingsNote("Erases everything — irreversible")
+    SettingsNote("Erases everything - irreversible")
 
     if (!confirming) {
         OutlinedButton(
@@ -64,11 +64,11 @@ private fun ResetSection(resetting: Boolean, onReset: () -> Unit) {
 
     DangerBanner(
         "This ERASES EVERYTHING, irreversibly:\n" +
-            "• all glucose readings, the wide series, carb/bolus/basal logs, meals, forecasts\n" +
-            "• every drawing on the glucose graph\n" +
-            "• model performance and accuracy history (the model files themselves are kept)\n" +
-            "• every setting, threshold, target, curve, theme and font — back to defaults\n" +
-            "• the watch pairing and its keys — re-pair the watch\n\n" +
+            "* all glucose readings, the wide series, carb/bolus/basal logs, meals, forecasts\n" +
+            "* every drawing on the glucose graph\n" +
+            "* model performance and accuracy history (the model files themselves are kept)\n" +
+            "* every setting, threshold, target, curve, theme and font - back to defaults\n" +
+            "* the watch pairing and its keys - re-pair the watch\n\n" +
             "Restarts",
     )
     OutlinedTextField(
@@ -99,7 +99,7 @@ private fun ResetSection(resetting: Boolean, onReset: () -> Unit) {
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             CircularProgressIndicator(Modifier.padding(2.dp))
-            Text("Erasing and restarting…", style = MaterialTheme.typography.bodyMedium)
+            Text("Erasing and restarting...", style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
@@ -111,7 +111,7 @@ private val dataBackup = SettingsKnob(
     screen = SettingsScreenKey.DATA,
     section = "Backup",
     label = "Open Backup",
-    subtitle = "The backup panel — archive, restore, and automatic backups",
+    subtitle = "The backup panel - archive, restore, and automatic backups",
     synonyms = listOf("backup", "restore", "archive", "save", "copy"),
 )
 
@@ -119,8 +119,8 @@ private val backupExport = SettingsKnob(
     id = "backup.export",
     screen = SettingsScreenKey.BACKUP,
     section = "Manual",
-    label = "Export…",
-    subtitle = "Write the whole record — readings, meals, doses, drawings, settings — to one file",
+    label = "Export...",
+    subtitle = "Write the whole record - readings, meals, doses, drawings, settings - to one file",
     synonyms = listOf(
         "export", "backup", "save", "file", "copy", "transfer", "dump", "download", "archive", "share",
     ),
@@ -130,7 +130,7 @@ private val backupImport = SettingsKnob(
     id = "backup.import",
     screen = SettingsScreenKey.BACKUP,
     section = "Manual",
-    label = "Import…",
+    label = "Import...",
     subtitle = "Merge a backup file back in; never overwrites what is already here",
     synonyms = listOf("import", "restore", "load", "file", "recover", "migrate", "transfer", "merge"),
 )

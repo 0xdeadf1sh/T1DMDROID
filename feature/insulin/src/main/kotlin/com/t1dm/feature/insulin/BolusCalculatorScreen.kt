@@ -113,7 +113,7 @@ fun BolusCalculatorScreen(
                     color = LocalContentColor.current,
                 )
                 Spacer(Modifier.width(8.dp))
-                Text("Recomputing…")
+                Text("Recomputing...")
             } else {
                 Text("Recompute")
             }
@@ -158,7 +158,7 @@ private fun RefusedCard(refused: AdviceResult.Refused) {
     Card(Modifier.fillMaxWidth(), colors = panelCardColors()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("No dose recommended", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            refused.reasons.forEach { Text("• $it", style = MaterialTheme.typography.bodyMedium) }
+            refused.reasons.forEach { Text("* $it", style = MaterialTheme.typography.bodyMedium) }
         }
     }
 }
@@ -194,12 +194,12 @@ private fun RecommendedBody(
             }
             if (rec.rescueCarbsG != null) {
                 Text("Treat the low first", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text("~${rec.rescueCarbsG!!.toInt()} g fast carbs — insulin withheld", style = MaterialTheme.typography.headlineSmall)
+                Text("~${rec.rescueCarbsG!!.toInt()} g fast carbs - insulin withheld", style = MaterialTheme.typography.headlineSmall)
             } else {
                 Text("Recommended", style = MaterialTheme.typography.titleMedium)
                 Text("${fmt(rec.best.doseU)} U", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
                 rec.best.splits?.let { parts ->
-                    Text("split: " + parts.joinToString(" → ") { "${fmt(it.units)}U @ +${it.offsetMin}m" }, style = MaterialTheme.typography.bodySmall)
+                    Text("split: " + parts.joinToString(" -> ") { "${fmt(it.units)}U @ +${it.offsetMin}m" }, style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
@@ -207,7 +207,7 @@ private fun RecommendedBody(
 
     if (rec.railNotes.isNotEmpty()) {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            rec.railNotes.forEach { Text("• $it", style = MaterialTheme.typography.labelMedium, color = LocalContentColor.current.copy(alpha = 0.7f)) }
+            rec.railNotes.forEach { Text("* $it", style = MaterialTheme.typography.labelMedium, color = LocalContentColor.current.copy(alpha = 0.7f)) }
         }
     }
 
@@ -234,7 +234,7 @@ private fun RecommendedBody(
                 Text("Mandatory confirmation", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
             }
             rec.card.confirmationReasons.forEach {
-                Text("• $it", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
+                Text("* $it", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
             }
         }
     }
@@ -259,7 +259,7 @@ private fun RecommendedBody(
     ) {
         Text(
             when {
-                rec.rescueCarbsG != null -> "Accept — treat low"
+                rec.rescueCarbsG != null -> "Accept - treat low"
                 else -> "Accept ${fmt(rec.best.doseU)} U"
             },
         )
@@ -282,17 +282,17 @@ private fun DecisionCardView(card: DecisionCard) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Decision card", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
             fieldRow("Last real reading", card.ageOfLastRealReadingMin?.let { "$it min ago" } ?: "none")
-            fieldRow("Interpolated/warm-up", "${(card.interpolatedFraction * 100).toInt()}%" + if (card.warmup) " · WARM-UP" else "")
+            fieldRow("Interpolated/warm-up", "${(card.interpolatedFraction * 100).toInt()}%" + if (card.warmup) " | WARM-UP" else "")
             fieldRow("Backend", "${card.backend}")
             fieldRow("Assumed IOB", card.assumedIobU?.let { "${fmt(it)} U (logged only)" } ?: "unknown")
             fieldRow("Last logged dose", card.minSinceLastLoggedDose?.let { "$it min ago" } ?: "never")
-            fieldRow("Forecast band width", card.bandWidthMgdl?.let { "±${(it / 2).toInt()} mg/dL" } ?: "—")
+            fieldRow("Forecast band width", card.bandWidthMgdl?.let { "+/-${(it / 2).toInt()} mg/dL" } ?: "-")
             // Disclosed only when not default: shifts the last_bg anchor the other rows qualify.
             if (card.smoothingWindow != DecisionCard.DEFAULT_SMOOTHING_WINDOW) {
                 fieldRow(
                     "BG input filter",
                     if (card.smoothingWindow <= 1) "off (raw)"
-                    else "${card.smoothingWindow} samples · ${card.smoothingWindow * 5} min",
+                    else "${card.smoothingWindow} samples | ${card.smoothingWindow * 5} min",
                 )
             }
         }
@@ -308,7 +308,7 @@ private fun RankedList(ranked: List<Candidate>) {
         top.forEach { c ->
             // Median minimum, what the veto reads; band's minimum would explain a different block.
             val low = c.fan.minMedianBg()?.toInt()
-            fieldRow("${fmt(c.doseU)} U", "score ${"%.2f".format(c.score)}" + (low?.let { " · min $it" } ?: ""))
+            fieldRow("${fmt(c.doseU)} U", "score ${"%.2f".format(c.score)}" + (low?.let { " | min $it" } ?: ""))
         }
     }
 }

@@ -346,7 +346,7 @@ fun CgmLogScreen(
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
             val bytesPerRow = hexRowWidth(maxWidth.value * LocalDensity.current.density, logStyle)
             when {
-                source == null || list == null -> Text("loading…", style = base.copy(color = Term.dim))
+                source == null || list == null -> Text("loading...", style = base.copy(color = Term.dim))
                 rows.isEmpty() && replies.isEmpty() -> when {
                     grep != null -> Text("no match", style = base.copy(color = Term.dim))
                     clearedAtMs == Long.MIN_VALUE -> Text("no lines yet", style = base.copy(color = Term.dim))
@@ -427,7 +427,7 @@ private fun ToolRow(content: @Composable RowScope.() -> Unit) {
 /** A colour key only: warnings, errors and folds span every kind, so they have no toggle. */
 @Composable
 private fun Legend(label: String, color: Color, base: TextStyle) {
-    Text("■ $label", style = base.copy(color = color, fontSize = 13.sp), modifier = Modifier.padding(vertical = 11.dp))
+    Text("# $label", style = base.copy(color = color, fontSize = 13.sp), modifier = Modifier.padding(vertical = 11.dp))
 }
 
 @Composable
@@ -469,9 +469,9 @@ private fun Pager(page: Int, pages: Int, base: TextStyle, indent: Int, onPage: (
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        TermButton("[‹ prev]", base, Term.fg, enabled = page > 0) { onPage(page - 1) }
+        TermButton("[< prev]", base, Term.fg, enabled = page > 0) { onPage(page - 1) }
         Text("${page + 1}/$pages", style = base.copy(color = Term.dim, fontSize = 13.sp))
-        TermButton("[next ›]", base, Term.fg, enabled = page < pages - 1) { onPage(page + 1) }
+        TermButton("[next >]", base, Term.fg, enabled = page < pages - 1) { onPage(page + 1) }
     }
 }
 
@@ -488,7 +488,7 @@ private fun StatusLine(
 ) {
     val mode = if (following) "-- FOLLOW --" else if (newer > 0) "-- HELD +$newer --" else "-- HELD --"
     Text(
-        listOfNotNull(mode, name, "$lines lines · $rows rows", note).joinToString("  "),
+        listOfNotNull(mode, name, "$lines lines | $rows rows", note).joinToString("  "),
         style = base.copy(color = Term.bg, fontWeight = FontWeight.Bold),
         maxLines = 1,
         modifier = Modifier
@@ -659,10 +659,10 @@ private fun FoldLine(fold: CgmLogRow.Fold, open: Boolean, zone: ZoneId, base: Te
     val text = remember(fold, open) {
         buildString {
             append(if (open) "--- " else "+-- ")
-            append(clockOf(fold.firstMs, zone)).append('–').append(clockOf(fold.lastMs, zone))
-            append(' ').append(topicName(fold.topic)).append(" ×").append(fold.units.size)
-            append(" · ").append(fold.lines).append(" lines")
-            valueRange(fold.topic, fold.valueMin, fold.valueMax).takeIf { it.isNotEmpty() }?.let { append(" · ").append(it) }
+            append(clockOf(fold.firstMs, zone)).append('-').append(clockOf(fold.lastMs, zone))
+            append(' ').append(topicName(fold.topic)).append(" x").append(fold.units.size)
+            append(" | ").append(fold.lines).append(" lines")
+            valueRange(fold.topic, fold.valueMin, fold.valueMax).takeIf { it.isNotEmpty() }?.let { append(" | ").append(it) }
         }
     }
     Text(

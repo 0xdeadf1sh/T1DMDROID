@@ -152,9 +152,9 @@ private fun DoseEntry(
         if (previewCurve != null && dose != null && preset != null) {
             Text(
                 if (kind == InsulinKind.BOLUS) {
-                    "PK action — units per 5 min"
+                    "PK action - units per 5 min"
                 } else {
-                    "PK action — units per 5 min (broad + near-flat by design)"
+                    "PK action - units per 5 min (broad + near-flat by design)"
                 },
                 style = MaterialTheme.typography.labelMedium,
                 modifier = Modifier.padding(top = 8.dp),
@@ -214,5 +214,5 @@ private fun UnitsField(value: String, onChange: (String) -> Unit) {
 /** §3.6-F. */
 private fun iobProvenance(r: IobCobReadout): String =
     r.minsSinceLastLoggedInsulin
-        ?.let { "logged doses only · last logged $it min ago" }
+        ?.let { "logged doses only | last logged $it min ago" }
         ?: "no insulin logged yet"

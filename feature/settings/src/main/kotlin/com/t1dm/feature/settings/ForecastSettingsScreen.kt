@@ -62,8 +62,8 @@ fun ForecastSettingsScreen(
         SettingsSectionHeader("Thermal gate")
         SettingsNote("Pauses forecasting when hot; active even in Death mode")
         ToggleRow(thermalEnabled, thermalOn) { onSetThermalEnabled(it) }
-        DoubleStepper(thermalPauseAt, maxTempC, "°C", step = 0.5, min = 0.0) { onSetMaxTempC(it) }
-        DoubleStepper(thermalWarnWithin, warnMarginC, "°C of threshold", step = 0.5, min = 0.0) { onSetWarnMarginC(it) }
+        DoubleStepper(thermalPauseAt, maxTempC, "C", step = 0.5, min = 0.0) { onSetMaxTempC(it) }
+        DoubleStepper(thermalWarnWithin, warnMarginC, "C of threshold", step = 0.5, min = 0.0) { onSetWarnMarginC(it) }
     }
 }
 
@@ -84,7 +84,7 @@ private fun WarmupSection(hours: Int, minHours: Int, maxHours: Int, onChange: (I
                     onChange((hours - 1).coerceAtLeast(minHours))
                 },
                 enabled = hours > minHours,
-            ) { Text("−1 h") }
+            ) { Text("-1 h") }
 
             Text(
                 text = "$hours h",
@@ -104,7 +104,7 @@ private fun WarmupSection(hours: Int, minHours: Int, maxHours: Int, onChange: (I
             ) { Text("+1 h") }
         }
     }
-    SettingsNote("Min $minHours h (the model's context floor) · max $maxHours h")
+    SettingsNote("Min $minHours h (the model's context floor) | max $maxHours h")
 }
 
 /** Every running model pushes under its own id; Models screen picks the dashboard's model. */
@@ -124,7 +124,7 @@ private fun ModelCountSection(count: Int, minCount: Int, maxCount: Int, onChange
                     onChange((count - 1).coerceAtLeast(minCount))
                 },
                 enabled = count > minCount,
-            ) { Text("−1") }
+            ) { Text("-1") }
 
             Text(
                 text = count.toString(),
@@ -144,7 +144,7 @@ private fun ModelCountSection(count: Int, minCount: Int, maxCount: Int, onChange
             ) { Text("+1") }
         }
     }
-    SettingsNote("1–8 · more models, more CPU")
+    SettingsNote("1-8 | more models, more CPU")
 }
 
 private val warmupHours = SettingsKnob(
@@ -164,7 +164,7 @@ private val modelCountRunning = SettingsKnob(
     screen = SettingsScreenKey.FORECAST,
     section = "Models run at once",
     label = "Models run at once",
-    subtitle = "How many discovered models forecast each cycle — all are pushed, the selected one is drawn",
+    subtitle = "How many discovered models forecast each cycle - all are pushed, the selected one is drawn",
     synonyms = listOf(
         "models", "how many", "running", "count", "concurrent", "at once", "cap", "limit",
         "ensemble", "cpu", "battery",
@@ -211,7 +211,7 @@ private val thermalEnabled = SettingsKnob(
     screen = SettingsScreenKey.FORECAST,
     section = THERMAL_SECTION,
     label = "Enable thermal gate",
-    subtitle = "Pause inference while too hot — active even in Death mode",
+    subtitle = "Pause inference while too hot - active even in Death mode",
     synonyms = listOf(
         "thermal", "thermal gate", "throttle", "overheat", "hot", "heat", "pause inference",
         "npu", "cpu load", "protection", "temperature", "cooling",
@@ -223,7 +223,7 @@ private val thermalPauseAt = SettingsKnob(
     screen = SettingsScreenKey.FORECAST,
     section = THERMAL_SECTION,
     label = "Pause inference at",
-    subtitle = "The battery-sensor temperature at which forecasting stops, in °C",
+    subtitle = "The battery-sensor temperature at which forecasting stops, in C",
     synonyms = listOf("pause", "stop", "threshold", "trip", "max temperature", "celsius", "degrees", "hot", "cutoff"),
 )
 
@@ -232,7 +232,7 @@ private val thermalWarnWithin = SettingsKnob(
     screen = SettingsScreenKey.FORECAST,
     section = THERMAL_SECTION,
     label = "Warn within",
-    subtitle = "How close to the pause threshold a warning is raised, in °C",
+    subtitle = "How close to the pause threshold a warning is raised, in C",
     synonyms = listOf("warn", "warning", "margin", "headroom", "approaching", "nearly", "buffer", "hysteresis", "degrees"),
 )
 

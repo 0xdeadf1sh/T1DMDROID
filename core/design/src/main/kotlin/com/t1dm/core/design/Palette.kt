@@ -218,9 +218,9 @@ fun resolvePalette(themeId: String?, customThemeJson: String?): T1dmPalette =
 /** Imported file: format="t1dm.theme" tag, name, dark, colors block of #RRGGBB strings. */
 fun parseThemeJson(text: String): T1dmPalette {
     val root = runCatching { JSONObject(text) }
-        .getOrElse { throw IllegalArgumentException("Not a theme file — invalid JSON") }
+        .getOrElse { throw IllegalArgumentException("Not a theme file - invalid JSON") }
     if (root.optString("format") != "t1dm.theme") {
-        throw IllegalArgumentException("Wrong \"format\" tag — expected \"t1dm.theme\"")
+        throw IllegalArgumentException("Wrong \"format\" tag - expected \"t1dm.theme\"")
     }
     val colors = root.optJSONObject("colors")
         ?: throw IllegalArgumentException("No \"colors\" block")

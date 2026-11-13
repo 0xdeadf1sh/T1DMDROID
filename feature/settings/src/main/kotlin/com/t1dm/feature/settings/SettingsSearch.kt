@@ -56,7 +56,7 @@ fun SettingsSearchBar(
             singleLine = true,
             trailingIcon = {
                 if (query.isNotEmpty()) {
-                    TextButton(onClick = { haptics.perform(HapticEvent.Reject); query = "" }) { Text("✕") }
+                    TextButton(onClick = { haptics.perform(HapticEvent.Reject); query = "" }) { Text("x") }
                 }
             },
             modifier = Modifier.fillMaxWidth(),
@@ -93,7 +93,7 @@ fun SettingsSearchBar(
 
         if (results.isEmpty()) {
             Text(
-                "No match for “${query.trim()}”",
+                "No match for \"${query.trim()}\"",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
             )
@@ -117,7 +117,7 @@ fun SettingsSearchBar(
             groupByScreen(results).forEach { (screen, knobs) ->
                 item(key = "hdr-${screen.name}") {
                     Text(
-                        "Settings › ${screen.breadcrumb}",
+                        "Settings > ${screen.breadcrumb}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
@@ -150,7 +150,7 @@ private fun ResultRow(knob: SettingsKnob, onClick: () -> Unit) {
             .padding(vertical = 6.dp, horizontal = 2.dp),
     ) {
         Text(knob.label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-        val detail = listOf(knob.section, knob.subtitle).filter { it.isNotBlank() }.joinToString(" · ")
+        val detail = listOf(knob.section, knob.subtitle).filter { it.isNotBlank() }.joinToString(" | ")
         if (detail.isNotEmpty()) {
             Text(
                 detail,

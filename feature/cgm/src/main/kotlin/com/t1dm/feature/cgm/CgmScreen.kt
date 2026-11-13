@@ -175,7 +175,7 @@ private fun CgmConfirmDialog(pending: CgmConfirm, onConfirm: () -> Unit, onDismi
         is CgmConfirm.Activate -> { title = "Activate sensor?"; body = null; accept = "Activate" }
         is CgmConfirm.Bind -> {
             title = "Bind ${pending.row.name}?"
-            body = "Can't be undone — the sensor is claimed for good"
+            body = "Can't be undone - the sensor is claimed for good"
             accept = "Bind"
         }
         is CgmConfirm.RepairHistory -> {
@@ -274,7 +274,7 @@ private fun SensorCard(
                         },
                     ) {
                         Text(
-                            "✕",
+                            "x",
                             style = MaterialTheme.typography.titleMedium,
                             color = if (stops) dim else cs.error,
                         )
@@ -290,7 +290,7 @@ private fun SensorCard(
             // The budget drops the excess silently; nothing else on screen would say why.
             if (!row.admitted) {
                 Text(
-                    "waiting — $maxSessions links in use",
+                    "waiting - $maxSessions links in use",
                     style = MaterialTheme.typography.bodySmall,
                     color = cs.error,
                 )
@@ -379,7 +379,7 @@ private fun SensorCard(
                                 strokeWidth = 2.dp,
                             )
                         } else if (row.historyExhausted) {
-                            Text("Sensor storage full — no history")
+                            Text("Sensor storage full - no history")
                         } else {
                             Text("Fetch history")
                         }
@@ -400,7 +400,7 @@ private fun SensorCard(
 @Composable
 private fun TelemetryRows(t: CgmSourceTelemetry?) {
     if (t == null) return
-    t.tempCx100?.let { Kv("Temp", "${hundredths(it)} °C") }
+    t.tempCx100?.let { Kv("Temp", "${hundredths(it)} C") }
     t.batteryRaw?.let { Kv("Battery", it.toString()) }
     t.iwX100?.let { Kv("Iw", hundredths(it)) }
     t.ibX100?.let { Kv("Ib", hundredths(it)) }

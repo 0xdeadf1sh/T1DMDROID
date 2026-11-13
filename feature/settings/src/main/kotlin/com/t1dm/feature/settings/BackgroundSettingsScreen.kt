@@ -31,33 +31,33 @@ fun BackgroundSettingsScreen(access: BackgroundAccess, onFix: (BackgroundFix) ->
     SettingsScaffold(SettingsScreenKey.BACKGROUND) {
         SettingsAnchor(bgBattery) {
             val ok = access.batteryUnrestricted
-            AccessRow(bgBattery.label, if (ok) "Unrestricted" else "Restricted — may stop CGM", ok) {
+            AccessRow(bgBattery.label, if (ok) "Unrestricted" else "Restricted - may stop CGM", ok) {
                 onFix(BackgroundFix.BATTERY)
             }
         }
         access.exactAlarms?.let { ok ->
             SettingsAnchor(bgExactAlarms) {
-                AccessRow(bgExactAlarms.label, if (ok) "Allowed" else "Denied — alert repeats run late", ok) {
+                AccessRow(bgExactAlarms.label, if (ok) "Allowed" else "Denied - alert repeats run late", ok) {
                     onFix(BackgroundFix.EXACT_ALARMS)
                 }
             }
         }
         SettingsAnchor(bgNotifications) {
             val ok = access.notifications
-            AccessRow(bgNotifications.label, if (ok) "Allowed" else "Blocked — no alarms show", ok) {
+            AccessRow(bgNotifications.label, if (ok) "Allowed" else "Blocked - no alarms show", ok) {
                 onFix(BackgroundFix.NOTIFICATIONS)
             }
         }
         access.fullScreenAlerts?.let { ok ->
             SettingsAnchor(bgFullScreen) {
-                AccessRow(bgFullScreen.label, if (ok) "Allowed" else "Denied — urgent alarms stay in the shade", ok) {
+                AccessRow(bgFullScreen.label, if (ok) "Allowed" else "Denied - urgent alarms stay in the shade", ok) {
                     onFix(BackgroundFix.FULL_SCREEN_ALERTS)
                 }
             }
         }
         access.vendorPage?.let { page ->
             SettingsAnchor(bgVendor) {
-                AccessRow(page, "Allow — state not readable", ok = true) { onFix(BackgroundFix.VENDOR) }
+                AccessRow(page, "Allow - state not readable", ok = true) { onFix(BackgroundFix.VENDOR) }
             }
         }
     }
@@ -81,7 +81,7 @@ private fun AccessRow(label: String, status: String, ok: Boolean, onClick: () ->
                 color = if (ok) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
             )
         }
-        Text("›", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(">", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

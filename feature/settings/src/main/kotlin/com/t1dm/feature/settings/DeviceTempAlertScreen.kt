@@ -17,8 +17,8 @@ fun DeviceTempAlertScreen(
     SettingsScaffold(SettingsScreenKey.DEVICE_TEMP) {
         SettingsNote("Battery sensor, not glucose; keep clear-below under alert")
         ToggleRow(deviceTempEnabled, enabled) { onSetEnabled(it) }
-        DoubleStepper(deviceTempAlertAbove, alertC, "°C", step = 0.5, min = 0.0) { onSetAlertC(it) }
-        DoubleStepper(deviceTempClearBelow, clearC, "°C", step = 0.5, min = 0.0) { onSetClearC(it) }
+        DoubleStepper(deviceTempAlertAbove, alertC, "C", step = 0.5, min = 0.0) { onSetAlertC(it) }
+        DoubleStepper(deviceTempClearBelow, clearC, "C", step = 0.5, min = 0.0) { onSetClearC(it) }
         ToggleRow(deviceTempCritical, critical) { onSetCritical(it) }
     }
 }
@@ -30,7 +30,7 @@ private val deviceTempEnabled = SettingsKnob(
     screen = SettingsScreenKey.DEVICE_TEMP,
     section = TEMP_SECTION,
     label = "Enable device-temperature alarm",
-    subtitle = "Warn when the phone runs hot — exempt from Death mode",
+    subtitle = "Warn when the phone runs hot - exempt from Death mode",
     synonyms = listOf(
         "overheat", "overheating", "hot", "heat", "temperature", "phone temperature", "battery temperature",
         "thermal alarm", "device temp", "warm", "burning",
@@ -42,7 +42,7 @@ private val deviceTempAlertAbove = SettingsKnob(
     screen = SettingsScreenKey.DEVICE_TEMP,
     section = TEMP_SECTION,
     label = "Alert above",
-    subtitle = "The battery-sensor temperature at which the alarm fires, in °C",
+    subtitle = "The battery-sensor temperature at which the alarm fires, in C",
     synonyms = listOf("alert above", "trip", "fire at", "threshold", "hot", "overheat", "celsius", "degrees", "temperature"),
 )
 

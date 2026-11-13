@@ -86,7 +86,7 @@ internal fun PaintPalette(
                     .background(Color(argbWithAlpha(colorArgb, 1f))),
             )
         }
-        TextButton(onClick = { haptics.perform(HapticEvent.Tap); onOpenStyle() }) { Text("Colour…") }
+        TextButton(onClick = { haptics.perform(HapticEvent.Tap); onOpenStyle() }) { Text("Colour...") }
         TextButton(onClick = onUndo, enabled = canUndo) { Text("Undo") }
         TextButton(onClick = onRedo, enabled = canRedo) { Text("Redo") }
     }
@@ -113,7 +113,7 @@ internal fun PaintStyleDialog(
                 ColorPicker(colorArgb = colorArgb, onColorChange = onColorChange)
                 Spacer(Modifier.height(14.dp))
                 Text(
-                    "Width — ${"%.0f".format(widthDp)} dp",
+                    "Width - ${"%.0f".format(widthDp)} dp",
                     style = MaterialTheme.typography.labelLarge,
                 )
                 Slider(

@@ -197,12 +197,12 @@ class CgmConsoleTest {
         val v = view(entries = entries)
         assertEquals(
             listOf(
-                "00:00:00.000 GlucoseData · no decode" to CgmReplyTone.DIM,
+                "00:00:00.000 GlucoseData | no decode" to CgmReplyTone.DIM,
                 "00:00:00.000 GlucoseData" to CgmReplyTone.DIM,
                 "realtime 5: 110 mg/dL" to CgmReplyTone.OUT,
                 "00 00" to CgmReplyTone.DIM,
                 "realtime 5 stored" to CgmReplyTone.OUT,
-                "00:00:00.000 adv · no decode" to CgmReplyTone.DIM,
+                "00:00:00.000 adv | no decode" to CgmReplyTone.DIM,
             ),
             run("decode 3", v).lines.map { it.text to it.tone },
         )
@@ -259,10 +259,10 @@ class CgmConsoleTest {
         assertEquals(listOf(15, 20, 18, 15), host.openedChunks.map { it.bytes.size })
         assertEquals(
             listOf(
-                "00:00:00.000 GlucoseData · seq 1 · kind 3" to CgmReplyTone.DIM,
+                "00:00:00.000 GlucoseData | seq 1 | kind 3" to CgmReplyTone.DIM,
                 "DA 38" to CgmReplyTone.OUT,
-                "00:00:00.000 PatchStatus · seq 2 · no tag verifies" to CgmReplyTone.WARN,
-                "00:00:00.000 GlucoseData · partial" to CgmReplyTone.DIM,
+                "00:00:00.000 PatchStatus | seq 2 | no tag verifies" to CgmReplyTone.WARN,
+                "00:00:00.000 GlucoseData | partial" to CgmReplyTone.DIM,
             ),
             lines.map { it.text to it.tone },
         )
@@ -275,7 +275,7 @@ class CgmConsoleTest {
         val chunk = host.openedChunks.single()
         assertEquals(null, chunk.channel)
         assertEquals(listOf(0x3C, 0x93, 0x77, 0xFF), chunk.bytes.map { it.toInt() and 0xFF })
-        assertEquals(listOf("seq 4660 · kind 7", "01 02"), lines.map { it.text })
+        assertEquals(listOf("seq 4660 | kind 7", "01 02"), lines.map { it.text })
     }
 
     @Test

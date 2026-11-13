@@ -59,7 +59,7 @@ internal fun confirmTitle(pending: PendingLog): String = when (pending) {
 /** Pure, so wording is unit-testable without a composition; nowMs is the wall clock at the ask. */
 internal fun confirmFields(pending: PendingLog, nowMs: Long, zone: ZoneId = ZoneId.systemDefault()): List<Pair<String, String>> {
     val slot = Math.floorDiv(nowMs + GRID_MS / 2, GRID_MS) * GRID_MS
-    val time = "${hhmm(nowMs, zone)} · 5-min slot ${hhmm(slot, zone)}"
+    val time = "${hhmm(nowMs, zone)} | 5-min slot ${hhmm(slot, zone)}"
     return when (pending) {
         is PendingLog.Meal -> buildList {
             add("Carbs" to "${fmtNum(pending.grams)} g")

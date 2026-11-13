@@ -55,7 +55,7 @@ fun AboutScreen(info: AboutInfo) {
 
         Section("Build")
         Kv("Package", info.applicationId)
-        Kv("Flavor / type", "${info.flavor} · ${info.buildType}")
+        Kv("Flavor / type", "${info.flavor} | ${info.buildType}")
         Kv("Git", info.gitSha)
 
         Section("Source")

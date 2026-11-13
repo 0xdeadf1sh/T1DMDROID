@@ -175,7 +175,7 @@ internal fun ComponentRows(draft: MealDraft) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                "${c.name} · ${c.grams.toInt()} g",
+                "${c.name} | ${c.grams.toInt()} g",
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -225,11 +225,11 @@ internal fun ComponentRows(draft: MealDraft) {
 @Composable
 internal fun ResolvedCurveSummary(resolved: ResolvedMealCurve) {
     Text(
-        "Total ${"%.0f".format(resolved.totalCarbs)} g carbs · peak ~${resolved.peakMin.toInt()} min",
+        "Total ${"%.0f".format(resolved.totalCarbs)} g carbs | peak ~${resolved.peakMin.toInt()} min",
         style = MaterialTheme.typography.titleMedium,
         modifier = Modifier.padding(top = 4.dp),
     )
-    Text("Combined appearance (Ra) — grams per 5 min", style = MaterialTheme.typography.labelMedium)
+    Text("Combined appearance (Ra) - grams per 5 min", style = MaterialTheme.typography.labelMedium)
     CurvePreview(values = resolved.values)
 }
 
@@ -321,17 +321,17 @@ internal fun RowActions(onEdit: () -> Unit, onDelete: () -> Unit) {
     TextButton(
         onClick = { haptics.perform(HapticEvent.DragStart); onEdit() },
         modifier = Modifier.semantics { contentDescription = "Edit" },
-    ) { Text("✎") }
+    ) { Text("Edit") }
     TextButton(
         onClick = { haptics.perform(HapticEvent.Reject); onDelete() },
         modifier = Modifier.semantics { contentDescription = "Delete" },
-    ) { Text("🗑") }
+    ) { Text("Delete") }
 }
 
 internal fun foodLabel(f: Food): String = if (f.brand.isNullOrBlank()) f.name else "${f.name} (${f.brand})"
 
 internal fun foodFacts(f: Food): String =
-    "${"%.0f".format(f.carbsPer100g)} g/100 g" + (f.giOrNull?.let { " · GI ${it.toInt()}" } ?: " · GI —")
+    "${"%.0f".format(f.carbsPer100g)} g/100 g" + (f.giOrNull?.let { " | GI ${it.toInt()}" } ?: " | GI -")
 
 internal fun Food.toComponentUi(grams: Double): MealComponent = MealComponent(
     foodId = id.takeIf { it != 0L },

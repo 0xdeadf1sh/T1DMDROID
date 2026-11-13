@@ -39,11 +39,11 @@ object StatsPdf {
         val p = PdfPager()
         val s = c.local
 
-        p.title("T1DM — Glucose statistics report")
+        p.title("T1DM - Glucose statistics report")
         val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date())
         p.body(
-            "Window ${c.window.wire}   ·   Target ${c.targetRange.lowMgdl}–${c.targetRange.highMgdl} mg/dL   ·   " +
-                "Units ${unitName(c.unitSpace)}   ·   Generated $stamp",
+            "Window ${c.window.wire}   |   Target ${c.targetRange.lowMgdl}-${c.targetRange.highMgdl} mg/dL   |   " +
+                "Units ${unitName(c.unitSpace)}   |   Generated $stamp",
         )
         p.body("n = ${s.nSamples} readings over ${d(s.spanMs / 86_400_000.0, 1)} days.  Levels below are in mg/dL.")
         p.gap(4f)
@@ -56,7 +56,7 @@ object StatsPdf {
 
         if (s.agp.isNotEmpty()) {
             p.section("Ambulatory glucose profile")
-            p.caption("Median (line) with the 25–75 % and 5–95 % percentile bands across the day.")
+            p.caption("Median (line) with the 25-75 % and 5-95 % percentile bands across the day.")
             p.agpChart(s.agp, c.targetRange)
         }
 
@@ -74,13 +74,13 @@ object StatsPdf {
         p.kv("Day-to-day SD", "${d(s.dtdSd, 0)} mg/dL")
         p.kv("J-index / M-value", "${d(s.jIndex, 1)}  /  ${d(s.mValue, 1)}")
         p.kv("ADRR", d(s.adrr, 1))
-        p.kv("GRADE", "${d(s.grade.grade, 1)}   (hypo ${pct(s.grade.hypo)} · eu ${pct(s.grade.eu)} · hyper ${pct(s.grade.hyper)})")
+        p.kv("GRADE", "${d(s.grade.grade, 1)}   (hypo ${pct(s.grade.hypo)} | eu ${pct(s.grade.eu)} | hyper ${pct(s.grade.hyper)})")
 
         if (s.tod.any { it.n > 0 }) {
             p.section("Time in range by time of day")
             s.tod.forEach { b ->
                 if (b.n > 0) {
-                    p.kv(todLabel(b.startMin), "in ${pct(b.tir)} · below ${pct(b.tbr)} · above ${pct(b.tar)}  (n=${b.n})")
+                    p.kv(todLabel(b.startMin), "in ${pct(b.tir)} | below ${pct(b.tbr)} | above ${pct(b.tar)}  (n=${b.n})")
                 }
             }
         }
@@ -88,7 +88,7 @@ object StatsPdf {
         if (s.heatmap.isNotEmpty() && cuts.isUsable) {
             p.section("Glucose by day and hour")
             p.caption(
-                "Local time. Blue ${d(HEAT_FLOOR_MGDL, 0)} → green ${d(HEAT_MID_MGDL, 0)} → " +
+                "Local time. Blue ${d(HEAT_FLOOR_MGDL, 0)} -> green ${d(HEAT_MID_MGDL, 0)} -> " +
                     "red ${d(HEAT_CEIL_MGDL, 0)} mg/dL, clamped; an outlined cell has no reading.",
             )
             p.heatLegend()
@@ -99,7 +99,7 @@ object StatsPdf {
 
         if (s.histogram.any { it.count > 0 }) {
             p.section("Glucose distribution")
-            p.caption("Share of readings per 20 mg/dL band (40–400).")
+            p.caption("Share of readings per 20 mg/dL band (40-400).")
             p.histogram(s, c.targetRange)
         }
 
@@ -107,7 +107,7 @@ object StatsPdf {
         p.episode("Hypoglycemia (< ${c.targetRange.lowMgdl})", s.hypoEpisodes, isHypo = true)
         p.episode("Hyperglycemia (> ${c.targetRange.highMgdl})", s.hyperEpisodes, isHypo = false)
         if (s.hypoEpisodes.count == 0 && s.hyperEpisodes.count == 0) {
-            p.caption("No sustained excursions (≥2 consecutive readings) outside the target range in this window.")
+            p.caption("No sustained excursions (>=2 consecutive readings) outside the target range in this window.")
         }
 
         val hasTx = s.totalCarbs > 0 || s.totalBolus > 0 || s.totalBasal > 0 || s.meanSteps != null
@@ -282,17 +282,17 @@ object StatsPdf {
         y += 15f
         canvas.drawText(label, M, y, keyP)
         val v = if (e.count == 0) "none" else {
-            "${e.count} · avg ${durMin(e.meanDurationMs)} · ${if (isHypo) "nadir" else "peak"} " +
+            "${e.count} | avg ${durMin(e.meanDurationMs)} | ${if (isHypo) "nadir" else "peak"} " +
                 "${d(e.meanExtreme, 0)} (worst ${d(e.worstExtreme, 0)}) mg/dL"
         }
         canvas.drawText(v, W / 2f - 60f, y, valP)
     }
 
     private fun todLabel(startMin: Int): String = when (startMin) {
-        0 -> "Night 00–06"
-        360 -> "Morning 06–12"
-        720 -> "Afternoon 12–18"
-        else -> "Evening 18–24"
+        0 -> "Night 00-06"
+        360 -> "Morning 06-12"
+        720 -> "Afternoon 12-18"
+        else -> "Evening 18-24"
     }
 
     private fun durMin(ms: Double): String {

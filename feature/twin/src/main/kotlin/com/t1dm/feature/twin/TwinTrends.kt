@@ -58,7 +58,7 @@ private val TRENDS = listOf(
     Trend("AGE", "y", 1) { it[TwinTrait.AGE] },
     Trend("HEIGHT", "cm", 1) { it[TwinTrait.HEIGHT] },
     Trend("WEIGHT", "kg", 1) { it[TwinTrait.WEIGHT] },
-    Trend("BMI", "kg/m²", 1) { s ->
+    Trend("BMI", "kg/m^2", 1) { s ->
         val h = s[TwinTrait.HEIGHT] ?: return@Trend null
         val w = s[TwinTrait.WEIGHT] ?: return@Trend null
         w / ((h / 100) * (h / 100))
@@ -108,7 +108,7 @@ private fun TrendCard(trend: Trend, scans: List<TwinScan>) {
         if (points.size >= 2) {
             val delta = points.last().second - points.first().second
             Text(
-                (if (delta >= 0) "+" else "−") + fmt(abs(delta), trend) + " since first",
+                (if (delta >= 0) "+" else "-") + fmt(abs(delta), trend) + " since first",
                 style = MaterialTheme.typography.labelSmall,
                 color = cs.onSurfaceVariant,
             )
@@ -188,7 +188,7 @@ private fun TrendChart(points: List<Pair<Long, Double>>, trend: Trend, modifier:
             drawLine(cs.onSurfaceVariant.copy(alpha = 0.5f), Offset(px, top), Offset(px, bottom), 1.dp.toPx())
             drawCircle(cs.surface, 6.dp.toPx(), Offset(px, py))
             drawCircle(cs.secondary, 4.dp.toPx(), Offset(px, py))
-            val label = measurer.measure("${fmt(near.second, trend)} · ${stamp.format(Date(near.first))}", tip)
+            val label = measurer.measure("${fmt(near.second, trend)} | ${stamp.format(Date(near.first))}", tip)
             val lx = (px - label.size.width / 2f).coerceIn(0f, size.width - label.size.width)
             val box = 4.dp.toPx()
             drawRoundRect(

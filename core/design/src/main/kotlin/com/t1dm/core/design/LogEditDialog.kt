@@ -174,7 +174,7 @@ fun DeleteLogDialog(entry: LoggedEntry, onConfirm: () -> Unit, onDismiss: () -> 
         onDismissRequest = { haptics.perform(HapticEvent.Reject); onDismiss() },
         title = { Text("Delete this entry?") },
         text = {
-            Text("${logAmountLabel(entry)} · ${logTimeLabel(entry.tsMs, entry.tzOffsetMin)}")
+            Text("${logAmountLabel(entry)} | ${logTimeLabel(entry.tsMs, entry.tzOffsetMin)}")
         },
         confirmButton = {
             TextButton(onClick = { haptics.perform(HapticEvent.Commit); onConfirm() }) { Text("Delete") }

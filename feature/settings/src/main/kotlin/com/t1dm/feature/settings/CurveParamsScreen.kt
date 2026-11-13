@@ -63,31 +63,31 @@ fun CurveParamsScreen(
         }
 
         SettingsSectionHeader("Custom insulin-action curve (Bézier)")
-        SettingsNote("PK action shape (not delivery) — units-per-5-min, area = the dose.")
+        SettingsNote("PK action shape (not delivery) - units-per-5-min, area = the dose.")
         SettingsAnchor(curveInsulinBezier) {
             BezierDesigner(insulinCurve, defaultDurationMin = 300.0, onSave = onSaveInsulinCurve)
         }
 
         SettingsSectionHeader("Rapid insulin (gamma, at 5 U)")
         params.insulinPresets.filter { it.family == InsulinFamily.RapidGamma }.forEach {
-            Kv(it.label, "k %.2f · θ %.0f min · %.1f h".format(it.gammaK, it.gammaTheta, it.diaBaseHours))
+            Kv(it.label, "k %.2f | theta %.0f min | %.1f h".format(it.gammaK, it.gammaTheta, it.diaBaseHours))
         }
 
         SettingsSectionHeader("Basal insulin (Bateman)")
         params.insulinPresets.filter { it.family == InsulinFamily.BasalBateman }.forEach {
-            Kv(it.label, "kₐ %.3f · kₑ %.4f /h · %.0f h".format(it.kaPerHour, it.kePerHour, it.actionMin / 60.0))
+            Kv(it.label, "k_a %.3f | k_e %.4f /h | %.0f h".format(it.kaPerHour, it.kePerHour, it.actionMin / 60.0))
         }
 
-        SettingsSectionHeader("Carb appearance preset (GI → gamma)")
+        SettingsSectionHeader("Carb appearance preset (GI -> gamma)")
         SettingsNote("High-GI carbs peak early and sharp; low-GI spread out.")
-        Kv("High GI k / θ", "%.1f / %.0f".format(params.carbHighGiK, params.carbHighGiTheta))
-        Kv("Low GI k / θ", "%.1f / %.0f".format(params.carbLowGiK, params.carbLowGiTheta))
+        Kv("High GI k / theta", "%.1f / %.0f".format(params.carbHighGiK, params.carbHighGiTheta))
+        Kv("Low GI k / theta", "%.1f / %.0f".format(params.carbLowGiK, params.carbLowGiTheta))
 
         SettingsSectionHeader("Exercise disposal (gamma)")
         SettingsAnchor(curveExerciseCarbEquiv) {
             CarbEquivSlider(exerciseCarbEquivPerMin, exerciseCarbEquivRange, onSetExerciseCarbEquivPerMin)
         }
-        Kv("Shape k / θ", "%.1f / %.0f".format(params.exerciseK, params.exerciseTheta))
+        Kv("Shape k / theta", "%.1f / %.0f".format(params.exerciseK, params.exerciseTheta))
     }
 }
 
@@ -141,7 +141,7 @@ private fun BezierDesigner(initial: BezierCurve, defaultDurationMin: Double, onS
     CurvePreview(values = sampled, height = 100.dp, modifier = Modifier.padding(top = 4.dp))
     val peak = sampled.indices.maxByOrNull { sampled[it] } ?: 0
     Text(
-        "Peak ≈ ${(peak + 1) * 5} min · duration ${"%.0f".format(draft.durationMin)} min",
+        "Peak ~ ${(peak + 1) * 5} min | duration ${"%.0f".format(draft.durationMin)} min",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         fontFamily = LocalT1dmFonts.current.mono,
@@ -151,7 +151,7 @@ private fun BezierDesigner(initial: BezierCurve, defaultDurationMin: Double, onS
     }
     if (degenerate) {
         Text(
-            "No positive area — raise a point above baseline",
+            "No positive area - raise a point above baseline",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.error,
         )

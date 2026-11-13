@@ -30,8 +30,8 @@ fun CgmSettingsScreen(
         Text("Active source", style = MaterialTheme.typography.labelMedium)
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(
-                text = activeSourceName?.let { "$it${activeStatus?.let { s -> " • $s" } ?: ""}" }
-                    ?: "none yet — scanning",
+                text = activeSourceName?.let { "$it${activeStatus?.let { s -> " | $s" } ?: ""}" }
+                    ?: "none yet - scanning",
                 style = MaterialTheme.typography.bodyLarge,
             )
             activeRssi?.let { SignalBars(it) }

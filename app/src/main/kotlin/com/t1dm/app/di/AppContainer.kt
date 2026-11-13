@@ -941,7 +941,7 @@ class AppContainer(context: Context) {
             modelArchVersion = meta?.archVersion,
             modelParamCount = meta?.paramCount,
             executorchVersion = meta?.executorchVersion ?: BuildConfig.EXECUTORCH_VERSION,
-            nativeCoreStatus = if (nativeOk) "t1dm-core (uniffi) — alive" else "t1dm-core — stub / unavailable",
+            nativeCoreStatus = if (nativeOk) "t1dm-core (uniffi) - alive" else "t1dm-core - stub / unavailable",
         )
     }
 
@@ -1704,7 +1704,7 @@ class AppContainer(context: Context) {
             return
         }
         appScope.launch {
-            _panelMaskNote.value = "Reconstructing…"
+            _panelMaskNote.value = "Reconstructing..."
             val note = runCatching {
                 labController.runSpan(modelId, selection.startMs, selection.endMs, geometry)
             }.getOrElse { it.message ?: "Reconstruction failed" }
@@ -1773,7 +1773,7 @@ class AppContainer(context: Context) {
                         repository.discardInfillSpan(edit.spanStartMs) -> "Fill removed"
                         // A promoted span reverses by demoting; one a later cut dropped is gone.
                         repository.infillSpan(edit.spanStartMs).isEmpty() -> "That fill is already gone"
-                        else -> "Fill was promoted — demote it first"
+                        else -> "Fill was promoted - demote it first"
                     }
                 }.getOrElse { it.message ?: "Undo failed" }
             }
@@ -1836,7 +1836,7 @@ class AppContainer(context: Context) {
         val desc = inferenceController.descriptorOf(modelId)
         val unavailable = when {
             desc == null -> "Model not loaded"
-            desc.head == null -> "This model ships no head file — nothing to adapt"
+            desc.head == null -> "This model ships no head file - nothing to adapt"
             else -> (inferenceController.headState(modelId) as? HeadCache.State.Unusable)?.why
         }
         val adapters = runCatching { labController.adaptersOf(modelId) }.getOrElse { emptyList() }
@@ -2300,7 +2300,7 @@ class AppContainer(context: Context) {
         } else emptyList()
         // DEATH also lifts the §3.6-B degeneracy refusal, so the advisor emits rather than refuses.
         val result = runCatching { doseAdvisor.recommendBolus(now, announced, cfg, bypassDegeneracyGate = deathModeSnapshot) }
-            .getOrElse { AdviceResult.Refused(listOf("Calculator error — ${it.message ?: it::class.simpleName}")) }
+            .getOrElse { AdviceResult.Refused(listOf("Calculator error - ${it.message ?: it::class.simpleName}")) }
         bolusAdvice.value = BolusAdviceUi.Ready(result, now, manualTargetMgdl)
     }
 
@@ -2323,7 +2323,7 @@ class AppContainer(context: Context) {
                 val rf = runCatching {
                     rollingForecaster.rollForDisplay(System.currentTimeMillis(), requestedHours)
                 }.getOrElse {
-                    RolledForecast.missing(requestedHours, 0, "Roll failed — ${it.message ?: it::class.simpleName}")
+                    RolledForecast.missing(requestedHours, 0, "Roll failed - ${it.message ?: it::class.simpleName}")
                 }
                 rolledForecast.value = rf
             } finally {
@@ -2504,7 +2504,7 @@ class AppContainer(context: Context) {
         rememberLoggedPreset(rapid, presetLabel)
         mirrorToNightscout { nightscoutEnqueuer.enqueueDose(dose, now, holdMs = pushHoldMs()) }
         reforecastAfterCurveWrite()
-        return dose.handle("${fmtAmount(units)} U bolus · ${rapid.label}")
+        return dose.handle("${fmtAmount(units)} U bolus | ${rapid.label}")
     }
 
     /** Long-acting twin of [logBolus]: row carries the action window + ka/ke, Bateman reconstructs it. */
@@ -2523,7 +2523,7 @@ class AppContainer(context: Context) {
         rememberLoggedPreset(basal, presetLabel)
         mirrorToNightscout { nightscoutEnqueuer.enqueueDose(dose, now, holdMs = pushHoldMs()) }
         reforecastAfterCurveWrite()
-        return dose.handle("${fmtAmount(units)} U basal · ${basal.label}")
+        return dose.handle("${fmtAmount(units)} U basal | ${basal.label}")
     }
 
     /** Stickiness, not a setting. Called after persisting, only when caller named a preset. */
@@ -2544,7 +2544,7 @@ class AppContainer(context: Context) {
         // Owed to the row, not the mirror: forecast reads `logged_dose`, never the queue.
         reforecastAfterCurveWrite()
         val kind = if (type.kind == InsulinKind.BOLUS) "bolus" else "basal"
-        return dose.handle("${fmtAmount(units)} U $kind · ${type.name}")
+        return dose.handle("${fmtAmount(units)} U $kind | ${type.name}")
     }
 
     /** One transaction writes the tombstone and recalls a mirror still queued. */
@@ -3051,18 +3051,18 @@ class AppContainer(context: Context) {
         val ageMin = (nowMs - latest.tsMs) / 60_000L
         val measured = latest.provenance == ReadingProvenance.MEASURED && latest.flag != ReadingFlag.WARMUP
         return when {
-            ageMin <= 7 && measured -> ReachLight(LinkHealth.OK, "receiving — ${ageMin}m since last reading")
-            ageMin <= alarmConfig.lossMin -> ReachLight(LinkHealth.DEGRADED, "aging/interpolated — ${ageMin}m old")
-            else -> ReachLight(LinkHealth.DOWN, "signal lost — ${ageMin}m since last MEASURED")
+            ageMin <= 7 && measured -> ReachLight(LinkHealth.OK, "receiving - ${ageMin}m since last reading")
+            ageMin <= alarmConfig.lossMin -> ReachLight(LinkHealth.DEGRADED, "aging/interpolated - ${ageMin}m old")
+            else -> ReachLight(LinkHealth.DOWN, "signal lost - ${ageMin}m since last MEASURED")
         }
     }
 
     private fun watchLight(phase: WatchLinkPhase): ReachLight = when (phase) {
         WatchLinkPhase.UNPAIRED -> ReachLight(LinkHealth.OFF, "nothing paired")
-        WatchLinkPhase.LIVE -> ReachLight(LinkHealth.OK, "paired — pushing every 5 min")
-        WatchLinkPhase.SUSPENDED_LOW_POWER -> ReachLight(LinkHealth.DEGRADED, "low-power — push suspended")
-        WatchLinkPhase.ERROR -> ReachLight(LinkHealth.DOWN, "link error — re-pair needed")
-        else -> ReachLight(LinkHealth.DEGRADED, "connecting — ${phase.name.lowercase().replace('_', ' ')}")
+        WatchLinkPhase.LIVE -> ReachLight(LinkHealth.OK, "paired - pushing every 5 min")
+        WatchLinkPhase.SUSPENDED_LOW_POWER -> ReachLight(LinkHealth.DEGRADED, "low-power - push suspended")
+        WatchLinkPhase.ERROR -> ReachLight(LinkHealth.DOWN, "link error - re-pair needed")
+        else -> ReachLight(LinkHealth.DEGRADED, "connecting - ${phase.name.lowercase().replace('_', ' ')}")
     }
 
     val statsRepository: StatsRepository by lazy { StatsRepository(repository, nativeCore, dispatchers) }

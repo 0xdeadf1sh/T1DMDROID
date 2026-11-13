@@ -75,8 +75,8 @@ fun InsulinTypeBuilderScreen(
 
         selected?.let { type ->
             Text(
-                "${kindLabel(type.kind)} · DIA ${(type.durationMin / 60).toInt()} h" +
-                    (type.customCurve?.let { " · custom curve" } ?: ""),
+                "${kindLabel(type.kind)} | DIA ${(type.durationMin / 60).toInt()} h" +
+                    (type.customCurve?.let { " | custom curve" } ?: ""),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
             )
@@ -89,7 +89,7 @@ fun InsulinTypeBuilderScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
             if (units != null && units > 0.0) {
-                Text("PK action — units per 5 min", style = MaterialTheme.typography.labelMedium)
+                Text("PK action - units per 5 min", style = MaterialTheme.typography.labelMedium)
                 val resolved by produceState<Pair<Pair<InsulinType, Double>, List<Double>>?>(null, type, units) {
                     value = (type to units) to runCatching { onResolve(type, units) }.getOrDefault(emptyList())
                 }
@@ -178,7 +178,7 @@ private fun CustomTypeBuilder(
         CurveEditor(curve = curve, onChange = { curve = it }, resetKey = durText)
         if (curveDegenerate) {
             Text(
-                "Flat curve encodes no insulin — draw a hump or turn it off",
+                "Flat curve encodes no insulin - draw a hump or turn it off",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
             )
@@ -195,7 +195,7 @@ private fun CustomTypeBuilder(
             OutlinedTextField(
                 value = p2Text,
                 onValueChange = { p2Text = decimalFieldText(it) },
-                label = { Text(if (kind == InsulinKind.BOLUS) "scale θ" else "ke /h") },
+                label = { Text(if (kind == InsulinKind.BOLUS) "scale theta" else "ke /h") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 singleLine = true, modifier = Modifier.weight(1f),
             )
@@ -232,7 +232,7 @@ private fun CustomTypeBuilder(
         )
     } else if (!drawCurve && encodes == false) {
         Text(
-            "Encodes no insulin — check duration and shape",
+            "Encodes no insulin - check duration and shape",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.error,
         )

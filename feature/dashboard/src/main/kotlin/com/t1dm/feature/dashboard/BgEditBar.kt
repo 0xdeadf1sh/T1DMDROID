@@ -112,7 +112,7 @@ internal fun BgEditBar(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    "τ ${"%.2f".format(knob)}",
+                    "tau ${"%.2f".format(knob)}",
                     style = MaterialTheme.typography.labelSmall,
                     modifier = Modifier.width(52.dp),
                 )

@@ -75,7 +75,7 @@ class ExerciseLabelsTest {
         val bare = ActiveExercise(bout, 1_084_000L, 0.0, null, null, null, null)
         assertEquals("18:04", liveLine(bare))
         val full = bare.copy(distanceM = 2_140.0, paceSecPerKm = 331.0, kcal = 212)
-        assertEquals("18:04 · 2.14 km · 5:31 /km · 212 kcal", liveLine(full))
+        assertEquals("18:04 | 2.14 km | 5:31 /km | 212 kcal", liveLine(full))
     }
 
     @Test
@@ -86,7 +86,7 @@ class ExerciseLabelsTest {
             interrupted = false,
         )
         assertNull(interruptedNote(bout))
-        assertEquals("Ended early — app stopped", interruptedNote(bout.copy(interrupted = true)))
+        assertEquals("Ended early - app stopped", interruptedNote(bout.copy(interrupted = true)))
         val capped = bout.copy(endMs = bout.startMs + EXERCISE_MAX_BOUT_MS, interrupted = true)
         assertEquals("Ended at the 12 h limit", interruptedNote(capped))
     }
@@ -114,7 +114,7 @@ class ExerciseLabelsTest {
             kind = ExerciseKind.RUN, activeSec = 1_084, distanceM = 2_140.0, kcal = 212,
             interrupted = false,
         )
-        assertEquals("18:04 · 2.14 km · 212 kcal", summaryLine(bout))
+        assertEquals("18:04 | 2.14 km | 212 kcal", summaryLine(bout))
         assertEquals("18:04", summaryLine(bout.copy(distanceM = null, kcal = null)))
     }
 }

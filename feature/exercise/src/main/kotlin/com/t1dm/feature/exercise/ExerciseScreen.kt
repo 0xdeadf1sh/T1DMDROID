@@ -227,7 +227,7 @@ private fun ReplayDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "${kindLabel(session.kind)} · ${durationLabel(session.activeSec)}",
+                    "${kindLabel(session.kind)} | ${durationLabel(session.activeSec)}",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 OutlinedTextField(
@@ -241,7 +241,7 @@ private fun ReplayDialog(
                     val curve by produceState(DoubleArray(0), previewExerciseCurve, minutes) {
                         value = runCatching { previewExerciseCurve(minutes) }.getOrDefault(DoubleArray(0))
                     }
-                    Text("Disposal — g per 5 min", style = MaterialTheme.typography.labelMedium)
+                    Text("Disposal - g per 5 min", style = MaterialTheme.typography.labelMedium)
                     CurveSparkline(curve, MaterialTheme.colorScheme.primary)
                 }
             }
@@ -336,7 +336,7 @@ internal fun liveLine(active: ActiveExercise): String = buildList {
     distanceLabel(active.distanceM)?.let { add(it) }
     paceLabel(active.paceSecPerKm)?.let { add(it) }
     active.kcal?.let { add("$it kcal") }
-}.joinToString(" · ")
+}.joinToString(" | ")
 
 /** The ACSM walk/run equations in `:sensors` do not describe an [ExerciseKind.OTHER] bout. */
 internal fun kcalNote(active: ActiveExercise, bodyMassKg: Double?): String? = when {
@@ -350,7 +350,7 @@ internal fun summaryLine(session: ExerciseSession): String = buildList {
     add(durationLabel(session.activeSec))
     distanceLabel(session.distanceM)?.let { add(it) }
     session.kcal?.let { add("$it kcal") }
-}.joinToString(" · ")
+}.joinToString(" | ")
 
 // Slider travel, not a clinical bound; the store enforces the only floor that binds.
 private const val MASS_MIN_KG = 30f

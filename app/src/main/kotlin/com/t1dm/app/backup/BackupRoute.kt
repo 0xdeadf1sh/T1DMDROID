@@ -75,7 +75,7 @@ fun BackupRoute(container: AppContainer, onNotice: (String) -> Unit) {
                     val label = SafFolderDestination.displayName(ctx, uri) ?: "the chosen folder"
                     settings.setBackupFolder(uri.toString(), label)
                     "Folder set to $label"
-                }.getOrElse { "Could not use that folder — ${it.message ?: it::class.simpleName}" }
+                }.getOrElse { "Could not use that folder - ${it.message ?: it::class.simpleName}" }
             }
             refresh++
         }
@@ -85,14 +85,14 @@ fun BackupRoute(container: AppContainer, onNotice: (String) -> Unit) {
         ActivityResultContracts.CreateDocument(SafFolderDestination.MIME),
     ) { uri ->
         if (uri == null) { status = "Export cancelled"; return@rememberLauncherForActivityResult }
-        busy = "Writing backup…"
+        busy = "Writing backup..."
         container.appScope.launch {
             val line = runCatching {
                 var counts = ArchiveCounts()
                 ctx.contentResolver.openOutputStream(uri)?.use { counts = container.backupManager.exportTo(it) }
                     ?: error("could not open the file")
                 "Exported ${counts.total} rows"
-            }.getOrElse { "Export failed — ${it.message ?: it::class.simpleName}" }
+            }.getOrElse { "Export failed - ${it.message ?: it::class.simpleName}" }
             status = line
             busy = null
         }
@@ -102,7 +102,7 @@ fun BackupRoute(container: AppContainer, onNotice: (String) -> Unit) {
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri == null) { status = "Import cancelled"; return@rememberLauncherForActivityResult }
-        busy = "Restoring…"
+        busy = "Restoring..."
         container.appScope.launch {
             status = restore(container) { ctx.contentResolver.openInputStream(uri) ?: error("could not open the file") }
             busy = null
@@ -136,15 +136,15 @@ fun BackupRoute(container: AppContainer, onNotice: (String) -> Unit) {
         },
         onSetKeep = { n -> ui.launch { settings.setBackupKeep(n) } },
         onBackupNow = {
-            busy = "Backing up…"
+            busy = "Backing up..."
             container.appScope.launch {
                 status = runCatching {
                     val run = container.backupManager.runBackup()
                     buildString {
                         append("Backed up ${run.counts.total} rows")
-                        if (run.pruned > 0) append(" · ${run.pruned} older removed")
+                        if (run.pruned > 0) append(" | ${run.pruned} older removed")
                     }
-                }.getOrElse { "Backup failed — ${it.message ?: it::class.simpleName}" }
+                }.getOrElse { "Backup failed - ${it.message ?: it::class.simpleName}" }
                 busy = null
                 refresh++
             }
@@ -155,7 +155,7 @@ fun BackupRoute(container: AppContainer, onNotice: (String) -> Unit) {
         },
         onImport = { status = null; importPicker.launch(arrayOf("*/*")) },
         onRestore = { entry ->
-            busy = "Restoring ${entry.name}…"
+            busy = "Restoring ${entry.name}..."
             container.appScope.launch {
                 status = restore(container) { container.backupManager.open(entry.id) }
                 busy = null
@@ -166,7 +166,7 @@ fun BackupRoute(container: AppContainer, onNotice: (String) -> Unit) {
                 status = runCatching {
                     container.backupManager.delete(entry.id)
                     "Deleted ${entry.name}"
-                }.getOrElse { "Could not delete — ${it.message ?: it::class.simpleName}" }
+                }.getOrElse { "Could not delete - ${it.message ?: it::class.simpleName}" }
                 refresh++
             }
         },
@@ -184,10 +184,10 @@ private suspend fun restore(container: AppContainer, open: suspend () -> java.io
         val r = container.restoreArchive(open)
         buildString {
             append("Restored ${r.archive.applied.total} rows")
-            if (r.archive.duplicates > 0) append(" · ${r.archive.duplicates} already held")
-            if (r.archive.skipped > 0) append(" · ${r.archive.skipped} unreadable")
-            if (r.settingsKeys > 0) append(" · ${r.settingsKeys} settings")
-            if (r.settingsError != null) append(" · settings not restored")
-            if (r.archive.truncated) append(" — file was incomplete")
+            if (r.archive.duplicates > 0) append(" | ${r.archive.duplicates} already held")
+            if (r.archive.skipped > 0) append(" | ${r.archive.skipped} unreadable")
+            if (r.settingsKeys > 0) append(" | ${r.settingsKeys} settings")
+            if (r.settingsError != null) append(" | settings not restored")
+            if (r.archive.truncated) append(" - file was incomplete")
         }
-    }.getOrElse { "Restore failed — ${it.message ?: it::class.simpleName}" }
+    }.getOrElse { "Restore failed - ${it.message ?: it::class.simpleName}" }

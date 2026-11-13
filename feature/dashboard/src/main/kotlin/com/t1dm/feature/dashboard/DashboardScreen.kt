@@ -753,7 +753,7 @@ fun DashboardScreen(
             },
             title = {
                 Text(
-                    "Cut $cutCount from " + cutClock(readings, range.startMs) + "–" +
+                    "Cut $cutCount from " + cutClock(readings, range.startMs) + "-" +
                         cutClock(readings, range.endMs - STEP_MS),
                 )
             },
@@ -837,7 +837,7 @@ private fun RollConfirmDialog(onDismiss: () -> Unit, onConfirm: (Double) -> Unit
                     steps = 22, // 24 discrete stops (endpoints + 22 interior)
                 )
                 Text(
-                    "30 min–12 h · $rolls forward${if (rolls == 1) "" else "s"}",
+                    "30 min-12 h | $rolls forward${if (rolls == 1) "" else "s"}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                 )
@@ -897,7 +897,7 @@ private const val MIN_CLOCK_R: Double = 0.05
 private fun WarmupBanner(warmup: WarmupProgress) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
         Text(
-            "Collecting context — %.1f / %.0f h BG".format(warmup.measuredHours, warmup.requiredHours),
+            "Collecting context - %.1f / %.0f h BG".format(warmup.measuredHours, warmup.requiredHours),
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.primary,
         )
@@ -965,7 +965,7 @@ private fun OverlayControls(
                 AssistChip(
                     onClick = { if (!rollComputing) { haptics.perform(HapticEvent.Tap); onRollClick() } },
                     enabled = !rollComputing,
-                    label = { Text(if (rollComputing) "Rolling…" else "Roll") },
+                    label = { Text(if (rollComputing) "Rolling..." else "Roll") },
                     leadingIcon = if (rollComputing) {
                         { CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp) }
                     } else null,
@@ -1097,7 +1097,7 @@ private fun OverlayControls(
                 if (showNextForecast) {
                     if (readout.isNotEmpty()) {
                         Text(
-                            " · ",
+                            " | ",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                         )

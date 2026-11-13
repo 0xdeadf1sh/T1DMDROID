@@ -49,29 +49,29 @@ object BacktestPdf {
         bad: List<Panel>,
     ) {
         val p = PdfPager()
-        p.title("T1DM — Backtest report")
+        p.title("T1DM - Backtest report")
         p.body("Model $modelId")
         p.body(
-            "${backtestSpan(run.days)} · %,d / %,d forecasts · ".format(Locale.US, run.nForecasts, run.nOrigins) +
-                "${fmtDuration(run.elapsedMs.toDouble())} · finished ${stamp(run.finishedAtMs)}",
+            "${backtestSpan(run.days)} | %,d / %,d forecasts | ".format(Locale.US, run.nForecasts, run.nOrigins) +
+                "${fmtDuration(run.elapsedMs.toDouble())} | finished ${stamp(run.finishedAtMs)}",
         )
         // Never the raw id: it can carry the serial the name-privacy setting hides.
         p.body(
-            run.forecastsBySource.entries.joinToString(" · ") { (id, n) ->
+            run.forecastsBySource.entries.joinToString(" | ") { (id, n) ->
                 "${sensorLabels[id] ?: "CGM"} %,d".format(Locale.US, n)
             },
         )
-        if (run.adapterAttached) p.body("Adapter attached — may be in-sample")
+        if (run.adapterAttached) p.body("Adapter attached - may be in-sample")
         when (run.stopped) {
-            BacktestStop.TOO_HOT -> p.body("Stopped — too hot")
-            BacktestStop.MODEL_CHANGED -> p.body("Stopped — model reloaded")
+            BacktestStop.TOO_HOT -> p.body("Stopped - too hot")
+            BacktestStop.MODEL_CHANGED -> p.body("Stopped - model reloaded")
             null -> Unit
         }
         p.caption("BG in mg/dL. Raw fans: no band recalibration.")
 
         val suite = run.metrics.suite
         val scored = suite.horizons.filter { it.sufficient }
-        p.section("Realized accuracy — band τ.25–.75")
+        p.section("Realized accuracy - band tau .25-.75")
         if (scored.isEmpty()) p.caption(emptyWhy(run.metrics)) else p.table(bandTable(scored))
         suite.horizons.filterNot { it.sufficient }.forEach {
             p.caption("${it.horizonMin} min: n=${it.n}, need ${run.metrics.minSamples}")
@@ -79,15 +79,15 @@ object BacktestPdf {
         if (scored.isNotEmpty()) {
             p.section("Median line")
             p.table(medianTable(scored))
-            p.section("Outer band τ.05–.95 · persistence")
+            p.section("Outer band tau .05-.95 | persistence")
             p.table(outerTable(scored))
             p.section("Excursions vs alarm bands")
-            p.caption("Hypo off the τ.25 edge, hyper off τ.75")
+            p.caption("Hypo off the tau .25 edge, hyper off tau .75")
             p.table(excursionTable(scored))
-            p.section("DTS zones — band τ.25–.75")
+            p.section("DTS zones - band tau .25-.75")
             p.table(dtsTable(scored))
-            p.section("Trend risk categories — median line")
-            p.caption("1 no risk · 2 under · 3 over · 4/5 extreme")
+            p.section("Trend risk categories - median line")
+            p.caption("1 no risk | 2 under | 3 over | 4/5 extreme")
             p.table(trendTable(scored))
         }
         suite.cgega?.let {
@@ -95,8 +95,8 @@ object BacktestPdf {
             p.table(cgEgaTable(it))
         }
         if (scored.isNotEmpty()) {
-            p.section("Error grids — median line", keepWith = CAPTION_H + GRID_PAIR_H)
-            p.caption("x truth · y pred · mg/dL")
+            p.section("Error grids - median line", keepWith = CAPTION_H + GRID_PAIR_H)
+            p.caption("x truth | y pred | mg/dL")
             scored.forEach { p.gridPair(it, lattices) }
         }
 
@@ -117,8 +117,8 @@ object BacktestPdf {
         val spanMs = first.example.window.realizedBg.size * first.example.stepMs
         val apartH = (BACKTEST_EXAMPLE_CONTEXT_MS + spanMs) / 3_600_000.0
         caption(
-            "$rank, median line, 0–${spanMs / 60_000} min, ≥${d(apartH, 0)} h apart. " +
-                "Fan τ.05–.95 · .10–.90 · .25–.75.",
+            "$rank, median line, 0-${spanMs / 60_000} min, >=${d(apartH, 0)} h apart. " +
+                "Fan tau .05-.95 | .10-.90 | .25-.75.",
         )
         panels.forEach { panel(it, target) }
     }
@@ -133,8 +133,8 @@ object BacktestPdf {
         need(GRID_PAIR_H)
         y += 4f
         val n = h.medianLine.points.size
-        canvas.drawText("Clarke · ${h.horizonMin} min · n=$n", M + GRID_GUTTER, y + 10f, capP)
-        canvas.drawText("DTS · ${h.horizonMin} min · n=$n", M + GRID_COL_W + GRID_GUTTER, y + 10f, capP)
+        canvas.drawText("Clarke | ${h.horizonMin} min | n=$n", M + GRID_GUTTER, y + 10f, capP)
+        canvas.drawText("DTS | ${h.horizonMin} min | n=$n", M + GRID_COL_W + GRID_GUTTER, y + 10f, capP)
         y += 18f
         val top = y
         errorGrid(M + GRID_GUTTER, top, GRID_SIDE, h.medianLine.points, { it.clarke.ordinal }, lattices.clarke)
@@ -211,10 +211,10 @@ object BacktestPdf {
         val shares = zoneShares(points, zoneOf)
         val legend = buildString {
             if (shares.isNotEmpty()) {
-                append(ZONE_LETTERS.indices.joinToString(" · ") { "${ZONE_LETTERS[it]} ${d(shares[it].toDouble(), 1)}" })
+                append(ZONE_LETTERS.indices.joinToString(" | ") { "${ZONE_LETTERS[it]} ${d(shares[it].toDouble(), 1)}" })
                 append(" %")
             }
-            if (offScale > 0) append(" · $offScale off-scale")
+            if (offScale > 0) append(" | $offScale off-scale")
         }
         canvas.drawText(legend, left, bottom + 20f, axisP)
     }
@@ -237,10 +237,10 @@ object BacktestPdf {
 
         need(PANEL_BLOCK_H)
         y += 6f
-        canvas.drawText("${local(origin, tzMin)} · ${pn.label}", M, y + 11f, valP)
+        canvas.drawText("${local(origin, tzMin)} | ${pn.label}", M, y + 11f, valP)
         y += 14f
         canvas.drawText(
-            "MAE ${d(e.maeMgdl, 1)} · persistence ${d(e.persistMaeMgdl, 1)} mg/dL",
+            "MAE ${d(e.maeMgdl, 1)} | persistence ${d(e.persistMaeMgdl, 1)} mg/dL",
             M, y + 10f, capP,
         )
         y += 14f
@@ -378,7 +378,7 @@ object BacktestPdf {
     /** In the reading's own zone (`SPEC/invariants.md` §2), not the phone's current one. */
     private fun local(ms: Long, tzMin: Int): String {
         val f = SimpleDateFormat("yyyy-MM-dd EEE HH:mm", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
-        val sign = if (tzMin < 0) "−" else "+"
+        val sign = if (tzMin < 0) "-" else "+"
         val off = abs(tzMin)
         return "${f.format(Date(ms + tzMin * 60_000L))} UTC$sign%02d:%02d".format(Locale.US, off / 60, off % 60)
     }

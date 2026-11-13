@@ -151,7 +151,7 @@ private fun SmoothingSection(
         }
         SmoothingPreview(previewMgdl, smoothed)
         Text(
-            "Last few hours — raw faint, filtered over it",
+            "Last few hours - raw faint, filtered over it",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
         )
@@ -195,7 +195,7 @@ private fun Stepper(label: String, value: Int, onDown: () -> Unit, onUp: () -> U
     ) {
         Text(label, style = MaterialTheme.typography.bodyLarge)
         // I13 — the value flexes, not the ± buttons.
-        OutlinedButton(onClick = { haptics.perform(HapticEvent.SegmentTick); onDown() }) { Text("−5") }
+        OutlinedButton(onClick = { haptics.perform(HapticEvent.SegmentTick); onDown() }) { Text("-5") }
         Text(
             text = "$value mg/dL",
             style = MaterialTheme.typography.headlineSmall,

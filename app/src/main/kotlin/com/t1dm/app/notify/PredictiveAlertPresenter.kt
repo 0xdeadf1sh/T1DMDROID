@@ -42,7 +42,7 @@ class PredictiveAlertPresenter(
             "Predicted urgent high"
         }
         val eta = if (urgent.etaMin <= 5) "~5 min" else "~${urgent.etaMin} min"
-        val body = "${urgent.projectedMgdl} mg/dL in $eta (crosses ${urgent.thresholdMgdl}). Predicted — verify."
+        val body = "${urgent.projectedMgdl} mg/dL in $eta (crosses ${urgent.thresholdMgdl}). Predicted - verify."
         val builder = Notification.Builder(app, channels.critical)
             .setSmallIcon(NotificationIcons.res())
             .setColor(accentArgb)

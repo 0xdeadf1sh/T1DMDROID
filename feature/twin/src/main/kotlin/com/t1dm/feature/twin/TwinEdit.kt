@@ -56,7 +56,7 @@ internal fun TwinEditBar(
                     FilterChip(
                         selected = t == selected,
                         onClick = { onSelect(t) },
-                        label = { Text(t.label + if (t.key in edited) " ·" else "") },
+                        label = { Text(t.label + if (t.key in edited) " *" else "") },
                     )
                 }
             }

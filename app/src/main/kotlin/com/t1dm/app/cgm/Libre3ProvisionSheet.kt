@@ -96,7 +96,7 @@ fun Libre3ProvisionSheet(
                     listening = false
                 }
                 is Libre3NfcProvision.Outcome.Failed ->
-                    status = "${outcome.reason} — hold the phone to the sensor again"
+                    status = "${outcome.reason} - hold the phone to the sensor again"
             }
             if (!done && listening) delay(4_000L)
         }
@@ -138,7 +138,7 @@ fun Libre3ProvisionSheet(
                     onClick = { listening = true },
                     enabled = idValid && !listening && !done && activity != null,
                 ) {
-                    Text(if (listening) "Listening — hold the phone to the sensor" else "Start listening")
+                    Text(if (listening) "Listening - hold the phone to the sensor" else "Start listening")
                 }
                 status?.let {
                     Text(it, style = MaterialTheme.typography.bodySmall)
