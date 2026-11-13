@@ -1,6 +1,7 @@
 package com.t1dm.feature.twin
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -8,10 +9,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -21,8 +20,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.TwinAction
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.TwinScan
 import com.t1dm.core.model.TwinSource
@@ -57,6 +58,7 @@ fun TwinScreen(
     val effective = effectiveScan(latest, overrides, draft)
     var trait by remember { mutableStateOf(TwinTrait.HEIGHT) }
     val edited = overrides.keys + draft.keys
+    val panelAlpha by animateFloatAsState(if (editing) 0f else 1f, label = "panel")
 
     Box(modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -68,6 +70,24 @@ fun TwinScreen(
                     onZoom = { tut.zoomLog += it },
                     callouts = !editing,
                 )
+                if (panelAlpha > 0f) {
+                    TwinPanel(
+                        effective,
+                        listOf(
+                            PanelAction(TwinAction.SCAN, "Scan", { haptics.perform(HapticEvent.Tap); onScan() }),
+                            PanelAction(TwinAction.EDIT, "Edit", { editing = true }, latest != null, TutorialTarget.EDIT),
+                            PanelAction(TwinAction.TRENDS, "Trends", onTrends, scanCount > 0),
+                            PanelAction(
+                                TwinAction.MOCK, "Mock",
+                                { haptics.perform(HapticEvent.Tap); onMockScan() },
+                                target = TutorialTarget.MOCK,
+                            ),
+                            PanelAction(TwinAction.HELP, "Help", { tutorial = true }),
+                        ),
+                        tut,
+                        Modifier.fillMaxSize().alpha(panelAlpha),
+                    )
+                }
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -83,10 +103,7 @@ fun TwinScreen(
                         style = MaterialTheme.typography.labelMedium,
                         color = cs.secondary,
                     )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("$scanCount scans", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
-                        TextButton(onClick = { tutorial = true }) { Text("?") }
-                    }
+                    Text("$scanCount scans", style = MaterialTheme.typography.labelMedium, color = cs.onSurfaceVariant)
                 }
             }
             if (editing && effective != null) {
@@ -108,24 +125,6 @@ fun TwinScreen(
                     onDone = { editing = false },
                     modifier = Modifier.tutorialTarget(tut, TutorialTarget.PANEL),
                 )
-            } else {
-                Row(
-                    Modifier.padding(vertical = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Button(onClick = { haptics.perform(HapticEvent.Tap); onScan() }) { Text("Scan face") }
-                    TextButton(
-                        onClick = { editing = true },
-                        enabled = latest != null,
-                        modifier = Modifier.tutorialTarget(tut, TutorialTarget.EDIT),
-                    ) { Text("Edit") }
-                    TextButton(onClick = onTrends, enabled = scanCount > 0) { Text("Trends") }
-                    TextButton(
-                        onClick = { haptics.perform(HapticEvent.Tap); onMockScan() },
-                        modifier = Modifier.tutorialTarget(tut, TutorialTarget.MOCK),
-                    ) { Text("Mock") }
-                }
             }
         }
         if (tutorial) {

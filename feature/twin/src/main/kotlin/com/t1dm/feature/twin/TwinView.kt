@@ -13,11 +13,6 @@ import android.view.Choreographer
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.TextureView
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -85,15 +80,10 @@ fun TwinView(
             view.pause()
         }
     }
-    Box(modifier) {
-        AndroidView(factory = { view }, modifier = Modifier.fillMaxSize())
-        AnimatedVisibility(callouts, Modifier.fillMaxSize(), enter = fadeIn(), exit = fadeOut()) {
-            TwinCallouts(scan, Modifier.fillMaxSize())
-        }
-    }
+    AndroidView(factory = { view }, modifier = modifier)
 }
 
-/** NDC; clears the callout column on the right. */
+/** NDC; clears the panel on the right. */
 private const val CALLOUT_BODY_SHIFT = -0.3f
 
 private fun Color.rgb() = floatArrayOf(red, green, blue)
