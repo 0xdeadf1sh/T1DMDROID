@@ -39,7 +39,7 @@ fun TwinView(scan: TwinScan?, modifier: Modifier = Modifier) {
     val palette = LocalT1dmSemantics.current
     val cs = MaterialTheme.colorScheme
     val animate = LocalAnimationsEnabled.current
-    val view = remember { TwinTextureView(context, body).also { it.renderer.anchorVerts = pickAnchors(body) } }
+    val view = remember { TwinTextureView(context, body) }
     view.renderer.colors = TwinColors(palette.background.rgb(), cs.primary.rgb(), cs.secondary.rgb())
     view.animate = animate
     view.renderer.animate = animate
@@ -70,7 +70,7 @@ fun TwinView(scan: TwinScan?, modifier: Modifier = Modifier) {
     }
     Box(modifier) {
         AndroidView(factory = { view }, modifier = Modifier.fillMaxSize())
-        TwinCallouts(view.renderer, scan, Modifier.fillMaxSize())
+        TwinCallouts(scan, Modifier.fillMaxSize())
     }
 }
 

@@ -16,8 +16,6 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.TextMeasurer
@@ -30,70 +28,25 @@ import com.t1dm.core.model.TwinScan
 import com.t1dm.core.model.TwinTrait
 import java.util.Locale
 
-/** Anchor [x], [y]: fractions of height off centre and feet. [slot]: label y / view height. */
-internal enum class Callout(
-    val label: String,
-    val trait: TwinTrait,
-    val left: Boolean,
-    val x: Float,
-    val y: Float,
-    val slot: Float,
-) {
-    HEIGHT("HEIGHT", TwinTrait.HEIGHT, true, 0f, 1f, 0.16f),
-    AGE("AGE", TwinTrait.AGE, false, 0f, 0.95f, 0.32f),
-    SEX("SEX", TwinTrait.SEX, true, 0f, 0.77f, 0.5f),
-    WEIGHT("WEIGHT", TwinTrait.WEIGHT, false, 0.02f, 0.6f, 0.66f),
+/** [slot]: label centre y as a fraction of view height. */
+internal enum class Callout(val label: String, val trait: TwinTrait, val left: Boolean, val slot: Float) {
+    HEIGHT("HEIGHT", TwinTrait.HEIGHT, true, 0.16f),
+    AGE("AGE", TwinTrait.AGE, false, 0.32f),
+    SEX("SEX", TwinTrait.SEX, true, 0.5f),
+    WEIGHT("WEIGHT", TwinTrait.WEIGHT, false, 0.66f),
 }
 
-/** Per [Callout], the front-most neutral vertex near its target; the crown takes the topmost. */
-internal fun pickAnchors(body: TwinBody): IntArray {
-    val p = body.neutral
-    var minY = Float.MAX_VALUE
-    var maxY = -Float.MAX_VALUE
-    var top = 0
-    for (v in 0 until body.vertexCount) {
-        val y = p[v * 3 + 1]
-        if (y < minY) minY = y
-        if (y > maxY) {
-            maxY = y
-            top = v
-        }
-    }
-    val h = maxY - minY
-    return IntArray(Callout.entries.size) { i ->
-        val c = Callout.entries[i]
-        if (c == Callout.HEIGHT) return@IntArray top
-        val tx = c.x * h
-        val ty = minY + c.y * h
-        val r2 = (0.035f * h) * (0.035f * h)
-        var best = -1
-        var bestZ = -Float.MAX_VALUE
-        var nearest = 0
-        var nearestD = Float.MAX_VALUE
-        for (v in 0 until body.vertexCount) {
-            val dx = p[v * 3] - tx
-            val dy = p[v * 3 + 1] - ty
-            val d = dx * dx + dy * dy
-            if (d < nearestD) {
-                nearestD = d
-                nearest = v
-            }
-            if (d < r2 && p[v * 3 + 2] > bestZ) {
-                bestZ = p[v * 3 + 2]
-                best = v
-            }
-        }
-        if (best >= 0) best else nearest
-    }
-}
-
-/** Callouts follow their anchors every frame; values count up from the previous scan. */
+/** Trait panels beside the body; values count up from the previous scan. */
 @Composable
-internal fun TwinCallouts(renderer: TwinRenderer, scan: TwinScan?, modifier: Modifier = Modifier) {
+internal fun TwinCallouts(scan: TwinScan?, modifier: Modifier = Modifier) {
     if (scan == null) return
     val animate = LocalAnimationsEnabled.current
     val frame = remember { mutableLongStateOf(0L) }
-    LaunchedEffect(Unit) { while (true) withFrameNanos { frame.longValue = it } }
+    LaunchedEffect(scan.id, animate) {
+        if (!animate) return@LaunchedEffect
+        val start = System.nanoTime()
+        while (System.nanoTime() - start < SETTLE_NS) withFrameNanos { frame.longValue = it }
+    }
     var lastScan by remember { mutableStateOf<TwinScan?>(null) }
     val from = remember(scan.id) { lastScan }
     val shownAt = remember(scan.id) { System.nanoTime() }
@@ -110,25 +63,17 @@ internal fun TwinCallouts(renderer: TwinRenderer, scan: TwinScan?, modifier: Mod
 
     Canvas(modifier) {
         frame.longValue
-        val a = renderer.anchorScreen
-        if (a.size < Callout.entries.size * 3) return@Canvas
         val t = (System.nanoTime() - shownAt) / 1e9f
         for ((i, c) in Callout.entries.withIndex()) {
             val p = if (animate) ((t - 1.0f - i * 0.12f) / 0.6f).coerceIn(0f, 1f) else 1f
             if (p <= 0f) continue
             val e = 1f - (1f - p) * (1f - p)
-            drawCallout(
-                measurer, style, c.label, valueText(c, scan, from, e),
-                anchor = Offset(a[i * 3], a[i * 3 + 1]),
-                front = a[i * 3 + 2] > 0.5f,
-                labelY = c.slot * size.height,
-                left = c.left,
-                progress = e,
-                pulse = if (animate) (t * 0.6f + i * 0.17f) % 1f else 0f,
-            )
+            drawCallout(measurer, style, c.label, valueText(c, scan, from, e), c.slot * size.height, c.left, e)
         }
     }
 }
+
+private const val SETTLE_NS = 3_000_000_000L
 
 private class CalloutStyle(val line: Color, val accent: Color, val panel: Color, val name: TextStyle, val value: TextStyle)
 
@@ -137,52 +82,27 @@ private fun DrawScope.drawCallout(
     s: CalloutStyle,
     name: String,
     value: String,
-    anchor: Offset,
-    front: Boolean,
     labelY: Float,
     left: Boolean,
     progress: Float,
-    pulse: Float,
 ) {
-    val fade = if (front) 1f else 0.35f
     val nameL = measurer.measure(name, s.name)
     val valueL = measurer.measure(value, s.value)
     val pad = 12.dp.toPx()
     val inner = 6.dp.toPx()
     val w = maxOf(nameL.size.width, valueL.size.width) + inner * 2
     val h = nameL.size.height + valueL.size.height + inner * 1.5f
-    val boxX = if (left) pad else size.width - pad - w
+    val slide = (1f - progress) * 16.dp.toPx()
+    val boxX = if (left) pad - slide else size.width - pad - w + slide
     val boxY = labelY - h / 2
-    val joinX = if (left) boxX + w else boxX
-    val elbowX = joinX + if (left) 14.dp.toPx() else -14.dp.toPx()
-
-    val path = Path().apply {
-        moveTo(anchor.x, anchor.y)
-        lineTo(elbowX, labelY)
-        lineTo(joinX, labelY)
-    }
-    val measure = PathMeasure().apply { setPath(path, false) }
-    val partial = Path()
-    measure.getSegment(0f, measure.length * progress, partial, true)
-    drawPath(partial, s.line.copy(alpha = 0.7f * fade), style = Stroke(1.dp.toPx()))
-
-    val r = 3.dp.toPx()
-    drawCircle(s.line.copy(alpha = fade), r, anchor)
-    drawCircle(
-        s.line.copy(alpha = (1f - pulse) * 0.6f * fade), r + pulse * 9.dp.toPx(), anchor,
-        style = Stroke(1.dp.toPx()),
-    )
-
-    if (progress < 0.6f) return
-    val boxA = (progress - 0.6f) / 0.4f * fade
     val corner = CornerRadius(4.dp.toPx())
-    drawRoundRect(s.panel.copy(alpha = 0.9f * boxA), Offset(boxX, boxY), Size(w, h), corner)
-    drawRoundRect(s.line.copy(alpha = 0.55f * boxA), Offset(boxX, boxY), Size(w, h), corner, style = Stroke(1.dp.toPx()))
+    drawRoundRect(s.panel.copy(alpha = 0.9f * progress), Offset(boxX, boxY), Size(w, h), corner)
+    drawRoundRect(s.line.copy(alpha = 0.55f * progress), Offset(boxX, boxY), Size(w, h), corner, style = Stroke(1.dp.toPx()))
     val tickX = if (left) boxX else boxX + w - 10.dp.toPx()
-    drawLine(s.accent.copy(alpha = boxA), Offset(tickX, boxY), Offset(tickX + 10.dp.toPx(), boxY), 2.dp.toPx())
+    drawLine(s.accent.copy(alpha = progress), Offset(tickX, boxY), Offset(tickX + 10.dp.toPx(), boxY), 2.dp.toPx())
     val textX = boxX + inner
-    drawText(nameL, topLeft = Offset(textX, boxY + inner * 0.75f), alpha = boxA)
-    drawText(valueL, topLeft = Offset(textX, boxY + inner * 0.75f + nameL.size.height), alpha = boxA)
+    drawText(nameL, topLeft = Offset(textX, boxY + inner * 0.75f), alpha = progress)
+    drawText(valueL, topLeft = Offset(textX, boxY + inner * 0.75f + nameL.size.height), alpha = progress)
 }
 
 private fun valueText(c: Callout, to: TwinScan, from: TwinScan?, e: Float): String {

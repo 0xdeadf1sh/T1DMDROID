@@ -27,17 +27,6 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
     @Volatile var zoomTarget = 1f
     @Volatile var lastTouchNs = 0L
 
-    /** Vertex indices whose screen positions [anchorScreen] reports, in callout order. */
-    @Volatile var anchorVerts = IntArray(0)
-
-    /** Per anchor: x px, y px, 1 if on the camera's side else 0. A fresh array each frame. */
-    @Volatile var anchorScreen = FloatArray(0)
-        private set
-
-    /** 0 → 1 over the build-up; callouts wait on it. */
-    @Volatile var assembled = 0f
-        private set
-
     /** False: morphs and the build-up jump to their end state, and the scene holds still. */
     @Volatile var animate = true
     @Volatile private var target = FloatArray(body.morphNames.size)
@@ -73,8 +62,6 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
     private var pitch = 0.12f
     private var zoom = 1f
     private var revealStart = 0f
-    private val anchorP = FloatArray(4)
-    private val anchorClip = FloatArray(4)
 
     fun setTarget(weights: FloatArray, assemble: Boolean) {
         target = weights.copyOf()
@@ -134,7 +121,6 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
             revealStart = t
         }
         val k = if (still) 1f else ((t - revealStart) / ASSEMBLE_S).coerceIn(0f, 1f)
-        assembled = k
         val reveal = minY - 1f + (maxY - minY + 2f) * (1f - (1f - k) * (1f - k) * (1f - k))
 
         if (!still && now - lastTouchNs > IDLE_NS) yawAuto += dt * SPIN_RAD_S
@@ -152,7 +138,6 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
         val ez = cos(yaw) * cos(pitch) * dist
         Matrix.setLookAtM(view, 0, ex, ey, ez, 0f, cy, 0f, 0f, 1f, 0f)
         Matrix.multiplyMM(mvp, 0, proj, 0, view, 0)
-        projectAnchors(ex, ez)
 
         glDisable(GL_DEPTH_TEST)
         glDisable(GL_BLEND)
@@ -202,26 +187,6 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
         glDrawArrays(GL_POINTS, 0, PARTICLES)
         glDepthMask(true)
         glBindVertexArray(0)
-    }
-
-    /** Front test is horizontal: is the vertex nearer the eye than the body's vertical axis? */
-    private fun projectAnchors(ex: Float, ez: Float) {
-        val verts = anchorVerts
-        val out = FloatArray(verts.size * 3)
-        for ((i, v) in verts.withIndex()) {
-            val b = v * 3
-            if (b + 2 >= blended.size) continue
-            anchorP[0] = blended[b]
-            anchorP[1] = blended[b + 1]
-            anchorP[2] = blended[b + 2]
-            anchorP[3] = 1f
-            Matrix.multiplyMV(anchorClip, 0, mvp, 0, anchorP, 0)
-            val w = anchorClip[3].takeIf { it > 1e-4f } ?: continue
-            out[i * 3] = (anchorClip[0] / w * 0.5f + 0.5f) * width
-            out[i * 3 + 1] = (0.5f - anchorClip[1] / w * 0.5f) * height
-            out[i * 3 + 2] = if (anchorP[0] * ex + anchorP[2] * ez > 0f) 1f else 0f
-        }
-        anchorScreen = out
     }
 
     /** Eases [current] toward [target]; re-blends and re-uploads only while it moves. */
