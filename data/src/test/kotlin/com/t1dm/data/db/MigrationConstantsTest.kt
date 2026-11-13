@@ -116,6 +116,13 @@ class MigrationConstantsTest {
     }
 
     @Test
+    fun `v37 drops the face table and nothing Room still declares`() {
+        assertEquals("DROP TABLE IF EXISTS `twin_face`", MigrationRunner.SQL_36_37_DROP_TWIN_FACE)
+        assertFalse(schemaText(37).contains("\"tableName\": \"twin_face\""))
+        assertTrue(schemaText(36).contains("\"tableName\": \"twin_face\""))
+    }
+
+    @Test
     fun `the v36 rename maps each old preset label to its ASCII spelling`() {
         val dot = Char(0xB7)
         assertEquals("Faster aspart - Fiasp", MigrationRunner.presetLabel36("Faster aspart $dot Fiasp"))

@@ -772,6 +772,15 @@ object MigrationRunner {
         }
     }
 
+    internal const val SQL_36_37_DROP_TWIN_FACE = "DROP TABLE IF EXISTS `twin_face`"
+
+    /** The twin draws as a wireframe only; the stored face texture goes with its table. */
+    val MIGRATION_36_37 = object : Migration(36, 37) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_36_37_DROP_TWIN_FACE)
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -808,6 +817,7 @@ object MigrationRunner {
         MIGRATION_33_34,
         MIGRATION_34_35,
         MIGRATION_35_36,
+        MIGRATION_36_37,
     )
 
     fun <T : RoomDatabase> configure(builder: RoomDatabase.Builder<T>): RoomDatabase.Builder<T> =

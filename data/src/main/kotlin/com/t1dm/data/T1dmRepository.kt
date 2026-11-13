@@ -38,7 +38,6 @@ import com.t1dm.data.db.LoggedExerciseEntity
 import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.InsulinTypeEntity
 import com.t1dm.data.db.EventTombstoneEntity
-import com.t1dm.data.db.TwinFaceEntity
 import com.t1dm.data.db.TwinOverrideEntity
 import com.t1dm.data.db.TwinScanEntity
 import com.t1dm.data.db.encodeTwinOutputs
@@ -146,7 +145,6 @@ class T1dmRepository(
     private val exerciseFixes get() = db.exerciseFixDao()
     private val twinScans get() = db.twinScanDao()
     private val twinOverrides get() = db.twinOverrideDao()
-    private val twinFaces get() = db.twinFaceDao()
 
     /** BEGIN IMMEDIATE on the writer connection; every DAO call in body joins this transaction. */
     private suspend fun <R> inWriteTx(body: suspend () -> R): R =
@@ -1549,13 +1547,6 @@ class T1dmRepository(
 
     suspend fun clearTwinOverrides() = withContext(io) { twinOverrides.deleteAll() }
 
-    /** Lossy WebP with alpha, or null before the first face scan. */
-    fun observeTwinFace(): Flow<ByteArray?> = twinFaces.observe()
-
-    suspend fun setTwinFace(atMs: Long, webp: ByteArray) = withContext(io) {
-        twinFaces.upsert(TwinFaceEntity(atMs = atMs, webp = webp))
-    }
-
     /** Row-only wipe, never drop/recreate; preserveCgmSources keeps the live binding on reset. */
     suspend fun wipeAllData(preserveCgmSources: Boolean = false) = withContext(io) {
         inWriteTx {
@@ -1586,7 +1577,6 @@ class T1dmRepository(
             loggedExercise.deleteAll()
             twinScans.deleteAll()
             twinOverrides.deleteAll()
-            twinFaces.deleteAll()
             // kv LAST: it holds the watch nonce ceilings + pairing bits + every setting.
             kv.deleteAll()
         }

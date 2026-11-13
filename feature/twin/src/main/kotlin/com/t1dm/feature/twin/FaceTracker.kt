@@ -15,7 +15,6 @@ import com.google.mediapipe.tasks.components.containers.Connection
 import java.io.Closeable
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.asin
 import kotlin.math.sqrt
@@ -26,8 +25,6 @@ internal class FaceFrame(
     val width: Int,
     val height: Int,
     val metrics: FaceMetrics? = null,
-    /** Upright ARGB, [width]×[height]; only while the scan asked the tracker to keep frames. */
-    val pixels: IntArray? = null,
 ) {
     val count: Int get() = points.size / 3
     fun x(i: Int) = points[i * 3]
@@ -83,7 +80,6 @@ internal object FaceMesh {
 internal class FaceTracker(
     context: Context,
     private val latest: AtomicReference<FaceFrame?>,
-    private val keepPixels: AtomicBoolean,
 ) : Closeable {
     private var lastTs = 0L
     private var lastLogTs = 0L
@@ -134,7 +130,7 @@ internal class FaceTracker(
                 lastLogTs = ts
                 Log.d(TAG, "quality $m -> ${m.issue()}")
             }
-            latest.set(FaceFrame(pts, w, h, m, if (keepPixels.get()) pixels.copyOf() else null))
+            latest.set(FaceFrame(pts, w, h, m))
         }
     }
 

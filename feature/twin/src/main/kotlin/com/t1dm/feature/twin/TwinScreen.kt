@@ -35,7 +35,6 @@ fun TwinScreen(
     latest: TwinScan?,
     scanCount: Int,
     overrides: Map<String, Double>,
-    face: ByteArray?,
     showTutorial: Boolean,
     onScan: () -> Unit,
     onMockScan: () -> Unit,
@@ -65,7 +64,6 @@ fun TwinScreen(
                 TwinView(
                     effective,
                     Modifier.fillMaxSize(),
-                    face = face,
                     onOrbit = { tut.orbitRad += it },
                     onZoom = { tut.zoomLog += it },
                     callouts = !editing,

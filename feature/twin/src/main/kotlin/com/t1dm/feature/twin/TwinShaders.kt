@@ -76,16 +76,13 @@ vec3 idle(vec3 p) {
 internal const val BODY_VS = """#version 300 es
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aBary;
-layout(location = 2) in vec2 aUv;
 uniform mat4 uMvp;
 out vec3 vW;
 out vec3 vB;
-out vec2 vUv;
 $IDLE_GLSL
 void main() {
     vW = idle(aPos);
     vB = aBary;
-    vUv = aUv;
     gl_Position = uMvp * vec4(vW, 1.0);
 }
 """
@@ -94,15 +91,11 @@ internal const val BODY_FS = """#version 300 es
 precision highp float;
 in vec3 vW;
 in vec3 vB;
-in vec2 vUv;
 uniform vec3 uEye;
 uniform float uT;
 uniform float uReveal;
 uniform vec3 uC1;
 uniform vec3 uC2;
-uniform sampler2D uFace;
-uniform float uFaceOn;
-uniform float uSkin; // mean squared luminance of the baked face
 uniform float uHeadY;
 uniform float uHeadFade;
 out vec4 o;
@@ -119,13 +112,6 @@ void main() {
     float flick = 0.94 + 0.06 * sin(uT * 37.0 + vW.y * 2.0);
     float cut = exp(-pow((uReveal - vW.y) * 3.0, 2.0));
     vec3 c = uC1 * (0.05 + 0.13 * diff) + uC1 * rim * 0.75 + uC1 * edge * 0.5;
-    // Premultiplied texels; UVs off the face clamp to the texture's transparent border.
-    vec4 f = texture(uFace, vec2(vUv.x, 1.0 - vUv.y)) * uFaceOn;
-    float lum = dot(f.rgb, vec3(0.299, 0.587, 0.114)) / max(f.a, 1e-3);
-    float shade = 0.7 + 0.3 * diff;
-    float head = uFaceOn * smoothstep(uHeadY - 0.15, uHeadY + 0.25, vW.y);
-    c = mix(c, uC1 * (0.08 + 1.1 * uSkin) * shade + uC1 * edge * 0.35, head * 0.85);
-    c = mix(c, uC1 * (0.08 + 1.1 * lum * lum) * shade + uC1 * edge * 0.35, f.a * 0.85);
     // Zoomed to the face the head thins to its wireframe: screen-door, so depth stays opaque.
     float hf = smoothstep(uHeadY - 0.2, uHeadY + 0.3, vW.y) * uHeadFade;
     ivec2 q = ivec2(gl_FragCoord.xy) & 3;

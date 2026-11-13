@@ -9,11 +9,6 @@ class TwinBody(
     val indices: ShortArray,
     val morphNames: List<String>,
     val morphs: List<FloatArray>,
-    /** u,v per vertex in MediaPipe's canonical face UV space (v up); [NO_UV] off the face. */
-    val faceUv: FloatArray,
-    /** The canonical face's 468 UVs and its triangles, which the face texture is baked over. */
-    val canonUv: FloatArray,
-    val canonTris: ShortArray,
 ) {
     val vertexCount: Int get() = neutral.size / 3
 
@@ -44,8 +39,6 @@ class TwinBody(
     }
 
     companion object {
-        const val NO_UV = -1f
-
         fun parse(bytes: ByteArray): TwinBody {
             val b = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
             val magic = ByteArray(4).also { b.get(it) }
@@ -61,13 +54,12 @@ class TwinBody(
                 names += String(ByteArray(b.get().toInt() and 0xFF).also { b.get(it) })
                 morphs += b.floats(nv * 3)
             }
-            val faceUv = b.floats(nv * 2)
+            b.position(b.position() + nv * 2 * 4)
             val ncv = b.int
             val nct = b.int
-            val canonUv = b.floats(ncv * 2)
-            val canonTris = b.shorts(nct * 3)
+            b.position(b.position() + ncv * 2 * 4 + nct * 3 * 2)
             require(!b.hasRemaining()) { "trailing bytes in twin body" }
-            return TwinBody(neutral, indices, names, morphs, faceUv, canonUv, canonTris)
+            return TwinBody(neutral, indices, names, morphs)
         }
 
         private fun ByteBuffer.floats(n: Int): FloatArray =

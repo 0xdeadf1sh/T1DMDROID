@@ -2062,12 +2062,6 @@ class AppContainer(context: Context) {
         appScope.launch { repository.clearTwinOverrides() }
     }
 
-    val twinFace: Flow<ByteArray?> get() = repository.observeTwinFace()
-
-    fun saveTwinFace(webp: ByteArray) {
-        appScope.launch { repository.setTwinFace(System.currentTimeMillis(), webp) }
-    }
-
     /** Published by [com.t1dm.app.service.ExerciseService]; null whenever no bout is running. */
     val activeExercise = MutableStateFlow<ActiveExercise?>(null)
 

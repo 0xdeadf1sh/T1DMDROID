@@ -2,7 +2,6 @@ package com.t1dm.feature.twin
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.graphics.BitmapFactory
 import android.graphics.SurfaceTexture
 import android.opengl.EGL14
 import android.opengl.EGLConfig
@@ -34,8 +33,6 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.t1dm.core.design.LocalAnimationsEnabled
 import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.model.TwinScan
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.ln
 
@@ -47,7 +44,6 @@ fun TwinView(
     onOrbit: (rad: Float) -> Unit = {},
     onZoom: (absLogScale: Float) -> Unit = {},
     callouts: Boolean = true,
-    face: ByteArray? = null,
 ) {
     val context = LocalContext.current
     val body = remember { loadBody(context) }
@@ -63,14 +59,6 @@ fun TwinView(
 
     LaunchedEffect(scan?.id) {
         view.renderer.setTarget(TwinMorphs.weights(scan, body), assemble = true)
-        view.kick()
-    }
-    LaunchedEffect(face) {
-        val (bitmap, skin) = withContext(Dispatchers.Default) {
-            val b = face?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
-            b to (b?.let(::meanSquaredLuma) ?: 0f)
-        }
-        view.renderer.setFace(bitmap, skin)
         view.kick()
     }
     LaunchedEffect(callouts) {

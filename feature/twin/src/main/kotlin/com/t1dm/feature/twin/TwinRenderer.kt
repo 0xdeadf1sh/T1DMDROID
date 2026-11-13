@@ -1,9 +1,7 @@
 package com.t1dm.feature.twin
 
-import android.graphics.Bitmap
 import android.opengl.GLES30.*
 import android.opengl.GLSurfaceView
-import android.opengl.GLUtils
 import android.opengl.Matrix
 import android.util.Log
 import java.nio.ByteBuffer
@@ -98,18 +96,6 @@ internal class TwinRenderer(
     private var nextIdleS = 0f
     private val rng = java.util.Random()
 
-    @Volatile private var faceBitmap: Bitmap? = null
-    @Volatile private var faceDirty = false
-    @Volatile private var skin = 0f
-    private var faceTex = 0
-
-    /** Kept, not recycled: a new GL context re-uploads it. Null removes the face. */
-    fun setFace(bitmap: Bitmap?, meanSquaredLuma: Float) {
-        skin = meanSquaredLuma
-        faceBitmap = bitmap
-        faceDirty = true
-    }
-
     fun setTarget(weights: FloatArray, assemble: Boolean) {
         target = weights.copyOf()
         if (assemble) assembleRequested = true
@@ -139,11 +125,6 @@ internal class TwinRenderer(
             glBufferData(GL_ARRAY_BUFFER, tris * 9 * 4, bary, GL_STATIC_DRAW)
             glEnableVertexAttribArray(1)
             glVertexAttribPointer(1, 3, GL_FLOAT, false, 0, 0)
-            val uvVbo = genBuffer()
-            glBindBuffer(GL_ARRAY_BUFFER, uvVbo)
-            glBufferData(GL_ARRAY_BUFFER, tris * 6 * 4, faceUvs(), GL_STATIC_DRAW)
-            glEnableVertexAttribArray(2)
-            glVertexAttribPointer(2, 2, GL_FLOAT, false, 0, 0)
             glBindVertexArray(0)
             organProg = program(ORGAN_VS, ORGAN_FS)
             sparkProg = program(SPARK_VS, SPARK_FS)
@@ -153,8 +134,6 @@ internal class TwinRenderer(
             heartVao = heart?.let(::organVao) ?: 0
             brainVao = brain?.let(::organVao) ?: 0
             sparkVao = brain?.let(::sparkVao) ?: 0
-            faceTex = 0
-            faceDirty = true
             dirty = true
         }.onFailure { Log.e(TAG, "twin GL setup failed", it) }.isSuccess
     }
@@ -233,13 +212,7 @@ internal class TwinRenderer(
 
         glDepthMask(true)
         glDisable(GL_BLEND)
-        if (faceDirty) uploadFace()
-        glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_2D, faceTex)
         glUseProgram(bodyProg)
-        glUniform1i(loc(bodyProg, "uFace"), 0)
-        glUniform1f(loc(bodyProg, "uFaceOn"), if (faceTex != 0) 1f else 0f)
-        glUniform1f(loc(bodyProg, "uSkin"), skin)
         glUniformMatrix4fv(loc(bodyProg, "uMvp"), 1, false, mvp, 0)
         idleUniforms(bodyProg, headY, bodyH)
         glUniform3f(loc(bodyProg, "uEye"), ex, ey, ez)
@@ -463,40 +436,6 @@ internal class TwinRenderer(
         return k * k * (3f - 2f * k)
     }
 
-    /** Per expanded vertex; a triangle touching any off-face vertex is off the face whole. */
-    private fun faceUvs(): FloatBuffer {
-        val uv = body.faceUv
-        val idx = body.indices
-        val out = floatBuffer(tris * 6)
-        for (t in 0 until tris) {
-            val v = IntArray(3) { idx[t * 3 + it].toInt() and 0xFFFF }
-            val off = v.any { uv[it * 2] == TwinBody.NO_UV }
-            for (k in v) {
-                out.put(if (off) TwinBody.NO_UV else uv[k * 2])
-                out.put(if (off) TwinBody.NO_UV else uv[k * 2 + 1])
-            }
-        }
-        return out.apply { flip() }
-    }
-
-    private fun uploadFace() {
-        faceDirty = false
-        val b = faceBitmap
-        if (b == null) {
-            if (faceTex != 0) glDeleteTextures(1, intArrayOf(faceTex), 0)
-            faceTex = 0
-            return
-        }
-        if (faceTex == 0) faceTex = IntArray(1).also { glGenTextures(1, it, 0) }[0]
-        glBindTexture(GL_TEXTURE_2D, faceTex)
-        GLUtils.texImage2D(GL_TEXTURE_2D, 0, b, 0)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-        glGenerateMipmap(GL_TEXTURE_2D)
-    }
-
     /** Eases [current] toward [target]; re-blends and re-uploads only while it moves. */
     private fun stepMorph(dt: Float) {
         val goal = target
@@ -604,19 +543,4 @@ internal class TwinRenderer(
             return p
         }
     }
-}
-
-/** Over the face's opaque texels; tints the rest of the head to match it. */
-internal fun meanSquaredLuma(b: Bitmap): Float {
-    val px = IntArray(b.width * b.height)
-    b.getPixels(px, 0, b.width, 0, 0, b.width, b.height)
-    var sum = 0.0
-    var n = 0
-    for (p in px) {
-        if (p ushr 24 < 128) continue
-        val l = (0.299 * (p shr 16 and 0xFF) + 0.587 * (p shr 8 and 0xFF) + 0.114 * (p and 0xFF)) / 255.0
-        sum += l * l
-        n++
-    }
-    return if (n == 0) 0f else (sum / n).toFloat()
 }

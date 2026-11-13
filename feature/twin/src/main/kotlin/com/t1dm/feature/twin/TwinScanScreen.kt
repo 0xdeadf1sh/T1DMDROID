@@ -1,9 +1,7 @@
 package com.t1dm.feature.twin
 
 import android.Manifest
-import android.content.Context
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.util.Log
 import android.util.Size as PxSize
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -35,7 +33,6 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -64,10 +61,6 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.design.rememberT1dmHaptics
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -78,9 +71,9 @@ import kotlin.random.Random
 
 private enum class ScanPhase { SEARCH, CAPTURE }
 
-/** Front camera → checks → baked frontal face; [onCaptured] gets null if baking failed. */
+/** Front camera, then the checks; [onCaptured] once a steady frontal face has locked. */
 @Composable
-fun TwinScanScreen(onCaptured: (face: ByteArray?) -> Unit, onCancel: () -> Unit, modifier: Modifier = Modifier) {
+fun TwinScanScreen(onCaptured: () -> Unit, onCancel: () -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var granted by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
@@ -109,10 +102,6 @@ fun TwinScanScreen(onCaptured: (face: ByteArray?) -> Unit, onCancel: () -> Unit,
     val modelFailed = remember { AtomicBoolean(false) }
     var frozen by remember { mutableStateOf<FaceFrame?>(null) }
     var capturedNs by remember { mutableLongStateOf(0L) }
-    val keepPixels = remember { AtomicBoolean(false) }
-    var baked by remember { mutableStateOf(false) }
-    var face by remember { mutableStateOf<ByteArray?>(null) }
-    val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         var last = withFrameNanos { it }
@@ -128,25 +117,17 @@ fun TwinScanScreen(onCaptured: (face: ByteArray?) -> Unit, onCancel: () -> Unit,
                         if (f == null) faceSince.longValue = 0L else if (faceSince.longValue == 0L) faceSince.longValue = now
                         val steady = verdict(f, modelFailed.get()).ready
                         lock.floatValue = (lock.floatValue + if (steady) dt / LOCK_S else -dt).coerceIn(0f, 1f)
-                        keepPixels.set(lock.floatValue > 0f)
-                        if (lock.floatValue >= 1f && f?.pixels != null) {
-                            keepPixels.set(false)
+                        if (lock.floatValue >= 1f && f != null) {
                             frozen = f
                             capturedNs = now
                             phase = ScanPhase.CAPTURE
                             haptics.perform(HapticEvent.Tap)
-                            scope.launch {
-                                face = withContext(Dispatchers.Default) {
-                                    runCatching { bakeFace(context, listOf(f)) }.onFailure { Log.e(TAG, "face bake", it) }.getOrNull()
-                                }
-                                baked = true
-                            }
                         }
                     }
-                    ScanPhase.CAPTURE -> if (!fired && baked && (now - capturedNs) / 1e9f > STAGES.size * STAGE_S + 0.6f) {
+                    ScanPhase.CAPTURE -> if (!fired && (now - capturedNs) / 1e9f > STAGES.size * STAGE_S + 0.6f) {
                         fired = true
                         haptics.perform(HapticEvent.Tap)
-                        done(face)
+                        done()
                     }
                 }
             }
@@ -166,7 +147,7 @@ fun TwinScanScreen(onCaptured: (face: ByteArray?) -> Unit, onCancel: () -> Unit,
         mono = MaterialTheme.typography.labelMedium.copy(color = cs.primary),
     )
     Box(modifier.fillMaxSize()) {
-        if (phase != ScanPhase.CAPTURE) CameraFeed(latest, modelFailed, keepPixels, Modifier.fillMaxSize())
+        if (phase != ScanPhase.CAPTURE) CameraFeed(latest, modelFailed, Modifier.fillMaxSize())
         Canvas(Modifier.fillMaxSize()) {
             val now = frame.longValue
             val t = now / 1e9f
@@ -186,24 +167,10 @@ fun TwinScanScreen(onCaptured: (face: ByteArray?) -> Unit, onCancel: () -> Unit,
     }
 }
 
-/** The locked frontal shot → face texture as lossy WebP with alpha. */
-private fun bakeFace(context: Context, frames: List<FaceFrame>): ByteArray {
-    val body = loadBody(context)
-    val shots = frames.mapNotNull { f -> f.pixels?.let { FaceShot(it, f.width, f.height, f.points) } }
-    val argb = FaceBake(body.canonUv, body.canonTris).bake(shots)
-    val bitmap = Bitmap.createBitmap(argb, FaceBake.SIZE, FaceBake.SIZE, Bitmap.Config.ARGB_8888)
-    return ByteArrayOutputStream().use { out ->
-        bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, WEBP_QUALITY, out)
-        bitmap.recycle()
-        out.toByteArray()
-    }
-}
-
 @Composable
 private fun CameraFeed(
     latest: AtomicReference<FaceFrame?>,
     modelFailed: AtomicBoolean,
-    keepPixels: AtomicBoolean,
     modifier: Modifier,
 ) {
     val context = LocalContext.current
@@ -218,7 +185,7 @@ private fun CameraFeed(
         val executor = Executors.newSingleThreadExecutor()
         var tracker: FaceTracker? = null
         executor.execute {
-            tracker = runCatching { FaceTracker(context, latest, keepPixels) }
+            tracker = runCatching { FaceTracker(context, latest) }
                 .onFailure {
                     Log.e(TAG, "tracker init", it)
                     modelFailed.set(true)
@@ -579,7 +546,6 @@ private val STAGES = listOf(
 private const val STAGE_S = 0.55f
 private const val LOCK_S = 1.6f
 private const val REVEAL_S = 0.5f
-private const val WEBP_QUALITY = 90
 private const val MIN_FACE_WIDTH = 0.28f
 private const val MAX_TILT_DEG = 15f
 private const val TAG = "TwinScan"
