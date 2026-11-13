@@ -51,16 +51,19 @@ import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.t1dm.core.design.HapticEvent
+import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.design.rememberT1dmHaptics
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
+import kotlin.math.sin
 import kotlin.random.Random
 
 private enum class ScanPhase { SEARCH, CAPTURE }
@@ -92,6 +95,7 @@ fun TwinScanScreen(onCaptured: () -> Unit, modifier: Modifier = Modifier) {
     var phase by remember { mutableStateOf(ScanPhase.SEARCH) }
     val lock = remember { mutableFloatStateOf(0f) }
     val frame = remember { mutableLongStateOf(0L) }
+    val faceSince = remember { mutableLongStateOf(0L) }
     var frozen by remember { mutableStateOf<FaceFrame?>(null) }
     var capturedNs by remember { mutableLongStateOf(0L) }
 
@@ -105,9 +109,8 @@ fun TwinScanScreen(onCaptured: () -> Unit, modifier: Modifier = Modifier) {
                 frame.longValue = now
                 if (phase == ScanPhase.SEARCH) {
                     val f = latest.get()
-                    val steady = f != null && f.widthFraction() > MIN_FACE_WIDTH &&
-                        abs(f.yawDeg) < MAX_TILT_DEG && abs(f.pitchDeg) < MAX_TILT_DEG &&
-                        f.metrics != null && f.metrics.issue() == null
+                    if (f == null) faceSince.longValue = 0L else if (faceSince.longValue == 0L) faceSince.longValue = now
+                    val steady = verdict(f).ready
                     lock.floatValue = (lock.floatValue + if (steady) dt / LOCK_S else -dt).coerceIn(0f, 1f)
                     if (lock.floatValue >= 1f && f != null) {
                         frozen = f
@@ -129,6 +132,8 @@ fun TwinScanScreen(onCaptured: () -> Unit, modifier: Modifier = Modifier) {
     val hud = HudStyle(
         line = cs.primary,
         accent = cs.secondary,
+        ok = LocalT1dmSemantics.current.inRange,
+        bad = cs.error,
         bg = cs.background,
         small = MaterialTheme.typography.labelSmall.copy(color = cs.onSurfaceVariant),
         big = MaterialTheme.typography.titleMedium.copy(color = cs.primary),
@@ -140,7 +145,11 @@ fun TwinScanScreen(onCaptured: () -> Unit, modifier: Modifier = Modifier) {
             val now = frame.longValue
             val t = now / 1e9f
             when (phase) {
-                ScanPhase.SEARCH -> drawSearch(hud, measurer, latest.get(), lock.floatValue, t)
+                ScanPhase.SEARCH -> {
+                    val f = latest.get()
+                    val age = if (faceSince.longValue == 0L) 0f else (now - faceSince.longValue) / 1e9f
+                    drawSearch(hud, measurer, f, verdict(f), lock.floatValue, t, age)
+                }
                 ScanPhase.CAPTURE -> frozen?.let { drawCapture(hud, measurer, it, (now - capturedNs) / 1e9f) }
             }
         }
@@ -207,6 +216,8 @@ private fun CameraFeed(latest: AtomicReference<FaceFrame?>, modifier: Modifier) 
 private class HudStyle(
     val line: Color,
     val accent: Color,
+    val ok: Color,
+    val bad: Color,
     val bg: Color,
     val small: TextStyle,
     val big: TextStyle,
@@ -239,30 +250,131 @@ private class FaceMap(f: FaceFrame, view: Size) {
     }
 }
 
-private fun DrawScope.drawSearch(s: HudStyle, m: TextMeasurer, f: FaceFrame?, lock: Float, t: Float) {
+private enum class Check(val label: String) {
+    FACE("Face found"),
+    DISTANCE("Distance"),
+    LIGHT("Light"),
+    VIEW("Nothing covering"),
+    FOCUS("Sharp"),
+    ANGLE("Facing camera"),
+}
+
+private enum class CheckState { OK, FAIL, WAIT }
+
+/** Checks run in order; the first failure names the prompt and the later ones wait on it. */
+private class Verdict(
+    val states: Map<Check, CheckState>,
+    val failed: Check?,
+    val prompt: String,
+    val meter: Meter?,
+    val issue: FaceIssue?,
+) {
+    val ready: Boolean get() = states.values.all { it == CheckState.OK }
+}
+
+private fun verdict(f: FaceFrame?): Verdict {
+    val q = f?.metrics
+    val issue = q?.issue()
+    val states = LinkedHashMap<Check, CheckState>()
+    var failed: Check? = null
+    var prompt = "Hold still"
+    var meter: Meter? = null
+    fun check(c: Check, ok: Boolean?, why: String, m: Meter?) {
+        val state = when {
+            failed != null || ok == null -> CheckState.WAIT
+            ok -> CheckState.OK
+            else -> CheckState.FAIL
+        }
+        states[c] = state
+        if (state == CheckState.FAIL) {
+            failed = c
+            prompt = why
+            meter = m
+        }
+    }
+    val tilt = f?.let { maxOf(abs(it.yawDeg), abs(it.pitchDeg)) }
+    fun issueIn(g: FaceIssue.Group) = issue?.takeIf { it.group == g }
+    check(Check.FACE, f != null, "No face · look at the screen", null)
+    check(
+        Check.DISTANCE, f?.let { it.widthFraction() > MIN_FACE_WIDTH }, "Move closer",
+        f?.let { Meter(it.widthFraction(), MIN_FACE_WIDTH, 0.6f, higherIsBetter = true) },
+    )
+    for ((c, g) in listOf(Check.LIGHT to FaceIssue.Group.LIGHT, Check.VIEW to FaceIssue.Group.VIEW, Check.FOCUS to FaceIssue.Group.FOCUS)) {
+        val bad = issueIn(g)
+        check(c, q?.let { bad == null }, bad?.prompt.orEmpty(), bad?.let { q?.meter(it) })
+    }
+    check(
+        Check.ANGLE, tilt?.let { it < MAX_TILT_DEG }, "Look straight at the camera",
+        tilt?.let { Meter(it, MAX_TILT_DEG, 45f, higherIsBetter = false) },
+    )
+    return Verdict(states, failed, prompt, meter, issue.takeIf { failed in IMAGE_CHECKS })
+}
+
+private val IMAGE_CHECKS = setOf(Check.LIGHT, Check.VIEW, Check.FOCUS)
+
+/** Landmarks the [issue] points at, or null when it concerns the whole face. */
+private fun hotRegion(issue: FaceIssue, f: FaceFrame): ((Int) -> Boolean)? {
+    val h = f.y(FaceFrame.CHIN) - f.y(FaceFrame.FOREHEAD)
+    val bridge = f.y(FaceQuality.BRIDGE)
+    val noseX = f.x(FaceFrame.NOSE)
+    return when (issue) {
+        FaceIssue.GLASSES -> { i -> abs(f.y(i) - bridge) < 0.1f * h }
+        FaceIssue.COVERED -> { i -> f.y(i) > f.y(FaceFrame.NOSE) + 0.03f * h }
+        FaceIssue.FOREHEAD -> { i -> f.y(i) < bridge - 0.1f * h }
+        FaceIssue.UNEVEN -> {
+            val side = if ((f.metrics?.sideBalance ?: 0f) < 0f) FaceQuality.CHEEK_IN_L else FaceQuality.CHEEK_IN_R
+            val sign = f.x(side) - noseX
+            { i -> (f.x(i) - noseX) * sign > 0f }
+        }
+        else -> null
+    }
+}
+
+/** Stable 0..1 per edge pair, so the mesh fills in scattered rather than in index order. */
+private fun edgeRank(pair: Int): Float = ((pair * -1640531535) ushr 8 and 0xFFFF) / 65536f
+
+private fun DrawScope.drawSearch(s: HudStyle, m: TextMeasurer, f: FaceFrame?, v: Verdict, lock: Float, t: Float, age: Float) {
     drawRect(s.bg.copy(alpha = 0.35f))
     drawScanlines(s)
     val map = f?.let { FaceMap(it, size) }
     val box = map?.bounds(f)?.inflate(size.width * 0.06f)
         ?: Rect(Offset(size.width / 2, size.height * 0.42f), size.width * 0.34f)
     val tight = 1f - 0.08f * lock
-    drawBrackets(s.line, box.deflate(box.width * (1f - tight) / 2), 22.dp.toPx())
+    val frameColor = when {
+        v.ready -> s.ok
+        f != null -> s.bad
+        else -> s.line
+    }
+    drawBrackets(frameColor, box.deflate(box.width * (1f - tight) / 2), 22.dp.toPx())
 
     if (f != null && map != null) {
         val sweep = box.top + box.height * lock
-        val mesh = Path()
+        val reveal = (age / REVEAL_S).coerceIn(0f, 1f)
+        val hot = v.issue?.let { hotRegion(it, f) }
+        val wholeFaceBad = v.issue != null && hot == null
+        val calm = Path()
+        val bad = Path()
+        val front = Path()
         val e = FaceMesh.tesselation
         var k = 0
         while (k < e.size) {
             val a = e[k]
             val b = e[k + 1]
+            val rank = edgeRank(k / 2)
             k += 2
-            val ay = map.y(f, a)
-            if (lock < 1f && ay > sweep && map.y(f, b) > sweep) continue
-            mesh.moveTo(map.x(f, a), ay)
-            mesh.lineTo(map.x(f, b), map.y(f, b))
+            if (rank > reveal) continue
+            val path = when {
+                reveal < 1f && rank > reveal - 0.15f -> front
+                wholeFaceBad || (hot != null && hot(a) && hot(b)) -> bad
+                else -> calm
+            }
+            path.moveTo(map.x(f, a), map.y(f, a))
+            path.lineTo(map.x(f, b), map.y(f, b))
         }
-        drawPath(mesh, s.line.copy(alpha = 0.18f + 0.3f * lock), style = Stroke(0.7.dp.toPx()))
+        val pulse = 0.5f + 0.5f * sin(t * 6f).let { it * it }
+        drawPath(calm, (if (v.ready) s.ok else s.line).copy(alpha = 0.3f + 0.4f * lock), style = Stroke(0.8.dp.toPx()))
+        drawPath(bad, s.bad.copy(alpha = pulse), style = Stroke(1.4.dp.toPx()))
+        drawPath(front, s.accent, style = Stroke(1.6.dp.toPx()))
         val contour = Path()
         val c = FaceMesh.contours
         k = 0
@@ -271,7 +383,7 @@ private fun DrawScope.drawSearch(s: HudStyle, m: TextMeasurer, f: FaceFrame?, lo
             contour.lineTo(map.x(f, c[k + 1]), map.y(f, c[k + 1]))
             k += 2
         }
-        drawPath(contour, s.accent.copy(alpha = 0.85f), style = Stroke(1.4.dp.toPx(), cap = StrokeCap.Round))
+        drawPath(contour, s.accent.copy(alpha = 0.85f * reveal), style = Stroke(1.4.dp.toPx(), cap = StrokeCap.Round))
         if (lock > 0f) {
             drawLine(s.line, Offset(box.left, sweep), Offset(box.right, sweep), 2.dp.toPx())
             drawRect(
@@ -284,37 +396,58 @@ private fun DrawScope.drawSearch(s: HudStyle, m: TextMeasurer, f: FaceFrame?, lo
         drawLine(s.line.copy(alpha = 0.6f), Offset(box.left, y), Offset(box.right, y), 1.5.dp.toPx())
     }
 
-    val issue = f?.metrics?.issue()
-    val status = when {
-        f == null -> "Align face"
-        f.widthFraction() <= MIN_FACE_WIDTH -> "Move closer"
-        f.metrics == null -> "Hold still"
-        issue != null -> issue.prompt
-        abs(f.yawDeg) >= MAX_TILT_DEG || abs(f.pitchDeg) >= MAX_TILT_DEG -> "Look straight"
-        else -> "Hold still"
-    }
     val pad = 16.dp.toPx()
     drawText(m.measure("FACE SCAN", s.small), topLeft = Offset(pad, pad))
-    drawText(m.measure(status, s.big), topLeft = Offset(pad, pad + 16.dp.toPx()))
-    if (f != null) {
-        val q = f.metrics
-        val read = "YAW %+03.0f°\nPITCH %+03.0f°\nPTS %d".format(Locale.ROOT, f.yawDeg, f.pitchDeg, f.count) +
-            if (q != null) "\nLUM %3.0f\nSHARP %3.0f".format(Locale.ROOT, q.luma, q.sharpness) else ""
-        val l = m.measure(read, s.mono)
-        drawText(l, topLeft = Offset(size.width - pad - l.size.width, pad))
+    val promptColor = when {
+        v.ready -> s.ok
+        f == null -> s.line
+        else -> s.bad
     }
+    val prompt = m.measure(
+        if (v.ready) "Hold still · %d%%".format(Locale.ROOT, (lock * 100).toInt()) else v.prompt,
+        s.big.copy(color = promptColor),
+        constraints = Constraints(maxWidth = (size.width - pad * 2).toInt()),
+    )
+    var y = pad + 16.dp.toPx()
+    drawText(prompt, topLeft = Offset(pad, y))
+    y += prompt.size.height + 8.dp.toPx()
+    v.meter?.let { drawMeter(s, m, it, pad, y, size.width * 0.42f) }
+
     val barW = size.width - pad * 2
     val barY = size.height - pad - 4.dp.toPx()
-    val checks = listOf(
-        "FACE" to (f != null),
-        "LIGHT" to (f?.metrics != null && issue?.group != FaceIssue.Group.LIGHT),
-        "CLEAR VIEW" to (f?.metrics != null && issue?.group != FaceIssue.Group.VIEW && issue?.group != FaceIssue.Group.LIGHT),
-        "FOCUS" to (f?.metrics != null && issue == null),
-    )
-    val list = m.measure(checks.joinToString("\n") { (name, ok) -> (if (ok) "✓ " else "· ") + name }, s.mono)
-    drawText(list, topLeft = Offset(pad, barY - 10.dp.toPx() - list.size.height))
+    val rows = Check.entries.map { c ->
+        val state = v.states[c] ?: CheckState.WAIT
+        val (mark, color) = when (state) {
+            CheckState.OK -> "✓" to s.ok
+            CheckState.FAIL -> "✕" to s.bad
+            CheckState.WAIT -> "–" to s.small.color.copy(alpha = 0.6f)
+        }
+        m.measure("$mark  ${c.label}", s.mono.copy(color = color))
+    }
+    var ry = barY - 10.dp.toPx() - rows.sumOf { it.size.height }
+    for (r in rows) {
+        drawText(r, topLeft = Offset(pad, ry))
+        ry += r.size.height
+    }
     drawLine(s.line.copy(alpha = 0.2f), Offset(pad, barY), Offset(pad + barW, barY), 3.dp.toPx())
-    drawLine(s.line, Offset(pad, barY), Offset(pad + barW * lock, barY), 3.dp.toPx())
+    drawLine(s.ok, Offset(pad, barY), Offset(pad + barW * lock, barY), 3.dp.toPx())
+}
+
+/** Bar 0..max: fill at the value, a tick at the limit, then "value · need ≥ limit". */
+private fun DrawScope.drawMeter(s: HudStyle, m: TextMeasurer, meter: Meter, x: Float, y: Float, w: Float) {
+    val color = if (meter.passes) s.ok else s.bad
+    val cy = y + 6.dp.toPx()
+    val fill = (meter.value / meter.max).coerceIn(0f, 1f)
+    val tick = x + w * (meter.limit / meter.max).coerceIn(0f, 1f)
+    drawLine(s.line.copy(alpha = 0.25f), Offset(x, cy), Offset(x + w, cy), 6.dp.toPx(), StrokeCap.Round)
+    drawLine(color, Offset(x, cy), Offset(x + w * fill, cy), 6.dp.toPx(), StrokeCap.Round)
+    drawLine(s.big.color, Offset(tick, cy - 8.dp.toPx()), Offset(tick, cy + 8.dp.toPx()), 2.dp.toPx())
+    fun fmt(v: Float) = if (meter.max <= 1f) "%.2f".format(Locale.ROOT, v) else "%.0f".format(Locale.ROOT, v)
+    val label = m.measure(
+        "${fmt(meter.value)} · need ${if (meter.higherIsBetter) "≥" else "≤"} ${fmt(meter.limit)}",
+        s.mono.copy(color = color),
+    )
+    drawText(label, topLeft = Offset(x + w + 10.dp.toPx(), cy - label.size.height / 2))
 }
 
 private fun DrawScope.drawCapture(s: HudStyle, m: TextMeasurer, f: FaceFrame, t: Float) {
@@ -392,6 +525,7 @@ private val STAGES = listOf(
 )
 private const val STAGE_S = 0.55f
 private const val LOCK_S = 1.6f
+private const val REVEAL_S = 0.5f
 private const val MIN_FACE_WIDTH = 0.28f
 private const val MAX_TILT_DEG = 15f
 private const val TAG = "TwinScan"

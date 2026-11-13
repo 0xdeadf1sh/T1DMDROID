@@ -5,20 +5,25 @@ import kotlin.math.hypot
 
 /** What blocks a capture, in the order the scan asks for it. */
 internal enum class FaceIssue(val prompt: String, val group: Group) {
-    DARK("Too dark", Group.LIGHT),
-    BACKLIT("Light behind you", Group.LIGHT),
-    BRIGHT("Too bright", Group.LIGHT),
-    UNEVEN("Light on one side", Group.LIGHT),
-    GLASSES("Remove glasses", Group.VIEW),
-    COVERED("Uncover mouth and chin", Group.VIEW),
-    FOREHEAD("Uncover forehead", Group.VIEW),
+    DARK("Too dark · find more light", Group.LIGHT),
+    BACKLIT("Light behind you · turn to face it", Group.LIGHT),
+    BRIGHT("Too bright · step out of direct light", Group.LIGHT),
+    UNEVEN("Light on one side · face the light", Group.LIGHT),
+    GLASSES("Glasses · take them off", Group.VIEW),
+    COVERED("Mouth covered · remove mask", Group.VIEW),
+    FOREHEAD("Forehead covered · push back hat or hair", Group.VIEW),
     BLUR("Blurry · hold still", Group.FOCUS),
     ;
 
     enum class Group { LIGHT, VIEW, FOCUS }
 }
 
-/** Luma is BT.601 on 0–255; ratios compare a patch to the mean of both cheeks. */
+/** [value] on 0..[max]; it passes on the [higherIsBetter] side of [limit]. */
+internal class Meter(val value: Float, val limit: Float, val max: Float, val higherIsBetter: Boolean) {
+    val passes: Boolean get() = if (higherIsBetter) value >= limit else value <= limit
+}
+
+/** BT.601 luma 0–255; ratios vs both cheeks; [sideBalance] = (cheek 280 − cheek 50) ÷ sum. */
 internal data class FaceMetrics(
     val luma: Float,
     val clipped: Float,
@@ -32,18 +37,47 @@ internal data class FaceMetrics(
     val foreChroma: Float,
     val foreShade: Float,
 ) {
-    /** Untuned thresholds; the tracker logs every metric so they can be set from real frames. */
     fun issue(): FaceIssue? = when {
-        luma < 60f -> FaceIssue.DARK
-        frameLuma - luma > 50f && luma < 110f -> FaceIssue.BACKLIT
-        clipped > 0.15f -> FaceIssue.BRIGHT
-        sideBalance > 0.25f -> FaceIssue.UNEVEN
-        eyeShade < 0.4f || bridgeEdges > 3.5f -> FaceIssue.GLASSES
+        luma < MIN_LUMA -> FaceIssue.DARK
+        frameLuma - luma > MAX_BACKLIGHT && luma < BACKLIT_LUMA -> FaceIssue.BACKLIT
+        clipped > MAX_CLIPPED -> FaceIssue.BRIGHT
+        abs(sideBalance) > MAX_SIDE -> FaceIssue.UNEVEN
+        eyeShade < MIN_EYE_SHADE || bridgeEdges > MAX_BRIDGE -> FaceIssue.GLASSES
         // Dark coverings pass: a beard reads the same, so only light ones (masks) block.
-        lowerChroma > 0.07f && lowerShade > 0.6f -> FaceIssue.COVERED
-        foreChroma > 0.07f && foreShade > 0.6f -> FaceIssue.FOREHEAD
-        sharpness < 15f -> FaceIssue.BLUR
+        lowerChroma > MAX_CHROMA && lowerShade > LIGHT_COVER -> FaceIssue.COVERED
+        foreChroma > MAX_CHROMA && foreShade > LIGHT_COVER -> FaceIssue.FOREHEAD
+        sharpness < MIN_SHARP -> FaceIssue.BLUR
         else -> null
+    }
+
+    /** The metric behind [issue] against its limit, for the on-screen meter. */
+    fun meter(issue: FaceIssue): Meter = when (issue) {
+        FaceIssue.DARK -> Meter(luma, MIN_LUMA, 255f, higherIsBetter = true)
+        FaceIssue.BACKLIT -> Meter(frameLuma - luma, MAX_BACKLIGHT, 150f, higherIsBetter = false)
+        FaceIssue.BRIGHT -> Meter(clipped, MAX_CLIPPED, 0.5f, higherIsBetter = false)
+        FaceIssue.UNEVEN -> Meter(abs(sideBalance), MAX_SIDE, 0.6f, higherIsBetter = false)
+        FaceIssue.GLASSES -> if (eyeShade < MIN_EYE_SHADE) {
+            Meter(eyeShade, MIN_EYE_SHADE, 1f, higherIsBetter = true)
+        } else {
+            Meter(bridgeEdges, MAX_BRIDGE, 8f, higherIsBetter = false)
+        }
+        FaceIssue.COVERED -> Meter(lowerChroma, MAX_CHROMA, 0.2f, higherIsBetter = false)
+        FaceIssue.FOREHEAD -> Meter(foreChroma, MAX_CHROMA, 0.2f, higherIsBetter = false)
+        FaceIssue.BLUR -> Meter(sharpness, MIN_SHARP, 100f, higherIsBetter = true)
+    }
+
+    /** Untuned; the tracker logs every metric so these can be set from real frames. */
+    companion object {
+        const val MIN_LUMA = 60f
+        const val MAX_BACKLIGHT = 50f
+        const val BACKLIT_LUMA = 110f
+        const val MAX_CLIPPED = 0.15f
+        const val MAX_SIDE = 0.25f
+        const val MIN_EYE_SHADE = 0.4f
+        const val MAX_BRIDGE = 3.5f
+        const val MAX_CHROMA = 0.07f
+        const val LIGHT_COVER = 0.6f
+        const val MIN_SHARP = 15f
     }
 
     /** Exponential smoothing; [k] is the weight of [next]. */
@@ -85,7 +119,7 @@ internal class FaceQuality(private val px: IntArray, private val w: Int, private
             luma = face.luma,
             clipped = face.clipped,
             frameLuma = frame.luma,
-            sideBalance = abs(cheekL.luma - cheekR.luma) / maxOf(cheekL.luma + cheekR.luma, 1f),
+            sideBalance = (cheekL.luma - cheekR.luma) / maxOf(cheekL.luma + cheekR.luma, 1f),
             sharpness = sharpness(),
             bridgeEdges = bridge.grad / maxOf(fore.grad, 2f),
             eyeShade = eyes / skinL,
