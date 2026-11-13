@@ -55,7 +55,6 @@ internal fun TwinCallouts(scan: TwinScan?, modifier: Modifier = Modifier) {
     val style = CalloutStyle(
         line = cs.primary,
         accent = cs.secondary,
-        panel = cs.surface,
         name = MaterialTheme.typography.labelSmall.copy(color = cs.onSurfaceVariant),
         value = MaterialTheme.typography.labelLarge.copy(color = cs.primary),
     )
@@ -80,7 +79,7 @@ private class TraitRow(val name: String, val value: String, val widest: String, 
 
 private const val SETTLE_NS = 3_000_000_000L
 
-private class CalloutStyle(val line: Color, val accent: Color, val panel: Color, val name: TextStyle, val value: TextStyle)
+private class CalloutStyle(val line: Color, val accent: Color, val name: TextStyle, val value: TextStyle)
 
 /** Name left, value right-aligned, one row per trait; centred on the right edge. */
 private fun DrawScope.drawPanel(measurer: TextMeasurer, s: CalloutStyle, rows: List<TraitRow>, progress: Float) {
@@ -100,7 +99,6 @@ private fun DrawScope.drawPanel(measurer: TextMeasurer, s: CalloutStyle, rows: L
     val boxX = size.width - pad - w + slide
     val boxY = size.height * PANEL_CENTRE_Y - h / 2
     val corner = CornerRadius(4.dp.toPx())
-    drawRoundRect(s.panel.copy(alpha = 0.9f * progress), Offset(boxX, boxY), Size(w, h), corner)
     drawRoundRect(s.line.copy(alpha = 0.55f * progress), Offset(boxX, boxY), Size(w, h), corner, style = Stroke(1.dp.toPx()))
     val tickX = boxX + w - 10.dp.toPx()
     drawLine(s.accent.copy(alpha = progress), Offset(tickX, boxY), Offset(tickX + 10.dp.toPx(), boxY), 2.dp.toPx())
