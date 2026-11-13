@@ -2,6 +2,7 @@ package com.t1dm.feature.twin
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.graphics.SurfaceTexture
 import android.opengl.EGL14
 import android.opengl.EGLConfig
@@ -33,6 +34,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.t1dm.core.design.LocalAnimationsEnabled
 import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.model.TwinScan
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.ln
 
@@ -44,6 +47,7 @@ fun TwinView(
     onOrbit: (rad: Float) -> Unit = {},
     onZoom: (absLogScale: Float) -> Unit = {},
     callouts: Boolean = true,
+    face: ByteArray? = null,
 ) {
     val context = LocalContext.current
     val body = remember { loadBody(context) }
@@ -59,6 +63,13 @@ fun TwinView(
 
     LaunchedEffect(scan?.id) {
         view.renderer.setTarget(TwinMorphs.weights(scan, body), assemble = true)
+        view.kick()
+    }
+    LaunchedEffect(face) {
+        val bitmap = face?.let {
+            withContext(Dispatchers.Default) { BitmapFactory.decodeByteArray(it, 0, it.size) }
+        }
+        view.renderer.setFace(bitmap)
         view.kick()
     }
     LaunchedEffect(scan?.outputs) {
@@ -91,9 +102,9 @@ fun TwinView(
 
 private fun Color.rgb() = floatArrayOf(red, green, blue)
 
-private var cachedBody: TwinBody? = null
+@Volatile private var cachedBody: TwinBody? = null
 
-private fun loadBody(context: Context): TwinBody =
+internal fun loadBody(context: Context): TwinBody =
     cachedBody ?: TwinBody.parse(context.assets.open("twin_body.bin").use { it.readBytes() }).also { cachedBody = it }
 
 /** TextureView, not SurfaceView: it composites in-window, so Compose draws over and under it. */

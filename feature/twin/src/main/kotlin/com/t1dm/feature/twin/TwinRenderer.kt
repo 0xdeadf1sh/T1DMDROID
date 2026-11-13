@@ -1,7 +1,9 @@
 package com.t1dm.feature.twin
 
+import android.graphics.Bitmap
 import android.opengl.GLES30.*
 import android.opengl.GLSurfaceView
+import android.opengl.GLUtils
 import android.opengl.Matrix
 import android.util.Log
 import java.nio.ByteBuffer
@@ -63,6 +65,16 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
     private var zoom = 1f
     private var revealStart = 0f
 
+    @Volatile private var faceBitmap: Bitmap? = null
+    @Volatile private var faceDirty = false
+    private var faceTex = 0
+
+    /** Kept, not recycled: a new GL context re-uploads it. Null removes the face. */
+    fun setFace(bitmap: Bitmap?) {
+        faceBitmap = bitmap
+        faceDirty = true
+    }
+
     fun setTarget(weights: FloatArray, assemble: Boolean) {
         target = weights.copyOf()
         if (assemble) assembleRequested = true
@@ -92,7 +104,14 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
             glBufferData(GL_ARRAY_BUFFER, tris * 9 * 4, bary, GL_STATIC_DRAW)
             glEnableVertexAttribArray(1)
             glVertexAttribPointer(1, 3, GL_FLOAT, false, 0, 0)
+            val uvVbo = genBuffer()
+            glBindBuffer(GL_ARRAY_BUFFER, uvVbo)
+            glBufferData(GL_ARRAY_BUFFER, tris * 6 * 4, faceUvs(), GL_STATIC_DRAW)
+            glEnableVertexAttribArray(2)
+            glVertexAttribPointer(2, 2, GL_FLOAT, false, 0, 0)
             glBindVertexArray(0)
+            faceTex = 0
+            faceDirty = true
             dirty = true
         }.onFailure { Log.e(TAG, "twin GL setup failed", it) }.isSuccess
     }
@@ -164,7 +183,12 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
 
         glDepthMask(true)
         glDisable(GL_BLEND)
+        if (faceDirty) uploadFace()
+        glActiveTexture(GL_TEXTURE0)
+        glBindTexture(GL_TEXTURE_2D, faceTex)
         glUseProgram(bodyProg)
+        glUniform1i(loc(bodyProg, "uFace"), 0)
+        glUniform1f(loc(bodyProg, "uFaceOn"), if (faceTex != 0) 1f else 0f)
         glUniformMatrix4fv(loc(bodyProg, "uMvp"), 1, false, mvp, 0)
         glUniform3f(loc(bodyProg, "uEye"), ex, ey, ez)
         glUniform1f(loc(bodyProg, "uT"), t)
@@ -188,6 +212,40 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
         glDrawArrays(GL_POINTS, 0, PARTICLES)
         glDepthMask(true)
         glBindVertexArray(0)
+    }
+
+    /** Per expanded vertex; a triangle touching any off-face vertex is off the face whole. */
+    private fun faceUvs(): FloatBuffer {
+        val uv = body.faceUv
+        val idx = body.indices
+        val out = floatBuffer(tris * 6)
+        for (t in 0 until tris) {
+            val v = IntArray(3) { idx[t * 3 + it].toInt() and 0xFFFF }
+            val off = v.any { uv[it * 2] == TwinBody.NO_UV }
+            for (k in v) {
+                out.put(if (off) TwinBody.NO_UV else uv[k * 2])
+                out.put(if (off) TwinBody.NO_UV else uv[k * 2 + 1])
+            }
+        }
+        return out.apply { flip() }
+    }
+
+    private fun uploadFace() {
+        faceDirty = false
+        val b = faceBitmap
+        if (b == null) {
+            if (faceTex != 0) glDeleteTextures(1, intArrayOf(faceTex), 0)
+            faceTex = 0
+            return
+        }
+        if (faceTex == 0) faceTex = IntArray(1).also { glGenTextures(1, it, 0) }[0]
+        glBindTexture(GL_TEXTURE_2D, faceTex)
+        GLUtils.texImage2D(GL_TEXTURE_2D, 0, b, 0)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+        glGenerateMipmap(GL_TEXTURE_2D)
     }
 
     /** Eases [current] toward [target]; re-blends and re-uploads only while it moves. */

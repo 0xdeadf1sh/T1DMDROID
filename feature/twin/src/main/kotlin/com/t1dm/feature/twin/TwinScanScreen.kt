@@ -1,7 +1,9 @@
 package com.t1dm.feature.twin
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.util.Log
 import android.util.Size as PxSize
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -20,9 +22,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -31,6 +35,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -59,6 +64,10 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.design.rememberT1dmHaptics
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -67,11 +76,11 @@ import kotlin.math.abs
 import kotlin.math.sin
 import kotlin.random.Random
 
-private enum class ScanPhase { SEARCH, CAPTURE }
+private enum class ScanPhase { SEARCH, SWEEP, CAPTURE }
 
-/** Front camera → face mesh → staged hand-off; [onCaptured] fires once the stages finish. */
+/** Front camera → checks → head turn → baked face; [onCaptured] gets null if baking failed. */
 @Composable
-fun TwinScanScreen(onCaptured: () -> Unit, modifier: Modifier = Modifier) {
+fun TwinScanScreen(onCaptured: (face: ByteArray?) -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var granted by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
@@ -100,6 +109,13 @@ fun TwinScanScreen(onCaptured: () -> Unit, modifier: Modifier = Modifier) {
     val modelFailed = remember { AtomicBoolean(false) }
     var frozen by remember { mutableStateOf<FaceFrame?>(null) }
     var capturedNs by remember { mutableLongStateOf(0L) }
+    val keepPixels = remember { AtomicBoolean(false) }
+    val sweep = remember { FaceSweep() }
+    var sweepStartNs by remember { mutableLongStateOf(0L) }
+    var skip by remember { mutableStateOf(false) }
+    var baked by remember { mutableStateOf(false) }
+    var face by remember { mutableStateOf<ByteArray?>(null) }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         var last = withFrameNanos { it }
@@ -109,21 +125,41 @@ fun TwinScanScreen(onCaptured: () -> Unit, modifier: Modifier = Modifier) {
                 val dt = ((now - last) / 1e9f).coerceIn(0f, 0.1f)
                 last = now
                 frame.longValue = now
-                if (phase == ScanPhase.SEARCH) {
-                    val f = latest.get()
-                    if (f == null) faceSince.longValue = 0L else if (faceSince.longValue == 0L) faceSince.longValue = now
-                    val steady = verdict(f, modelFailed.get()).ready
-                    lock.floatValue = (lock.floatValue + if (steady) dt / LOCK_S else -dt).coerceIn(0f, 1f)
-                    if (lock.floatValue >= 1f && f != null) {
-                        frozen = f
-                        capturedNs = now
-                        phase = ScanPhase.CAPTURE
-                        haptics.perform(HapticEvent.Tap)
+                when (phase) {
+                    ScanPhase.SEARCH -> {
+                        val f = latest.get()
+                        if (f == null) faceSince.longValue = 0L else if (faceSince.longValue == 0L) faceSince.longValue = now
+                        val steady = verdict(f, modelFailed.get()).ready
+                        lock.floatValue = (lock.floatValue + if (steady) dt / LOCK_S else -dt).coerceIn(0f, 1f)
+                        keepPixels.set(lock.floatValue > 0f)
+                        if (lock.floatValue >= 1f && f?.pixels != null) {
+                            frozen = f
+                            sweepStartNs = now
+                            phase = ScanPhase.SWEEP
+                            haptics.perform(HapticEvent.Tap)
+                        }
                     }
-                } else if (!fired && (now - capturedNs) / 1e9f > STAGES.size * STAGE_S + 0.6f) {
-                    fired = true
-                    haptics.perform(HapticEvent.Tap)
-                    done()
+                    ScanPhase.SWEEP -> {
+                        latest.get()?.let { if (sweep.offer(it)) haptics.perform(HapticEvent.SegmentTick) }
+                        if (sweep.done || skip || (now - sweepStartNs) / 1e9f > SWEEP_S) {
+                            keepPixels.set(false)
+                            capturedNs = now
+                            phase = ScanPhase.CAPTURE
+                            haptics.perform(HapticEvent.Tap)
+                            val shots = listOfNotNull(frozen) + sweep.shots()
+                            scope.launch {
+                                face = withContext(Dispatchers.Default) {
+                                    runCatching { bakeFace(context, shots) }.onFailure { Log.e(TAG, "face bake", it) }.getOrNull()
+                                }
+                                baked = true
+                            }
+                        }
+                    }
+                    ScanPhase.CAPTURE -> if (!fired && baked && (now - capturedNs) / 1e9f > STAGES.size * STAGE_S + 0.6f) {
+                        fired = true
+                        haptics.perform(HapticEvent.Tap)
+                        done(face)
+                    }
                 }
             }
         }
@@ -142,7 +178,7 @@ fun TwinScanScreen(onCaptured: () -> Unit, modifier: Modifier = Modifier) {
         mono = MaterialTheme.typography.labelMedium.copy(color = cs.primary),
     )
     Box(modifier.fillMaxSize()) {
-        if (phase == ScanPhase.SEARCH) CameraFeed(latest, modelFailed, Modifier.fillMaxSize())
+        if (phase != ScanPhase.CAPTURE) CameraFeed(latest, modelFailed, keepPixels, Modifier.fillMaxSize())
         Canvas(Modifier.fillMaxSize()) {
             val now = frame.longValue
             val t = now / 1e9f
@@ -152,14 +188,78 @@ fun TwinScanScreen(onCaptured: () -> Unit, modifier: Modifier = Modifier) {
                     val age = if (faceSince.longValue == 0L) 0f else (now - faceSince.longValue) / 1e9f
                     drawSearch(hud, measurer, f, verdict(f, modelFailed.get()), lock.floatValue, t, age)
                 }
+                ScanPhase.SWEEP -> drawSweep(hud, measurer, latest.get(), sweep, (now - sweepStartNs) / 1e9f)
                 ScanPhase.CAPTURE -> frozen?.let { drawCapture(hud, measurer, it, (now - capturedNs) / 1e9f) }
+            }
+        }
+        if (phase == ScanPhase.SWEEP) {
+            TextButton(onClick = { skip = true }, modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
+                Text("Skip")
             }
         }
     }
 }
 
+/** Front shot plus head-turn shots → face texture as lossy WebP with alpha. */
+private fun bakeFace(context: Context, frames: List<FaceFrame>): ByteArray {
+    val body = loadBody(context)
+    val shots = frames.mapNotNull { f -> f.pixels?.let { FaceShot(it, f.width, f.height, f.points) } }
+    val argb = FaceBake(body.canonUv, body.canonTris).bake(shots)
+    val bitmap = Bitmap.createBitmap(argb, FaceBake.SIZE, FaceBake.SIZE, Bitmap.Config.ARGB_8888)
+    return ByteArrayOutputStream().use { out ->
+        bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, WEBP_QUALITY, out)
+        bitmap.recycle()
+        out.toByteArray()
+    }
+}
+
+/** The head turn: which way to go, and a yaw track with each bin lit once its shot is in. */
+private fun DrawScope.drawSweep(s: HudStyle, m: TextMeasurer, f: FaceFrame?, sweep: FaceSweep, elapsed: Float) {
+    drawRect(s.bg.copy(alpha = 0.25f))
+    drawScanlines(s)
+    if (f != null) {
+        val map = FaceMap(f, size)
+        val mesh = Path()
+        val e = FaceMesh.tesselation
+        var k = 0
+        while (k < e.size) {
+            mesh.moveTo(map.x(f, e[k]), map.y(f, e[k]))
+            mesh.lineTo(map.x(f, e[k + 1]), map.y(f, e[k + 1]))
+            k += 2
+        }
+        drawPath(mesh, s.ok.copy(alpha = 0.45f), style = Stroke(0.8.dp.toPx()))
+    }
+    val pad = 16.dp.toPx()
+    drawText(m.measure("FACE SCAN · %d/%d".format(Locale.ROOT, sweep.count, FaceSweep.BINS.size), s.small), topLeft = Offset(pad, pad))
+    val prompt = m.measure(
+        if (sweep.turningLeft) "← Turn slowly to your left" else "Now slowly to your right →",
+        s.big.copy(color = s.line),
+    )
+    var y = pad + 16.dp.toPx()
+    drawText(prompt, topLeft = Offset(pad, y))
+    y += prompt.size.height + 22.dp.toPx()
+    // Mirrored preview: the user's own left is on the screen's left.
+    val half = size.width * 0.35f
+    val cx = size.width / 2
+    fun xOf(yaw: Float) = cx - yaw.coerceIn(-FaceSweep.RANGE_DEG, FaceSweep.RANGE_DEG) / FaceSweep.RANGE_DEG * half
+    drawLine(s.line.copy(alpha = 0.3f), Offset(cx - half, y), Offset(cx + half, y), 3.dp.toPx(), StrokeCap.Round)
+    drawLine(s.line.copy(alpha = 0.6f), Offset(cx, y - 6.dp.toPx()), Offset(cx, y + 6.dp.toPx()), 2.dp.toPx())
+    for ((i, yaw) in FaceSweep.BINS.withIndex()) {
+        val c = Offset(xOf(yaw), y)
+        if (sweep.filled(i)) drawCircle(s.ok, 7.dp.toPx(), c) else drawCircle(s.line, 7.dp.toPx(), c, style = Stroke(1.5.dp.toPx()))
+    }
+    f?.let { drawCircle(s.accent, 5.dp.toPx(), Offset(xOf(it.yawDeg), y)) }
+    val left = (SWEEP_S - elapsed).coerceAtLeast(0f)
+    drawText(m.measure("%.0f s".format(Locale.ROOT, left), s.mono), topLeft = Offset(pad, y + 14.dp.toPx()))
+}
+
 @Composable
-private fun CameraFeed(latest: AtomicReference<FaceFrame?>, modelFailed: AtomicBoolean, modifier: Modifier) {
+private fun CameraFeed(
+    latest: AtomicReference<FaceFrame?>,
+    modelFailed: AtomicBoolean,
+    keepPixels: AtomicBoolean,
+    modifier: Modifier,
+) {
     val context = LocalContext.current
     val owner = LocalLifecycleOwner.current
     val previewView = remember {
@@ -172,7 +272,7 @@ private fun CameraFeed(latest: AtomicReference<FaceFrame?>, modelFailed: AtomicB
         val executor = Executors.newSingleThreadExecutor()
         var tracker: FaceTracker? = null
         executor.execute {
-            tracker = runCatching { FaceTracker(context, latest) }
+            tracker = runCatching { FaceTracker(context, latest, keepPixels) }
                 .onFailure {
                     Log.e(TAG, "tracker init", it)
                     modelFailed.set(true)
@@ -533,6 +633,8 @@ private val STAGES = listOf(
 private const val STAGE_S = 0.55f
 private const val LOCK_S = 1.6f
 private const val REVEAL_S = 0.5f
+private const val SWEEP_S = 15f
+private const val WEBP_QUALITY = 90
 private const val MIN_FACE_WIDTH = 0.28f
 private const val MAX_TILT_DEG = 15f
 private const val TAG = "TwinScan"

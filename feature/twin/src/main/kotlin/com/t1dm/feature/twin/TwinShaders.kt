@@ -59,12 +59,15 @@ void main() {
 internal const val BODY_VS = """#version 300 es
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aBary;
+layout(location = 2) in vec2 aUv;
 uniform mat4 uMvp;
 out vec3 vW;
 out vec3 vB;
+out vec2 vUv;
 void main() {
     vW = aPos;
     vB = aBary;
+    vUv = aUv;
     gl_Position = uMvp * vec4(aPos, 1.0);
 }
 """
@@ -73,11 +76,14 @@ internal const val BODY_FS = """#version 300 es
 precision highp float;
 in vec3 vW;
 in vec3 vB;
+in vec2 vUv;
 uniform vec3 uEye;
 uniform float uT;
 uniform float uReveal;
 uniform vec3 uC1;
 uniform vec3 uC2;
+uniform sampler2D uFace;
+uniform float uFaceOn;
 out vec4 o;
 void main() {
     if (vW.y > uReveal) discard;
@@ -90,8 +96,11 @@ void main() {
     float edge = 1.0 - smoothstep(0.0, fwidth(w) * 1.2, w);
     float flick = 0.94 + 0.06 * sin(uT * 37.0 + vW.y * 2.0);
     float cut = exp(-pow((uReveal - vW.y) * 3.0, 2.0));
-    vec3 c = uC1 * (0.05 + 0.13 * diff) + uC1 * rim * 0.75 + uC1 * edge * 0.5
-        + vec3(1.0) * cut * 0.7;
+    vec3 c = uC1 * (0.05 + 0.13 * diff) + uC1 * rim * 0.75 + uC1 * edge * 0.5;
+    // Premultiplied texels; UVs off the face clamp to the texture's transparent border.
+    vec4 f = texture(uFace, vec2(vUv.x, 1.0 - vUv.y)) * uFaceOn;
+    c = c * (1.0 - f.a) + f.rgb * (0.6 + 0.4 * diff) + uC1 * rim * 0.25 * f.a;
+    c += vec3(1.0) * cut * 0.7;
     o = vec4(c * flick, 1.0);
 }
 """

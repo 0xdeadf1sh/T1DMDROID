@@ -1175,6 +1175,7 @@ private fun T1dmNavHost(
         composable("twin") {
             val scans by container.twinScans.collectAsState(emptyList())
             val overrides by container.twinOverrides.collectAsState(emptyMap())
+            val face by container.twinFace.collectAsState(null)
             // Starts true so the tutorial never flashes before the stored flag loads.
             val seen by container.settingsStore.twinTutorialSeen.collectAsState(true)
             val scope = rememberCoroutineScope()
@@ -1182,6 +1183,7 @@ private fun T1dmNavHost(
                 latest = scans.lastOrNull(),
                 scanCount = scans.size,
                 overrides = overrides,
+                face = face,
                 showTutorial = !seen,
                 onScan = { navController.navigate("twin/scan") { launchSingleTop = true } },
                 onMockScan = container::mockTwinScan,
@@ -1196,7 +1198,8 @@ private fun T1dmNavHost(
             TwinTrendsScreen(scans)
         }
         composable("twin/scan") {
-            TwinScanScreen(onCaptured = {
+            TwinScanScreen(onCaptured = { face ->
+                face?.let(container::saveTwinFace)
                 container.mockTwinScan()
                 navController.popBackStack("twin", inclusive = false)
             })
