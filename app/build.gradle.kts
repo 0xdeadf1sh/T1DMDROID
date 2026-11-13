@@ -24,8 +24,8 @@ android {
 
     defaultConfig {
         applicationId = "com.t1dm.app.main"
-        versionCode = 273
-        versionName = "0.99.13"
+        versionCode = 274
+        versionName = "0.99.14"
 
         ndk {
             abiFilters += providers.gradleProperty("t1dm.abis").get().split(',')
