@@ -28,15 +28,14 @@ import com.t1dm.core.model.TwinScan
 import com.t1dm.core.model.TwinTrait
 import java.util.Locale
 
-/** [slot]: label centre y as a fraction of view height. */
-internal enum class Callout(val label: String, val trait: TwinTrait, val slot: Float) {
-    HEIGHT("HEIGHT", TwinTrait.HEIGHT, 0.2f),
-    AGE("AGE", TwinTrait.AGE, 0.36f),
-    SEX("SEX", TwinTrait.SEX, 0.52f),
-    WEIGHT("WEIGHT", TwinTrait.WEIGHT, 0.68f),
+internal enum class Callout(val label: String, val trait: TwinTrait) {
+    HEIGHT("HEIGHT", TwinTrait.HEIGHT),
+    AGE("AGE", TwinTrait.AGE),
+    SEX("SEX", TwinTrait.SEX),
+    WEIGHT("WEIGHT", TwinTrait.WEIGHT),
 }
 
-/** Trait panels in a column right of the body; values count up from the previous scan. */
+/** One trait panel right of the body; values count up from the previous scan. */
 @Composable
 internal fun TwinCallouts(scan: TwinScan?, modifier: Modifier = Modifier) {
     if (scan == null) return
@@ -64,45 +63,59 @@ internal fun TwinCallouts(scan: TwinScan?, modifier: Modifier = Modifier) {
     Canvas(modifier) {
         frame.longValue
         val t = (System.nanoTime() - shownAt) / 1e9f
-        for ((i, c) in Callout.entries.withIndex()) {
-            val p = if (animate) ((t - 1.0f - i * 0.12f) / 0.6f).coerceIn(0f, 1f) else 1f
-            if (p <= 0f) continue
-            val e = 1f - (1f - p) * (1f - p)
-            drawCallout(measurer, style, c.label, valueText(c, scan, from, e), c.slot * size.height, e)
+        fun eased(delay: Float): Float {
+            val p = if (animate) ((t - 1.0f - delay) / 0.6f).coerceIn(0f, 1f) else 1f
+            return 1f - (1f - p) * (1f - p)
         }
+        val rows = Callout.entries.mapIndexed { i, c ->
+            val e = eased(i * 0.12f)
+            TraitRow(c.label, valueText(c, scan, from, e), valueText(c, scan, from, 1f), e)
+        }
+        drawPanel(measurer, style, rows, eased(0f))
     }
 }
+
+/** [widest]: the settled value, so the panel never resizes while a value counts up. */
+private class TraitRow(val name: String, val value: String, val widest: String, val progress: Float)
 
 private const val SETTLE_NS = 3_000_000_000L
 
 private class CalloutStyle(val line: Color, val accent: Color, val panel: Color, val name: TextStyle, val value: TextStyle)
 
-private fun DrawScope.drawCallout(
-    measurer: TextMeasurer,
-    s: CalloutStyle,
-    name: String,
-    value: String,
-    labelY: Float,
-    progress: Float,
-) {
-    val nameL = measurer.measure(name, s.name)
-    val valueL = measurer.measure(value, s.value)
+/** Name left, value right-aligned, one row per trait; centred on the right edge. */
+private fun DrawScope.drawPanel(measurer: TextMeasurer, s: CalloutStyle, rows: List<TraitRow>, progress: Float) {
+    if (progress <= 0f) return
     val pad = 12.dp.toPx()
-    val inner = 6.dp.toPx()
-    val w = maxOf(nameL.size.width, valueL.size.width) + inner * 2
-    val h = nameL.size.height + valueL.size.height + inner * 1.5f
+    val inner = 8.dp.toPx()
+    val gap = 12.dp.toPx()
+    val rowGap = 4.dp.toPx()
+    val names = rows.map { measurer.measure(it.name, s.name) }
+    val values = rows.map { measurer.measure(it.value, s.value) }
+    val valueW = rows.maxOf { measurer.measure(it.widest, s.value).size.width }
+    val nameW = names.maxOf { it.size.width }
+    val rowH = rows.indices.map { maxOf(names[it].size.height, values[it].size.height) }
+    val w = inner * 2 + nameW + gap + valueW
+    val h = inner * 2 + rowH.sum() + rowGap * (rows.size - 1)
     val slide = (1f - progress) * 16.dp.toPx()
     val boxX = size.width - pad - w + slide
-    val boxY = labelY - h / 2
+    val boxY = size.height * PANEL_CENTRE_Y - h / 2
     val corner = CornerRadius(4.dp.toPx())
     drawRoundRect(s.panel.copy(alpha = 0.9f * progress), Offset(boxX, boxY), Size(w, h), corner)
     drawRoundRect(s.line.copy(alpha = 0.55f * progress), Offset(boxX, boxY), Size(w, h), corner, style = Stroke(1.dp.toPx()))
     val tickX = boxX + w - 10.dp.toPx()
     drawLine(s.accent.copy(alpha = progress), Offset(tickX, boxY), Offset(tickX + 10.dp.toPx(), boxY), 2.dp.toPx())
-    val textX = boxX + inner
-    drawText(nameL, topLeft = Offset(textX, boxY + inner * 0.75f), alpha = progress)
-    drawText(valueL, topLeft = Offset(textX, boxY + inner * 0.75f + nameL.size.height), alpha = progress)
+    var y = boxY + inner
+    for (i in rows.indices) {
+        val a = rows[i].progress
+        drawText(names[i], topLeft = Offset(boxX + inner, y + (rowH[i] - names[i].size.height) / 2), alpha = a)
+        val vx = boxX + w - inner - values[i].size.width
+        drawText(values[i], topLeft = Offset(vx, y + (rowH[i] - values[i].size.height) / 2), alpha = a)
+        y += rowH[i] + rowGap
+    }
 }
+
+/** Panel centre as a fraction of view height: level with the chest at the default framing. */
+private const val PANEL_CENTRE_Y = 0.42f
 
 private fun valueText(c: Callout, to: TwinScan, from: TwinScan?, e: Float): String {
     fun v(t: TwinTrait): Double? {
