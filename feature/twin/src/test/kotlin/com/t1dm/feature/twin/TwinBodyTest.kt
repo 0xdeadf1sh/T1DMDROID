@@ -28,6 +28,21 @@ class TwinBodyTest {
         assertTrue(body.indices.all { (it.toInt() and 0xFFFF) < body.vertexCount })
     }
 
+    @Test fun `the face section maps the front of the head and only that`() {
+        assertEquals(468 * 2, body.canonUv.size)
+        assertTrue(body.canonTris.all { (it.toInt() and 0xFFFF) < 468 })
+        val top = (1 until body.neutral.size step 3).maxOf { body.neutral[it] }
+        var onFace = 0
+        for (v in 0 until body.vertexCount) {
+            val u = body.faceUv[v * 2]
+            if (u == TwinBody.NO_UV) continue
+            onFace++
+            assertTrue("vertex $v on the face but ${top - body.neutral[v * 3 + 1]} dm below the crown",
+                top - body.neutral[v * 3 + 1] < 3.5f)
+        }
+        assertTrue("face vertices $onFace", onFace in 100..800)
+    }
+
     @Test fun `zero weights blend to the neutral body`() {
         assertArrayEquals(body.neutral, body.blend(FloatArray(body.morphNames.size)), 0f)
     }

@@ -15,12 +15,15 @@ import fast_simplification
 import numpy as np
 
 import anthro
+import face
 from measure import Ruler
 
 RAW = "https://raw.githubusercontent.com/makehumancommunity/makehuman/master/makehuman/data"
 ETHNIC = ("african", "asian", "caucasian")
 GENDERS = ("female", "male")
 TRIS = 3600
+# Without the eyeballs the sockets are holes, and the face texture would show the backdrop.
+EYES = ("helper-r-eye", "helper-l-eye")
 FIT = Path(__file__).with_name("anthro_fit.json")
 
 # Feature origin and scale; TwinMorphs.kt mirrors these.
@@ -58,16 +61,18 @@ def fetch(cache: Path, rel: str) -> Path:
 
 
 def load_body(path: Path):
-    verts, faces, group = [], [], None
+    """Vertices, the body's triangles, and each eyeball's triangles (right, left)."""
+    verts, groups, group = [], {}, None
     for line in path.read_text().splitlines():
         if line.startswith("v "):
             verts.append([float(x) for x in line.split()[1:4]])
         elif line.startswith("g "):
             group = line.split(maxsplit=1)[1].strip()
-        elif line.startswith("f ") and group == "body":
+        elif line.startswith("f ") and group in ("body", *EYES):
             idx = [int(tok.split("/")[0]) - 1 for tok in line.split()[1:]]
-            faces.extend([idx[0], idx[i], idx[i + 1]] for i in range(1, len(idx) - 1))
-    return np.asarray(verts, np.float64), np.asarray(faces, np.int64)
+            groups.setdefault(group, []).extend([idx[0], idx[i], idx[i + 1]] for i in range(1, len(idx) - 1))
+    tris = {g: np.asarray(f, np.int64) for g, f in groups.items()}
+    return np.asarray(verts, np.float64), tris["body"], [tris[g] for g in EYES]
 
 
 def load_target(path: Path, n: int) -> np.ndarray:
@@ -181,7 +186,7 @@ def main() -> None:
         FIT.write_text(json.dumps(anthro.fit(a.cache), indent=1) + "\n")
     model = json.loads(FIT.read_text())
 
-    verts, faces = load_body(fetch(a.cache, "3dobjs/base.obj"))
+    verts, faces, eyes = load_body(fetch(a.cache, "3dobjs/base.obj"))
     t = Targets(a.cache, len(verts))
     base_delta, char = character(t)
     base = verts + base_delta
@@ -210,25 +215,36 @@ def main() -> None:
     deltas["muscle_up"] = char["muscle_up"]
     deltas["muscle_down"] = char["muscle_down"]
 
-    used = np.unique(faces)
+    shown = np.concatenate([faces, *eyes])
+    used = np.unique(shown)
     remap = np.full(len(verts), -1)
     remap[used] = np.arange(len(used))
     pos = neutral[used]
-    tri = remap[faces]
+    tri = remap[shown]
+    canon = face.Canon(a.cache)
+    centres = tuple(neutral[np.unique(e)].mean(0) for e in eyes)
+    uv = face.face_uv(pos, tri, centres, canon)
     lo_pos, lo_tri = fast_simplification.simplify(
         pos.astype(np.float32), tri.astype(np.int32), target_reduction=1 - TRIS / len(tri)
     )
     nearest = np.argmin(((lo_pos[:, None, :] - pos[None, :, :]) ** 2).sum(-1), axis=1)
     assert len(lo_pos) < 65536, "indices are u16"
+    lo_uv = uv[nearest]
+    on_face = (lo_uv[lo_tri][..., 0] != face.NO_UV).all(-1).sum()
+    print(f"{on_face} triangles carry the face")
 
     with a.out.open("wb") as f:
-        f.write(b"TWN1")
+        f.write(b"TWN2")
         f.write(struct.pack("<III", len(lo_pos), len(lo_tri), len(deltas)))
         f.write(lo_pos.astype("<f4").tobytes())
         f.write(lo_tri.astype("<u2").tobytes())
         for name, d in deltas.items():
             f.write(struct.pack("<B", len(name)) + name.encode())
             f.write(d[used][nearest].astype("<f4").tobytes())
+        f.write(lo_uv.astype("<f4").tobytes())
+        f.write(struct.pack("<II", len(canon.uv), len(canon.tri)))
+        f.write(canon.uv.astype("<f4").tobytes())
+        f.write(canon.tri.astype("<u2").tobytes())
     print(f"{len(lo_pos)} verts, {len(lo_tri)} tris, {len(deltas)} morphs -> {a.out}")
 
 
