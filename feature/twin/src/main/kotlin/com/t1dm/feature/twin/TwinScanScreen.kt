@@ -61,6 +61,7 @@ import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.design.rememberT1dmHaptics
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 import kotlin.math.sin
@@ -96,6 +97,7 @@ fun TwinScanScreen(onCaptured: () -> Unit, modifier: Modifier = Modifier) {
     val lock = remember { mutableFloatStateOf(0f) }
     val frame = remember { mutableLongStateOf(0L) }
     val faceSince = remember { mutableLongStateOf(0L) }
+    val modelFailed = remember { AtomicBoolean(false) }
     var frozen by remember { mutableStateOf<FaceFrame?>(null) }
     var capturedNs by remember { mutableLongStateOf(0L) }
 
@@ -110,7 +112,7 @@ fun TwinScanScreen(onCaptured: () -> Unit, modifier: Modifier = Modifier) {
                 if (phase == ScanPhase.SEARCH) {
                     val f = latest.get()
                     if (f == null) faceSince.longValue = 0L else if (faceSince.longValue == 0L) faceSince.longValue = now
-                    val steady = verdict(f).ready
+                    val steady = verdict(f, modelFailed.get()).ready
                     lock.floatValue = (lock.floatValue + if (steady) dt / LOCK_S else -dt).coerceIn(0f, 1f)
                     if (lock.floatValue >= 1f && f != null) {
                         frozen = f
@@ -140,7 +142,7 @@ fun TwinScanScreen(onCaptured: () -> Unit, modifier: Modifier = Modifier) {
         mono = MaterialTheme.typography.labelMedium.copy(color = cs.primary),
     )
     Box(modifier.fillMaxSize()) {
-        if (phase == ScanPhase.SEARCH) CameraFeed(latest, Modifier.fillMaxSize())
+        if (phase == ScanPhase.SEARCH) CameraFeed(latest, modelFailed, Modifier.fillMaxSize())
         Canvas(Modifier.fillMaxSize()) {
             val now = frame.longValue
             val t = now / 1e9f
@@ -148,7 +150,7 @@ fun TwinScanScreen(onCaptured: () -> Unit, modifier: Modifier = Modifier) {
                 ScanPhase.SEARCH -> {
                     val f = latest.get()
                     val age = if (faceSince.longValue == 0L) 0f else (now - faceSince.longValue) / 1e9f
-                    drawSearch(hud, measurer, f, verdict(f), lock.floatValue, t, age)
+                    drawSearch(hud, measurer, f, verdict(f, modelFailed.get()), lock.floatValue, t, age)
                 }
                 ScanPhase.CAPTURE -> frozen?.let { drawCapture(hud, measurer, it, (now - capturedNs) / 1e9f) }
             }
@@ -157,7 +159,7 @@ fun TwinScanScreen(onCaptured: () -> Unit, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun CameraFeed(latest: AtomicReference<FaceFrame?>, modifier: Modifier) {
+private fun CameraFeed(latest: AtomicReference<FaceFrame?>, modelFailed: AtomicBoolean, modifier: Modifier) {
     val context = LocalContext.current
     val owner = LocalLifecycleOwner.current
     val previewView = remember {
@@ -170,7 +172,12 @@ private fun CameraFeed(latest: AtomicReference<FaceFrame?>, modifier: Modifier) 
         val executor = Executors.newSingleThreadExecutor()
         var tracker: FaceTracker? = null
         executor.execute {
-            tracker = runCatching { FaceTracker(context, latest) }.onFailure { Log.e(TAG, "tracker init", it) }.getOrNull()
+            tracker = runCatching { FaceTracker(context, latest) }
+                .onFailure {
+                    Log.e(TAG, "tracker init", it)
+                    modelFailed.set(true)
+                }
+                .getOrNull()
         }
         val future = ProcessCameraProvider.getInstance(context)
         var provider: ProcessCameraProvider? = null
@@ -272,7 +279,7 @@ private class Verdict(
     val ready: Boolean get() = states.values.all { it == CheckState.OK }
 }
 
-private fun verdict(f: FaceFrame?): Verdict {
+private fun verdict(f: FaceFrame?, modelFailed: Boolean): Verdict {
     val q = f?.metrics
     val issue = q?.issue()
     val states = LinkedHashMap<Check, CheckState>()
@@ -294,7 +301,7 @@ private fun verdict(f: FaceFrame?): Verdict {
     }
     val tilt = f?.let { maxOf(abs(it.yawDeg), abs(it.pitchDeg)) }
     fun issueIn(g: FaceIssue.Group) = issue?.takeIf { it.group == g }
-    check(Check.FACE, f != null, "No face · look at the screen", null)
+    check(Check.FACE, f != null, if (modelFailed) "Face model failed to load" else "No face · look at the screen", null)
     check(
         Check.DISTANCE, f?.let { it.widthFraction() > MIN_FACE_WIDTH }, "Move closer",
         f?.let { Meter(it.widthFraction(), MIN_FACE_WIDTH, 0.6f, higherIsBetter = true) },
