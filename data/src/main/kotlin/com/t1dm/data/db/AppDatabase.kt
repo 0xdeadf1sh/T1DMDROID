@@ -40,8 +40,9 @@ import kotlinx.coroutines.Dispatchers
         EventTombstoneEntity::class,
         TwinScanEntity::class,
         TwinOverrideEntity::class,
+        TwinFaceEntity::class,
     ],
-    version = 34,
+    version = 35,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -73,6 +74,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun eventTombstoneDao(): EventTombstoneDao
     abstract fun twinScanDao(): TwinScanDao
     abstract fun twinOverrideDao(): TwinOverrideDao
+    abstract fun twinFaceDao(): TwinFaceDao
 
     companion object {
         const val NAME = "t1dm.db"

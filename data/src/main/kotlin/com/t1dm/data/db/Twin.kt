@@ -33,6 +33,25 @@ data class TwinOverrideEntity(
     val updatedAtMs: Long,
 )
 
+/** Phone-local, never archived: the face texture, one row ([id] 0), lossy WebP with alpha. */
+@Entity(tableName = "twin_face")
+class TwinFaceEntity(
+    @PrimaryKey val id: Int = 0,
+    val atMs: Long,
+    val webp: ByteArray,
+)
+
+@Dao
+interface TwinFaceDao {
+    @Upsert suspend fun upsert(row: TwinFaceEntity)
+
+    @Query("SELECT webp FROM twin_face WHERE id = 0")
+    fun observe(): Flow<ByteArray?>
+
+    @Query("DELETE FROM twin_face")
+    suspend fun deleteAll()
+}
+
 @Dao
 interface TwinScanDao {
     @Insert suspend fun insert(row: TwinScanEntity): Long

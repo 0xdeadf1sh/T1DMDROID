@@ -730,6 +730,16 @@ object MigrationRunner {
         }
     }
 
+    internal const val SQL_34_35_CREATE_TWIN_FACE =
+        "CREATE TABLE IF NOT EXISTS `twin_face` (`id` INTEGER NOT NULL, `atMs` INTEGER NOT NULL, " +
+            "`webp` BLOB NOT NULL, PRIMARY KEY(`id`))"
+
+    val MIGRATION_34_35 = object : Migration(34, 35) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_34_35_CREATE_TWIN_FACE)
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -764,6 +774,7 @@ object MigrationRunner {
         MIGRATION_31_32,
         MIGRATION_32_33,
         MIGRATION_33_34,
+        MIGRATION_34_35,
     )
 
     fun <T : RoomDatabase> configure(builder: RoomDatabase.Builder<T>): RoomDatabase.Builder<T> =

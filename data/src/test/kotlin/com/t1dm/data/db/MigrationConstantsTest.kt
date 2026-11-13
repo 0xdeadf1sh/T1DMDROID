@@ -111,6 +111,11 @@ class MigrationConstantsTest {
     }
 
     @Test
+    fun `the v35 twin face DDL is exactly what Room generates`() {
+        assertEquals(createSqlOf(schemaText(35), "twin_face"), MigrationRunner.SQL_34_35_CREATE_TWIN_FACE)
+    }
+
+    @Test
     fun `the real-sensor backfill writes exactly CgmSensorModelId AIDEX_X`() {
         assertTrue(
             "MIGRATION_10_11 no longer backfills ${CgmSensorModelId.AIDEX_X}: " +
