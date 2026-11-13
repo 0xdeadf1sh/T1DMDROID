@@ -11,25 +11,28 @@ object TwinMorphs {
     private const val BMI_SPAN_UP = 13.0
     private const val BMI_SPAN_DOWN = 5.0
 
+    /** MakeHuman's weight and muscle targets move at most ~2 cm; extrapolate so the edit shows. */
+    private const val SHAPE_GAIN = 3.0
+
     fun weights(scan: TwinScan?, body: TwinBody): FloatArray {
         val w = FloatArray(body.morphNames.size)
         if (scan == null) return w
-        fun set(name: String, v: Double) {
+        fun set(name: String, v: Double, gain: Double = 1.0) {
             val i = body.morphIndex(name)
-            if (i >= 0) w[i] = v.coerceIn(-1.0, 1.0).toFloat()
+            if (i >= 0) w[i] = (v.coerceIn(-1.0, 1.0) * gain).toFloat()
         }
         scan[TwinTrait.SEX]?.let { set("sex", 2 * it - 1) }
         scan[TwinTrait.AGE]?.let { set("age", ((it - YOUNG_Y) / (OLD_Y - YOUNG_Y)).coerceAtLeast(0.0)) }
         scan[TwinTrait.MUSCLE]?.let { m ->
-            set("muscle_up", (2 * (m - 0.5)).coerceAtLeast(0.0))
-            set("muscle_down", (2 * (0.5 - m)).coerceAtLeast(0.0))
+            set("muscle_up", (2 * (m - 0.5)).coerceAtLeast(0.0), SHAPE_GAIN)
+            set("muscle_down", (2 * (0.5 - m)).coerceAtLeast(0.0), SHAPE_GAIN)
         }
         val h = scan[TwinTrait.HEIGHT]
         val kg = scan[TwinTrait.WEIGHT]
         if (h != null && kg != null) {
             val bmi = kg / ((h / 100) * (h / 100))
-            set("weight_up", ((bmi - NEUTRAL_BMI) / BMI_SPAN_UP).coerceAtLeast(0.0))
-            set("weight_down", ((NEUTRAL_BMI - bmi) / BMI_SPAN_DOWN).coerceAtLeast(0.0))
+            set("weight_up", ((bmi - NEUTRAL_BMI) / BMI_SPAN_UP).coerceAtLeast(0.0), SHAPE_GAIN)
+            set("weight_down", ((NEUTRAL_BMI - bmi) / BMI_SPAN_DOWN).coerceAtLeast(0.0), SHAPE_GAIN)
         }
         if (h != null) fitHeight(w, h.toFloat(), body)
         return w

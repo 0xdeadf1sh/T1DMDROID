@@ -1,5 +1,6 @@
 package com.t1dm.feature.twin
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -78,29 +79,31 @@ fun TwinScreen(
                     }
                 }
             }
-            Row(
-                Modifier.padding(vertical = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Button(onClick = { haptics.perform(HapticEvent.Tap); onScan() }) { Text("Scan face") }
-                TextButton(onClick = { editing = true }, enabled = latest != null) { Text("Edit") }
-                TextButton(onClick = onTrends, enabled = scanCount > 0) { Text("Trends") }
-                TextButton(onClick = { haptics.perform(HapticEvent.Tap); onMockScan() }) { Text("Mock") }
+            if (editing && effective != null) {
+                BackHandler { editing = false }
+                TwinEditPanel(
+                    effective = effective,
+                    edited = overrides.keys + draft.keys,
+                    onDrag = { t, v -> draft[t.key] = v },
+                    onCommit = { t -> draft[t.key]?.let { onOverride(t.key, it) } },
+                    onReset = {
+                        draft.clear()
+                        onResetOverrides()
+                    },
+                    onDone = { editing = false },
+                )
+            } else {
+                Row(
+                    Modifier.padding(vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Button(onClick = { haptics.perform(HapticEvent.Tap); onScan() }) { Text("Scan face") }
+                    TextButton(onClick = { editing = true }, enabled = latest != null) { Text("Edit") }
+                    TextButton(onClick = onTrends, enabled = scanCount > 0) { Text("Trends") }
+                    TextButton(onClick = { haptics.perform(HapticEvent.Tap); onMockScan() }) { Text("Mock") }
+                }
             }
-        }
-        if (editing && effective != null) {
-            TwinEditSheet(
-                effective = effective,
-                edited = overrides.keys + draft.keys,
-                onDrag = { t, v -> draft[t.key] = v },
-                onCommit = { t -> draft[t.key]?.let { onOverride(t.key, it) } },
-                onReset = {
-                    draft.clear()
-                    onResetOverrides()
-                },
-                onDismiss = { editing = false },
-            )
         }
         if (tutorial) {
             TwinTutorial(onDone = {

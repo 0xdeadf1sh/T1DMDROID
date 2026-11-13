@@ -53,7 +53,9 @@ class TwinBodyTest {
             ),
             body,
         )
-        assertTrue(w.all { it in -1f..1f })
+        val shape = setOf("weight_up", "weight_down", "muscle_up", "muscle_down")
+        body.morphNames.forEachIndexed { i, n -> assertTrue(n, w[i] in if (n in shape) -3f..3f else -1f..1f) }
+        assertEquals(3f, w[body.morphIndex("muscle_up")])
         assertEquals(1f, w[body.morphIndex("sex")])
         assertEquals(1f, w[body.morphIndex("age")])
     }

@@ -131,8 +131,10 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
         val bodyH = maxY - minY
         val z = zoom
         val toFace = ((1f - z) / (1f - MIN_ZOOM)).coerceIn(0f, 1f)
-        val cy = (minY + maxY) / 2f + (maxY - bodyH * EYE_FROM_TOP - (minY + maxY) / 2f) * toFace
-        val dist = bodyH * 0.62f / tan(Math.toRadians(FOV_DEG / 2.0).toFloat()) * z
+        // A fixed frame, not the body's own height, so a height change reads as one.
+        val mid = minY + FRAME_H / 2f
+        val cy = mid + (maxY - bodyH * EYE_FROM_TOP - mid) * toFace
+        val dist = FRAME_H * 0.62f / tan(Math.toRadians(FOV_DEG / 2.0).toFloat()) * z
         val ex = sin(yaw) * cos(pitch) * dist
         val ey = cy + sin(pitch) * dist
         val ez = cos(yaw) * cos(pitch) * dist
@@ -235,6 +237,9 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
         const val TAG = "TwinRenderer"
         const val FOV_DEG = 35f
         const val MIN_ZOOM = 0.3f
+
+        /** Framed height in decimetres; the tallest editable body (205 cm) still fits. */
+        const val FRAME_H = 19f
         const val CAMERA_RATE = 9f
 
         /** Eye line as a fraction of standing height, measured down from the crown. */

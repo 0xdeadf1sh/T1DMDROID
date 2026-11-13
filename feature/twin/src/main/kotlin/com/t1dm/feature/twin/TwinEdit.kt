@@ -1,13 +1,13 @@
 package com.t1dm.feature.twin
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -29,20 +29,20 @@ internal fun effectiveScan(scan: TwinScan?, overrides: Map<String, Double>, draf
     return scan.copy(outputs = scan.outputs + overrides + draft)
 }
 
-/** [onDrag] moves the twin live; [onCommit] stores the edit once the thumb lifts. */
-@OptIn(ExperimentalMaterial3Api::class)
+/** Inline under the twin, so the body stays in view; [onDrag] moves it live, [onCommit] stores. */
 @Composable
-internal fun TwinEditSheet(
+internal fun TwinEditPanel(
     effective: TwinScan,
     edited: Set<String>,
     onDrag: (TwinTrait, Double) -> Unit,
     onCommit: (TwinTrait) -> Unit,
     onReset: () -> Unit,
-    onDismiss: () -> Unit,
+    onDone: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = cs.surface) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
+    Box(modifier.fillMaxWidth().background(cs.surface.copy(alpha = 0.92f))) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 8.dp, bottom = 8.dp)) {
             for (t in EDITABLE) {
                 val v = effective[t] ?: (t.min + t.max) / 2
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -62,6 +62,7 @@ internal fun TwinEditSheet(
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = onReset, enabled = edited.isNotEmpty()) { Text("Reset to scan") }
+                TextButton(onClick = onDone) { Text("Done") }
             }
         }
     }
