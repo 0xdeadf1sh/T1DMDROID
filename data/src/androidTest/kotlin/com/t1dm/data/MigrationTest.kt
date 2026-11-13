@@ -550,7 +550,7 @@ class MigrationTest {
             countRows(db, "SELECT COUNT(*) FROM `logged_meal` WHERE `loggedAtMs` != `updatedAt`"),
         )
         assertEquals(
-            "nothing has been edited yet — a fact about the rows, not an unknown",
+            "nothing has been edited yet - a fact about the rows, not an unknown",
             0,
             countRows(db, "SELECT COUNT(*) FROM `logged_dose` WHERE `mutatedAtMs` IS NOT NULL"),
         )
@@ -690,7 +690,7 @@ class MigrationTest {
         val db = helper.runMigrationsAndValidate(26, listOf(MigrationRunner.MIGRATION_25_26))
 
         assertEquals(
-            "the row is kept — the drill-down still has to say what the last fit bought",
+            "the row is kept - the drill-down still has to say what the last fit bought",
             1,
             countRows(db, "SELECT COUNT(*) FROM `conformal_delta`"),
         )

@@ -26,7 +26,7 @@ class Libre3Pdu(
         return h
     }
 
-    override fun toString() = "$direction ${charUuid.take(UUID_PREFIX)}… ${bytes.size} B @ $tsMs"
+    override fun toString() = "$direction ${charUuid.take(UUID_PREFIX)}... ${bytes.size} B @ $tsMs"
 
     private companion object {
         const val UUID_PREFIX = 8

@@ -106,7 +106,7 @@ class Ct5StateImportTest {
     @Test
     fun `an SSN that is empty or not ASCII is refused`() {
         assertNull(Ct5StateImport.parse(document(ssn = "\"\"")))
-        assertNull(Ct5StateImport.parse(document(ssn = "\"00552228000801251µ\"")))
+        assertNull(Ct5StateImport.parse(document(ssn = "\"00552228000801251\u00b5\"")))
     }
 
     @Test

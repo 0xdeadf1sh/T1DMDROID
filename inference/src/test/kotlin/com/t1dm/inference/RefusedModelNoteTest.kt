@@ -43,7 +43,7 @@ class RefusedModelNoteTest {
         controller.refreshModels()
 
         assertEquals(
-            "no model — import a model zip",
+            "no model - import a model zip",
             controller.state.value.note,
         )
     }

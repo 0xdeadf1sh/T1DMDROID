@@ -90,7 +90,7 @@ object AlertChannels {
         }
         // Device temperature never bypasses DND, unlike the urgent glucose tier.
         val device = NotificationChannel(ids.device, "Device temperature", NotificationManager.IMPORTANCE_DEFAULT).apply {
-            description = "Temperature high — forecasting paused"
+            description = "Temperature high - forecasting paused"
             configureVibration(config.warningVibration)
             setSound(config.warningSound, if (config.warningSound != null) alarmAttrs else null)
         }

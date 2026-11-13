@@ -91,7 +91,7 @@ class AidexXConnectedSourceTest {
 
         // year 2026: activated
         src.onGattEvent(f002(byteArrayOf(0x21, 0x01) + hex("EA07020F0C21360400")))
-        assertTrue("activated → F003 subscribed", AidexChar.F003 in t.notifyEnables)
+        assertTrue("activated -> F003 subscribed", AidexChar.F003 in t.notifyEnables)
         assertEquals(2, t.writes.count { it.first == AidexChar.F002 })
 
         src.onGattEvent(AidexGattEvent.NotifyEnabled(AidexChar.F003, ok = true))
@@ -415,7 +415,7 @@ class AidexXConnectedSourceTest {
 
         src.onGattEvent(f002(lastId(12)))
         assertEquals(
-            "the first ask of a session must be relId 1 — nothing else names the range base",
+            "the first ask of a session must be relId 1 - nothing else names the range base",
             AidexSessionCodec.cmdGetHistory(sess, iv, 1).hexStr(),
             t.lastWrite(AidexChar.F002)!!.hexStr(),
         )

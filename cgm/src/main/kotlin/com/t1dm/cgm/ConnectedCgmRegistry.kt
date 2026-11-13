@@ -339,7 +339,7 @@ class ConnectedCgmRegistry(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
-            Log.w(TAG, "${d.id.value}: stored $what unreadable — ${e.javaClass.simpleName}")
+            Log.w(TAG, "${d.id.value}: stored $what unreadable - ${e.javaClass.simpleName}")
             null
         }
     }
@@ -523,7 +523,7 @@ class ConnectedCgmRegistry(
         val sessionJob = SupervisorJob(scope.coroutineContext[Job])
         val sessionScope = CoroutineScope(scope.coroutineContext + sessionJob)
         val source = runCatching { driver.createSession(descriptor, sessionScope) }.getOrElse { e ->
-            log.w(TAG, "${descriptor.id.value}: session could not be built — ${e.message}")
+            log.w(TAG, "${descriptor.id.value}: session could not be built - ${e.message}")
             null
         }
         if (source == null) {

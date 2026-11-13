@@ -41,7 +41,7 @@ class SettingsSearchRoutingTest {
     @Test
     fun `no settings destination is orphaned`() {
         val registered = registeredSettingsRoutes()
-        assertTrue("found no composable() routes — did Navigation.kt move?", registered.size > 15)
+        assertTrue("found no composable() routes - did Navigation.kt move?", registered.size > 15)
         val indexed = SettingsScreenKey.entries.map { settingsRouteFor(it) }.toSet()
         assertEquals(
             "settings destinations reachable by hand but invisible to search",

@@ -240,7 +240,7 @@ impl HeadModel {
         if n == 0 || step_states.len() != n_steps * self.d_model {
             return Err(CoreError::Internal {
                 reason: format!(
-                    "step_states has {} values, want n_slots {n} × {PATCH_SIZE} × d_model {}",
+                    "step_states has {} values, want n_slots {n} x {PATCH_SIZE} x d_model {}",
                     step_states.len(),
                     self.d_model
                 ),
@@ -1268,12 +1268,12 @@ fn guard_verdict(
     } else if !frozen.is_finite() || frozen.abs() < opts.min_frozen_response {
         report.verdict = LoraGuardVerdict::Inconclusive;
         report.why = format!(
-            "the frozen model's own response is {frozen:.2} mg/dL/U, below {:.2} — nothing to preserve",
+            "the frozen model's own response is {frozen:.2} mg/dL/U, below {:.2} - nothing to preserve",
             opts.min_frozen_response,
         );
     } else if !frozen_risk.is_finite() || frozen_risk == 0.0 {
         report.verdict = LoraGuardVerdict::Inconclusive;
-        report.why = "the frozen model's risk-space response is zero — nothing to ratio".to_string();
+        report.why = "the frozen model's risk-space response is zero - nothing to ratio".to_string();
     } else if !retention.is_finite() {
         report.verdict = LoraGuardVerdict::Inconclusive;
         report.why = "retention is not finite".to_string();
@@ -1288,7 +1288,7 @@ fn guard_verdict(
         // An inflated ISF gives too LARGE a dose; as untrustworthy as a collapse.
         report.verdict = LoraGuardVerdict::Blocked;
         report.why = format!(
-            "amplifies the dose response {:.1}× ({adapted:.2} vs {frozen:.2} mg/dL/U), ceiling {:.1}×",
+            "amplifies the dose response {:.1}x ({adapted:.2} vs {frozen:.2} mg/dL/U), ceiling {:.1}x",
             retention,
             opts.max_retention,
         );
@@ -1765,7 +1765,7 @@ mod tests {
         };
         let (g0, g1) = (grad(&untied_scale_desc()), grad(&desc()));
         assert!(g0.iter().all(|v| v.is_finite()) && g1.iter().all(|v| v.is_finite()));
-        assert!(g0.iter().zip(&g1).any(|(a, b)| (a - b).abs() > 1e-9), "β must move the gradient");
+        assert!(g0.iter().zip(&g1).any(|(a, b)| (a - b).abs() > 1e-9), "beta must move the gradient");
     }
 
     /// A small head in the shipped file format; small so the gradient checks stay quick.

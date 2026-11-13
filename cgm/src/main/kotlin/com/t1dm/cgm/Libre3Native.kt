@@ -759,7 +759,7 @@ private class Libre3DataPlaneNative(
 
     override fun sealFrame(kind: Int, sequence: Int, plaintext: ByteArray): Libre3Call<ByteArray> {
         if (kind !in 0..UByte.MAX_VALUE.toInt()) return Libre3Call.Failed("no kind $kind")
-        if (sequence !in 0..UShort.MAX_VALUE.toInt()) return Libre3Call.Failed("seq 0–${UShort.MAX_VALUE}")
+        if (sequence !in 0..UShort.MAX_VALUE.toInt()) return Libre3Call.Failed("seq 0-${UShort.MAX_VALUE}")
         return console { session.sealFrame(kind.toUByte(), sequence.toUShort(), plaintext) }
     }
 

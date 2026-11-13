@@ -274,9 +274,9 @@ fn encoders_refuse_what_the_layout_cannot_carry() {
     let four = Stats { windows: vec![stats().windows[0]; 4], ..stats() };
     assert!(four.encode().is_err());
 
-    let long = Glance { summary: "é".repeat(30), ..glance() };
+    let long = Glance { summary: "\u{e9}".repeat(30), ..glance() };
     let back = Glance::decode(&long.encode()).unwrap();
-    assert_eq!(back.summary, "é".repeat(20), "truncated at a char boundary, ≤ 40 bytes");
+    assert_eq!(back.summary, "\u{e9}".repeat(20), "truncated at a char boundary, <= 40 bytes");
     let nan = StatsWindow::from_stats(7, 10, [f64::NAN, 0.0, 1.0, 0.0, 0.0], 100.0, 1.0, 1.0, 5.0);
     assert_eq!(nan.n_samples, 0, "non-finite input withholds the window");
 }

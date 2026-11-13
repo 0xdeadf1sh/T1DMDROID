@@ -36,15 +36,15 @@ internal fun thresholdMessage(band: AlertBand, bgMgdl: Int, t: AlertThresholds):
 }
 
 internal fun overTempMessage(tempC: Double, clearC: Double): String =
-    "%.1f°C, paused until below %.0f°C".format(tempC, clearC)
+    "%.1fC, paused until below %.0fC".format(tempC, clearC)
 
 internal fun weakSignalMessage(rssiDbm: Int, thresholdDbm: Int): String =
-    "$rssiDbm dBm (≤ $thresholdDbm) — readings may drop"
+    "$rssiDbm dBm (<= $thresholdDbm) - readings may drop"
 
 internal fun signalLossMessage(windowMin: Int, escalated: Boolean, lastBgMgdl: Int?): String {
     val last = lastBgMgdl?.let { " Last $it mg/dL." } ?: ""
     return if (escalated) {
-        "No reading for over $windowMin min — last was low/falling.$last"
+        "No reading for over $windowMin min - last was low/falling.$last"
     } else {
         "No reading for over $windowMin min.$last"
     }

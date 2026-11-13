@@ -113,7 +113,7 @@ class Libre3ConnectedSource(
             _pairing.value = outcome
             when (outcome) {
                 is Libre3Session.Outcome.Established -> {
-                    log.i(TAG, "paired ${sensor.serial} — the open link hands to the data plane")
+                    log.i(TAG, "paired ${sensor.serial} - the open link hands to the data plane")
                     _failure.value = null
                     runStream(outcome.kEnc, outcome.ivEnc)
                 }

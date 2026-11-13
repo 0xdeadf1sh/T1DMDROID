@@ -76,7 +76,7 @@ val cargoNdkBuild = tasks.register<Exec>("cargoNdkBuild") {
     // No NDK: a host-only skip, which packages whatever .so generated/jniLibs still holds.
     onlyIf {
         if (ndk == null) {
-            logger.warn("cargoNdkBuild SKIPPED — no NDK found; no Android .so will be built (host-only).")
+            logger.warn("cargoNdkBuild SKIPPED - no NDK found; no Android .so will be built (host-only).")
             false
         } else {
             true

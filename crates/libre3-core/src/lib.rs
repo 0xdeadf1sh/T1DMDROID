@@ -802,7 +802,7 @@ impl Libre3DataPlaneSession {
     pub fn seal_frame(&self, kind: u8, sequence: u16, plaintext: Vec<u8>) -> Result<Vec<u8>, Libre3Error> {
         let kinds = dataplane::DataPlanePacketKind::ALL_CASES;
         let kind = *kinds.get(usize::from(kind)).ok_or_else(|| Libre3Error::Crypto {
-            reason: format!("kind {kind}: 0–{}", kinds.len() - 1),
+            reason: format!("kind {kind}: 0-{}", kinds.len() - 1),
         })?;
         let crypto = self.lock()?.decoder.crypto.clone();
         let frame = crypto.encrypt(&plaintext, sequence, kind).map_err(data_plane_error)?;

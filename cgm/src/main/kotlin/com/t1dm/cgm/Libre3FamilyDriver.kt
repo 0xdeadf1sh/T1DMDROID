@@ -122,7 +122,7 @@ class Libre3FamilyDriver(
             return null
         }
         val tables = stack.tablesDir() ?: run {
-            log.i(TAG, "pairing for $address refused: the §9 tables dir is not available")
+            log.i(TAG, "pairing for $address refused: the S9 tables dir is not available")
             return null
         }
         val transport = stack.transportAt(address, scope, log) ?: run {

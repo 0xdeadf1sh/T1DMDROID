@@ -49,7 +49,7 @@ class SettingsIndexTest {
     }
 
     @Test
-    fun `the hub itself is not indexed — its rows navigate, they do not tune`() {
+    fun `the hub itself is not indexed - its rows navigate, they do not tune`() {
         assertTrue(SettingsIndex.ALL.none { it.screen == SettingsScreenKey.ROOT })
     }
 
@@ -101,7 +101,7 @@ class SettingsIndexTest {
     fun `every source file in the package is accounted for`() {
         val known = SCREEN_SOURCES.values.toSet() + KNOB_FREE_SOURCES + INFRASTRUCTURE_SOURCES
         val present = screensDir().listFiles { f: File -> f.name.endsWith(".kt") }!!.map { it.name }.toSet()
-        assertEquals("new source file — add it to the index map or the knob-free list", known, present)
+        assertEquals("new source file - add it to the index map or the knob-free list", known, present)
     }
 
     @Test

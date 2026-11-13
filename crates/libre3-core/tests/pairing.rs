@@ -228,7 +228,7 @@ fn assert_write_msg(action: &PairingAction, char: PairingChar, expected_chunks: 
     match action {
         PairingAction::WriteChar { char: c, chunks } => {
             assert_eq!(c, &char, "write characteristic");
-            assert_eq!(chunks, expected_chunks, "write chunks (§5.2 fragments)");
+            assert_eq!(chunks, expected_chunks, "write chunks (S5.2 fragments)");
         }
         other => panic!("expected a write on {char:?}, got {other:?}"),
     }
@@ -580,7 +580,7 @@ fn first_pair_command_gated_happy_path_byte_exact() {
     let mut actions = Vec::new();
     drive(&mut machine, &mut sensor, &mut actions).expect("first pair handshake");
 
-    assert_eq!(actions.len(), 21, "§5.3 emits 11 writes + 9 awaits + Established");
+    assert_eq!(actions.len(), 21, "S5.3 emits 11 writes + 9 awaits + Established");
     assert_write_cmd(&actions[0], 0x01);
     assert_write_cmd(&actions[1], 0x02);
     assert_write_msg(
@@ -916,7 +916,7 @@ fn early_arrival_buffers_across_chars() {
         .iter()
         .filter(|a| matches!(a, PairingAction::WriteChar { .. }))
         .collect();
-    assert_eq!(writes.len(), 11, "11 writes on the §5.3 path");
+    assert_eq!(writes.len(), 11, "11 writes on the S5.3 path");
     assert_write_cmd(writes[0], 0x01);
     assert_write_cmd(writes[1], 0x02);
     assert_write_msg(

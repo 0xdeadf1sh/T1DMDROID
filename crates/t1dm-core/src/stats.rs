@@ -983,7 +983,7 @@ mod tests {
         // One hour apart, [100, 130, 160] → Dt = [30, 30], SD = 0.
         let hr = 3_600_000i64;
         let out = advanced_stats(vec![s(0, 100.0), s(hr, 130.0), s(2 * hr, 160.0)], 70, 180, 24).unwrap();
-        close(out.conga1, 0.0, 1e-9, "conga1 constant slope → 0 SD");
+        close(out.conga1, 0.0, 1e-9, "conga1 constant slope -> 0 SD");
         // [100, 130, 150] → Dt = [30, 20], population SD = 5.
         let out2 = advanced_stats(vec![s(0, 100.0), s(hr, 130.0), s(2 * hr, 150.0)], 70, 180, 24).unwrap();
         close(out2.conga1, 5.0, 1e-9, "conga1 uneven");
@@ -1193,9 +1193,9 @@ mod tests {
         // Epoch 0 is Thu 00:00 UTC; UTC-5 same instant is Wed 19:00; per-sample offset splits it.
         let out = advanced_stats(vec![tzs(0, 0, 100.0), tzs(0, -300, 140.0)], 70, 180, 24).unwrap();
         assert_eq!(out.heatmap.len(), 2, "same instant, two zones, two cells");
-        assert_eq!((out.heatmap[0].dow, out.heatmap[0].hour), (2, 19), "UTC-5 → Wed 19:00");
+        assert_eq!((out.heatmap[0].dow, out.heatmap[0].hour), (2, 19), "UTC-5 -> Wed 19:00");
         close(out.heatmap[0].mean_bg, 140.0, 1e-12, "the UTC-5 cell carries its own sample");
-        assert_eq!((out.heatmap[1].dow, out.heatmap[1].hour), (3, 0), "UTC → Thu 00:00");
+        assert_eq!((out.heatmap[1].dow, out.heatmap[1].hour), (3, 0), "UTC -> Thu 00:00");
         close(out.heatmap[1].mean_bg, 100.0, 1e-12, "the UTC cell carries its own sample");
 
         // Epoch day 4 (1970-01-05) is a Monday.
@@ -1207,7 +1207,7 @@ mod tests {
 
         // A negative local instant needs rem_euclid/div_euclid; % and / give hour -1, wrong day.
         let out = advanced_stats(vec![tzs(0, -60, 100.0)], 70, 180, 24).unwrap();
-        assert_eq!((out.heatmap[0].dow, out.heatmap[0].hour), (2, 23), "UTC-1 at epoch 0 → Wed 23:00");
+        assert_eq!((out.heatmap[0].dow, out.heatmap[0].hour), (2, 23), "UTC-1 at epoch 0 -> Wed 23:00");
 
         let out = advanced_stats(
             vec![tzs(0, 0, 100.0), tzs(hour / 2, 0, 200.0), tzs(hour / 3, 0, -1.0)],
@@ -1324,7 +1324,7 @@ mod tests {
         assert!(advanced_stats(one.clone(), 180, 70, 24).is_err(), "low>high");
         assert!(advanced_stats(one.clone(), 100, 100, 24).is_err(), "low==high");
         assert!(advanced_stats(one.clone(), 70, 180, 0).is_err(), "0 bins");
-        assert!(advanced_stats(one.clone(), 70, 180, 7).is_err(), "7 ∤ 1440");
+        assert!(advanced_stats(one.clone(), 70, 180, 7).is_err(), "7 does not divide 1440");
         assert!(advanced_stats(one.clone(), 70, 180, 5000).is_err(), "too many bins");
         assert!(advanced_stats(one, 70, 180, 48).is_ok(), "48 | 1440");
     }

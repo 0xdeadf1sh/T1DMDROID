@@ -85,7 +85,7 @@ class CgmSensorLogsTest {
             withContext(Dispatchers.Default) { yield() }
             log.dec(null, "push #7")
         }
-        log.dec(null, "patchControl ← top-up")
+        log.dec(null, "patchControl <- top-up")
 
         val all = logs.snapshot(id)
         assertEquals(1_000_000_000L, rx)

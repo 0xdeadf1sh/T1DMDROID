@@ -141,7 +141,7 @@ class CgmSensorLog internal constructor(
         val line = when {
             !secret -> text
             text.isEmpty() -> "${bytes.size} B withheld"
-            else -> "$text · ${bytes.size} B withheld"
+            else -> "$text | ${bytes.size} B withheld"
         }
         return put(kind, CgmLogLevel.I, topic, channel, line, if (secret) null else bytes.copyOf(), value, opens)
     }

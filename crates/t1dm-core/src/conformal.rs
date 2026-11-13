@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn min_cal_windows_is_the_no_clamp_floor_of_the_level_tuple() {
         let n = conformal_min_cal_windows();
-        assert_eq!(n, 19, "the seven levels of §6 resolve without clamping at n=19");
+        assert_eq!(n, 19, "the seven levels of S6 resolve without clamping at n=19");
         let median = tau_index(MEDIAN_TAU).unwrap();
         for (k, &tau) in QUANTILE_LEVELS.iter().enumerate() {
             if k == median {

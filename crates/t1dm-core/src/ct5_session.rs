@@ -1782,7 +1782,7 @@ mod tests {
         let f = build_set_date(2026, 8, 17, 11, 46, 13).unwrap();
         assert_eq!(f, vec![0x03, 126, 8, 17, 11, 46, 13, 0xE0]);
         assert!(is_legal(&f));
-        assert_eq!(f.len(), 8, "seven fields and a checksum — no timezone byte");
+        assert_eq!(f.len(), 8, "seven fields and a checksum - no timezone byte");
         assert!(build_set_date(1899, 1, 1, 0, 0, 0).is_none());
         assert!(build_set_date(2026, 13, 1, 0, 0, 0).is_none());
         assert!(build_set_date(2026, 1, 0, 0, 0, 0).is_none());
@@ -1962,7 +1962,7 @@ mod tests {
             decode_record(&plain, TempOrder::FractionFirst).unwrap().temp_c_x100
         };
         assert_eq!(wrong(PUSH_A), -3529, "impossible, and the whole reason for this vector");
-        assert_eq!(wrong(PUSH_B), 3570, "plausible — one frame alone settles nothing");
+        assert_eq!(wrong(PUSH_B), 3570, "plausible - one frame alone settles nothing");
         assert_eq!(parse_push(PUSH_A, VECTOR_CIPHER_ID).unwrap().record.temp_c_x100, 3104);
     }
 

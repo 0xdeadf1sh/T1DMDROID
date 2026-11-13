@@ -347,7 +347,7 @@ class GameLoopTest {
         }
         settle()
         assertEquals("a frozen scene is not stepped", stepsAtCrash, world.steps)
-        assertEquals("…nor re-published", tickAtCrash, bus.tick)
+        assertEquals("...nor re-published", tickAtCrash, bus.tick)
         assertEquals(describedAtCrash, feel.frames)
         assertTrue("and every held frame says so", feel.holds >= 20)
 

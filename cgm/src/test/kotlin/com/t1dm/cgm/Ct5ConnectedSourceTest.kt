@@ -29,7 +29,7 @@ class Ct5ConnectedSourceTest {
         rig.arm()
         assertTrue(rig.transport.connectCalled)
         assertEquals(
-            "MTU must be negotiated before discovery — the identity reply does not fit the default",
+            "MTU must be negotiated before discovery - the identity reply does not fit the default",
             listOf(Ct5Constants.REQUESTED_MTU),
             rig.transport.mtuRequests,
         )
@@ -364,7 +364,7 @@ class Ct5ConnectedSourceTest {
         bound.arm()
         pressBind(bound)
         assertFalse(
-            "an already-bound sensor must never be re-bound — 0x30 cannot be replayed",
+            "an already-bound sensor must never be re-bound - 0x30 cannot be replayed",
             bound.transport.wrote(Ct5Constants.Opcode.SET_ID),
         )
     }
@@ -850,10 +850,10 @@ class Ct5ConnectedSourceTest {
             rig.feed(Ct5SessionCodec.push(glucoseId = 300, cipherId = EXPECTED_CIPHER_ID, glucoseMgdl = 110))
             val reading = rig.repo.upsertedReadings.single()
             assertEquals("skew $skewMs", currentTime, reading.rxWallMs)
-            assertEquals("skew $skewMs — the repair means nothing had to fall back", 0, rig.source.skewFallbackCount)
+            assertEquals("skew $skewMs - the repair means nothing had to fall back", 0, rig.source.skewFallbackCount)
             val corrected = Ct5SensorState.decode(rig.repo.secretWrites.single().second)!!
             assertEquals(
-                "skew $skewMs — and the anchor now derives this sample at its own delivery",
+                "skew $skewMs - and the anchor now derives this sample at its own delivery",
                 currentTime,
                 corrected.bindTimeMs + 300 * Ct5Constants.SAMPLE_INTERVAL_MS,
             )
@@ -1461,7 +1461,7 @@ class Ct5ConnectedSourceTest {
             rig.repo.loadSourceCursor(rig.source.descriptor.id),
         )
         assertTrue(
-            "and the sealed secret — the one thing a sensor cannot survive losing — is untouched",
+            "and the sealed secret - the one thing a sensor cannot survive losing - is untouched",
             rig.repo.secretWrites.isEmpty(),
         )
     }

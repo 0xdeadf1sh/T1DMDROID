@@ -128,8 +128,8 @@ class AidexBringupActivity : Activity() {
             s.equals(OLD_SERIAL, ignoreCase = true) -> { refuse("REFUSED: serial $OLD_SERIAL is the old sensor"); return }
         }
         serial = s!!
-        setStatus("Bring-up: $serial\nSTARTING — Option B (unbonded, no createBond)")
-        logi("BRINGUP ACTIVITY start serial=$serial — Option B first (unbonded handshake), auto-fallback to Option A on 0x05/drop")
+        setStatus("Bring-up: $serial\nSTARTING - Option B (unbonded, no createBond)")
+        logi("BRINGUP ACTIVITY start serial=$serial - Option B first (unbonded handshake), auto-fallback to Option A on 0x05/drop")
 
         thread = HandlerThread("aidex-bringup").apply { start() }
         handler = Handler(thread.looper)
@@ -163,7 +163,7 @@ class AidexBringupActivity : Activity() {
         }
         statusView = TextView(this).apply {
             setTextColor(Color.WHITE); textSize = 17f
-            setTypeface(Typeface.MONOSPACE, Typeface.BOLD); text = "Starting…"
+            setTypeface(Typeface.MONOSPACE, Typeface.BOLD); text = "Starting..."
         }
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
@@ -209,7 +209,7 @@ class AidexBringupActivity : Activity() {
     private fun fail(reason: String) {
         setButtons(false, false, false)
         setStatus("FAILED\n$reason")
-        logi("FAILURE — $reason")
+        logi("FAILURE - $reason")
     }
 
     private fun ensurePermissionsThenStart() {
@@ -231,7 +231,7 @@ class AidexBringupActivity : Activity() {
         val scanner = runCatching { getSystemService(BluetoothManager::class.java)?.adapter?.bluetoothLeScanner }.getOrNull()
         if (scanner == null) { fail("no BluetoothLeScanner (adapter off?)"); return }
         scanning = true
-        setStatus("Bring-up: $serial (Option $option)\nSCANNING…")
+        setStatus("Bring-up: $serial (Option $option)\nSCANNING...")
         logi("SCAN start (SCAN_MODE_LOW_LATENCY, mfr 0x0059 AND service 0x181F) [serial-locked to *$serial] option=$option")
         runCatching { scanner.startScan(scanFilters(), scanSettings(), scanCallback) }.onFailure { logi("SCAN start threw: $it") }
     }
@@ -264,11 +264,11 @@ class AidexBringupActivity : Activity() {
         val dev = target ?: return
         connectWasBonded = dev.bondState == BluetoothDevice.BOND_BONDED
         if (option == Option.A) {
-            setStatus("Option A — connecting (was bonded=$connectWasBonded)")
+            setStatus("Option A - connecting (was bonded=$connectWasBonded)")
             logi("Option A: ~${PRECONNECT_DELAY_A_MS}ms pre-connect delay, connectWasBonded=$connectWasBonded")
             handler.postDelayed({ doConnect() }, PRECONNECT_DELAY_A_MS)
         } else {
-            setStatus("Option B — connecting (unbonded)")
+            setStatus("Option B - connecting (unbonded)")
             doConnect()
         }
     }
@@ -276,7 +276,7 @@ class AidexBringupActivity : Activity() {
     @SuppressLint("MissingPermission")
     private fun doConnect() {
         val dev = target ?: return
-        logi("connectGatt(autoConnect=false, TRANSPORT_LE) option=$option connectWasBonded=$connectWasBonded → ${dev.address}")
+        logi("connectGatt(autoConnect=false, TRANSPORT_LE) option=$option connectWasBonded=$connectWasBonded -> ${dev.address}")
         gatt = runCatching { dev.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE) }
             .getOrElse { logi("connectGatt threw: $it"); null }
         if (gatt == null) { fail("connectGatt returned null"); return }
@@ -354,7 +354,7 @@ class AidexBringupActivity : Activity() {
             val chUuid = descriptor.characteristic?.uuid
             logi("onDescriptorWrite ${descriptor.uuid} (char $chUuid) status=$status (${gattStatusName(status)})")
             when {
-                chUuid == F003_UUID -> if (status == 5) logi("F003 CCCD 0x05 — F003 is private-bonded (§4.1)") else logi("F003 realtime notify enabled")
+                chUuid == F003_UUID -> if (status == 5) logi("F003 CCCD 0x05 - F003 is private-bonded (S4.1)") else logi("F003 realtime notify enabled")
                 hs == Hs.CCCD_F001 || hs == Hs.CCCD_F002 -> handler.post { onCccdWritten(status) }
             }
         }
@@ -363,21 +363,21 @@ class AidexBringupActivity : Activity() {
     @SuppressLint("MissingPermission")
     private fun onConnected(g: BluetoothGatt) {
         if (option == Option.B) {
-            setStatus("Option B — CONNECTED, discovering (no bond, no MTU/priority)")
-            logi("Option B CONNECTED: NOT createBond, NOT requestMtu, NOT requestConnectionPriority → discoverServices()")
+            setStatus("Option B - CONNECTED, discovering (no bond, no MTU/priority)")
+            logi("Option B CONNECTED: NOT createBond, NOT requestMtu, NOT requestConnectionPriority -> discoverServices()")
             handler.post { runCatching { g.discoverServices() } }
             return
         }
         val bs = target?.bondState ?: BluetoothDevice.BOND_NONE
         logi("Option A CONNECTED bondState=${bondName(bs)}")
         if (bs == BluetoothDevice.BOND_BONDED) {
-            logi("Option A: already BONDED on connect → discoverServices() (no createBond). (Watch for KEY_MISSING: status 22 pre-proof.)")
-            setStatus("Option A — bonded, discovering")
+            logi("Option A: already BONDED on connect -> discoverServices() (no createBond). (Watch for KEY_MISSING: status 22 pre-proof.)")
+            setStatus("Option A - bonded, discovering")
             handler.post { runCatching { g.discoverServices() } }
         } else {
             bondingWindow = true
-            setStatus("Option A — not bonded; ${BOND_RECHECK_MS}ms grace before createBond")
-            logi("Option A: not bonded — scheduling ${BOND_RECHECK_MS}ms recheck; NOT creating bond yet (let the stack possibly auto-bond). NO GATT op while BONDING.")
+            setStatus("Option A - not bonded; ${BOND_RECHECK_MS}ms grace before createBond")
+            logi("Option A: not bonded - scheduling ${BOND_RECHECK_MS}ms recheck; NOT creating bond yet (let the stack possibly auto-bond). NO GATT op while BONDING.")
             handler.postDelayed(bondRecheck, BOND_RECHECK_MS)
             handler.postDelayed(bondWatchdog, BOND_WATCHDOG_MS)
         }
@@ -386,12 +386,12 @@ class AidexBringupActivity : Activity() {
     private fun onDisconnected(status: Int) {
         if (sessionHeld) {
             setStatus("LINK DOWN after session held\nstatus=$status (${gattStatusName(status)})")
-            logi("LINK DOWN while holding session — status=$status. If screen-off, the held link did not survive; a dropped bond will KEY_MISSING on reconnect.")
+            logi("LINK DOWN while holding session - status=$status. If screen-off, the held link did not survive; a dropped bond will KEY_MISSING on reconnect.")
             setButtons(false, false, false)
             return
         }
         if (option == Option.A && bondingWindow) {
-            logi("Option A: disconnect during the bonding window — IGNORED (no reconnect), per DashMax; awaiting the BOND_STATE event")
+            logi("Option A: disconnect during the bonding window - IGNORED (no reconnect), per DashMax; awaiting the BOND_STATE event")
             return
         }
         if (option == Option.A && connectWasBonded && status == 22 && keyMissingRecoveries < MAX_KEY_MISSING_RECOVERIES) {
@@ -413,17 +413,17 @@ class AidexBringupActivity : Activity() {
             dev.bondState == BluetoothDevice.BOND_BONDED -> {
                 bondingWindow = false
                 handler.removeCallbacks(bondWatchdog)
-                logi("Option A recheck: stabilized to BONDED (stack auto-bonded) → discoverServices() (no createBond)")
+                logi("Option A recheck: stabilized to BONDED (stack auto-bonded) -> discoverServices() (no createBond)")
                 gatt?.let { g -> handler.post { runCatching { g.discoverServices() } } }
             }
             !createBondAttempted -> {
                 createBondAttempted = true
-                logi("Option A recheck: still not bonded → device.createBond() ONCE (NOT resolving bonded on its return; awaiting BOND_STATE event)")
+                logi("Option A recheck: still not bonded -> device.createBond() ONCE (NOT resolving bonded on its return; awaiting BOND_STATE event)")
                 val ok = runCatching { dev.createBond() }.getOrDefault(false)
                 logi("createBond() returned $ok")
-                if (!ok) { bondingWindow = false; handler.removeCallbacks(bondWatchdog); fail("Option A: createBond() refused to start (returned false) — no retry this session") }
+                if (!ok) { bondingWindow = false; handler.removeCallbacks(bondWatchdog); fail("Option A: createBond() refused to start (returned false) - no retry this session") }
             }
-            else -> logi("Option A recheck: createBond already attempted — no retry; awaiting BOND_STATE event")
+            else -> logi("Option A recheck: createBond already attempted - no retry; awaiting BOND_STATE event")
         }
     }
 
@@ -442,20 +442,20 @@ class AidexBringupActivity : Activity() {
             val prev = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, -1)
             val now = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
             val reason = intent.getIntExtra("android.bluetooth.device.extra.REASON", -1)
-            logi("BOND STATE ${bondName(prev)} → ${bondName(now)} reason=$reason (${unbondReasonName(reason)}) [option=$option]")
+            logi("BOND STATE ${bondName(prev)} -> ${bondName(now)} reason=$reason (${unbondReasonName(reason)}) [option=$option]")
             if (option != Option.A) return
             when (now) {
                 BluetoothDevice.BOND_BONDED -> if (bondingWindow) {
                     bondingWindow = false
                     handler.removeCallbacks(bondWatchdog)
                     handler.removeCallbacks(bondRecheck)
-                    setStatus("Option A — BONDED, discovering")
-                    logi("Option A: BOND_BONDED via receiver event → discoverServices(). (Necessary-not-sufficient; real proof is the handshake read.)")
+                    setStatus("Option A - BONDED, discovering")
+                    logi("Option A: BOND_BONDED via receiver event -> discoverServices(). (Necessary-not-sufficient; real proof is the handshake read.)")
                     gatt?.let { g -> handler.post { runCatching { g.discoverServices() } } }
                 }
                 BluetoothDevice.BOND_NONE -> if (prev == BluetoothDevice.BOND_BONDING && !sessionHeld) {
                     bondingWindow = false
-                    fail("Option A bond failed (BONDING→NONE reason=$reason ${unbondReasonName(reason)})")
+                    fail("Option A bond failed (BONDING->NONE reason=$reason ${unbondReasonName(reason)})")
                 }
             }
         }
@@ -464,10 +464,10 @@ class AidexBringupActivity : Activity() {
     @SuppressLint("MissingPermission")
     private fun keyMissingRecovery() {
         keyMissingRecoveries++
-        logi("KEY_MISSING suspected — connected to a BONDED device and dropped with status 22 before any encrypted proof. Recovery #$keyMissingRecoveries/$MAX_KEY_MISSING_RECOVERIES")
-        setStatus("KEY_MISSING — removing stale bond, retrying")
+        logi("KEY_MISSING suspected - connected to a BONDED device and dropped with status 22 before any encrypted proof. Recovery #$keyMissingRecoveries/$MAX_KEY_MISSING_RECOVERIES")
+        setStatus("KEY_MISSING - removing stale bond, retrying")
         val removed = reflectRemoveBond(target)
-        logi("removeBond() (reflection) → $removed; waiting ${KEY_MISSING_WAIT_MS}ms then a FRESH connect + re-bond (GATT cache NOT cleared)")
+        logi("removeBond() (reflection) -> $removed; waiting ${KEY_MISSING_WAIT_MS}ms then a FRESH connect + re-bond (GATT cache NOT cleared)")
         resetForReconnect()
         handler.postDelayed({ if (!refused) startScan() }, KEY_MISSING_WAIT_MS)
     }
@@ -487,8 +487,8 @@ class AidexBringupActivity : Activity() {
         if (optionBFailed) return
         optionBFailed = true
         option = Option.A
-        logi("OPTION B → $reason, trying A")
-        setStatus("OPTION B → $reason\nfalling back to Option A (bond)")
+        logi("OPTION B -> $reason, trying A")
+        setStatus("OPTION B -> $reason\nfalling back to Option A (bond)")
         resetForReconnect()
         handler.postDelayed({ if (!refused) startScan() }, FALLBACK_DELAY_MS)
     }
@@ -514,8 +514,8 @@ class AidexBringupActivity : Activity() {
         if (g == null || f1 == null || f2 == null) { fail("0x181F/F001/F002 not found (gatt=${g != null} f001=${f1 != null} f002=${f2 != null})"); return }
         runCatching { g.setCharacteristicNotification(f1, true) }
         runCatching { g.setCharacteristicNotification(f2, true) }
-        setStatus("Option $option — handshaking (CCCD F001)")
-        logi("handshake — enabling F001 notify (CCCD 0x2902); a 0x05 here ⇒ this unit mandates a bond")
+        setStatus("Option $option - handshaking (CCCD F001)")
+        logi("handshake - enabling F001 notify (CCCD 0x2902); a 0x05 here => this unit mandates a bond")
         hs = Hs.CCCD_F001
         writeCccdEnable(f1)
     }
@@ -532,8 +532,8 @@ class AidexBringupActivity : Activity() {
         if (status == 5) { on05OrFallback("F001/F002 CCCD"); return }
         if (status != BluetoothGatt.GATT_SUCCESS) { logi("CCCD write failed status=$status (${gattStatusName(status)})"); return }
         when (hs) {
-            Hs.CCCD_F001 -> { logi("handshake — enabling F002 notify"); hs = Hs.CCCD_F002; f002Char?.let { writeCccdEnable(it) } }
-            Hs.CCCD_F002 -> { logi("handshake — both CCCDs enabled; writing askKey to F001"); hs = Hs.ASKKEY; writeAskKey() }
+            Hs.CCCD_F001 -> { logi("handshake - enabling F002 notify"); hs = Hs.CCCD_F002; f002Char?.let { writeCccdEnable(it) } }
+            Hs.CCCD_F002 -> { logi("handshake - both CCCDs enabled; writing askKey to F001"); hs = Hs.ASKKEY; writeAskKey() }
             else -> logi("onCccdWritten unexpected phase=$hs")
         }
     }
@@ -543,7 +543,7 @@ class AidexBringupActivity : Activity() {
         val g = gatt ?: return; val f1 = f001Char ?: return
         val ak = runCatching { aidexAskkey(serial) }.getOrElse { fail("aidexAskkey failed: $it"); return }
         iv = runCatching { aidexIv(serial) }.getOrElse { fail("aidexIv failed: $it"); return }
-        logi("askKey=${ak.toHex()} iv=${iv?.toHex()} — writeCharacteristic(F001 WRITE_TYPE_DEFAULT)")
+        logi("askKey=${ak.toHex()} iv=${iv?.toHex()} - writeCharacteristic(F001 WRITE_TYPE_DEFAULT)")
         hs = Hs.MASTERKEY
         val res = runCatching { g.writeCharacteristic(f1, ak, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) }.getOrDefault(-99)
         logi("writeCharacteristic(F001 askKey) issued result=$res (0=SUCCESS)")
@@ -553,7 +553,7 @@ class AidexBringupActivity : Activity() {
         logi("onCharacteristicWrite F001 (askKey) status=$status (${gattStatusName(status)})")
         if (status == 5) { on05OrFallback("F001 askKey write"); return }
         if (status != BluetoothGatt.GATT_SUCCESS) { fail("askKey write failed status=$status (${gattStatusName(status)})"); return }
-        logi("askKey written — awaiting masterkey NOTIFY on F001")
+        logi("askKey written - awaiting masterkey NOTIFY on F001")
     }
 
     @SuppressLint("MissingPermission")
@@ -564,7 +564,7 @@ class AidexBringupActivity : Activity() {
         val g = gatt; val f2 = f002Char
         if (g == null || f2 == null) { fail("no gatt/F002 for blob read"); return }
         hs = Hs.BLOB
-        logi("handshake — reading F002 session blob")
+        logi("handshake - reading F002 session blob")
         val ok = runCatching { g.readCharacteristic(f2) }.getOrDefault(false)
         logi("readCharacteristic(F002 blob) issued=$ok")
     }
@@ -577,7 +577,7 @@ class AidexBringupActivity : Activity() {
         val s = runCatching { aidexDeriveSession(serial, mk, value) }.getOrElse { fail("aidexDeriveSession failed: $it"); return }
         sess = s
         hs = Hs.DONE
-        logi("SESSION DERIVED (option=$option) — sess=${s.toHex()}; read-only survey")
+        logi("SESSION DERIVED (option=$option) - sess=${s.toHex()}; read-only survey")
         survey()
     }
 
@@ -591,7 +591,7 @@ class AidexBringupActivity : Activity() {
             if (r is AidexResponse.DeviceInfo) { dvcInfoStr = fmtDeviceInfo(r.info); logi("deviceInfo: $dvcInfoStr") } else logi("deviceInfo unexpected: $r")
             sendCommand("getStartTime(0x21)", { aidexCmdGetStartTime(sess!!, iv!!) }) { r2 ->
                 activated = isActivated(r2); startStr = fmtStart(r2)
-                logi("startTime: $startStr → ${if (activated == true) "ACTIVATED" else "UNACTIVATED"}")
+                logi("startTime: $startStr -> ${if (activated == true) "ACTIVATED" else "UNACTIVATED"}")
                 sendCommand("getBroadcast(0x11)", { aidexCmdGetBroadcast(sess!!, iv!!) }) { r3 ->
                     glucStr = fmtCurrent(r3)
                     logi("current: $glucStr")
@@ -605,36 +605,36 @@ class AidexBringupActivity : Activity() {
         sessionHeld = true
         val act = activated == true
         val verb = if (option == Option.B) "unbonded handshake worked" else "bonded+handshake"
-        logi("OPTION $option OK — $verb; ACTIVATED=${if (act) "yes" else "no"}; glucose=[${glucStr ?: "n/a"}]")
-        setStatus("OPTION $option OK — SESSION HELD\nACTIVATED=${if (act) "yes" else "no"}\ndeviceInfo: ${dvcInfoStr ?: "n/a"}\nstartTime: ${startStr ?: "n/a"}\nglucose: ${glucStr ?: "n/a"}")
+        logi("OPTION $option OK - $verb; ACTIVATED=${if (act) "yes" else "no"}; glucose=[${glucStr ?: "n/a"}]")
+        setStatus("OPTION $option OK - SESSION HELD\nACTIVATED=${if (act) "yes" else "no"}\ndeviceInfo: ${dvcInfoStr ?: "n/a"}\nstartTime: ${startStr ?: "n/a"}\nglucose: ${glucStr ?: "n/a"}")
         setButtons(activate = !act, realtime = true, history = true)
     }
 
-    private fun onActivateClicked() { if (!sessionHeld) return; setButtons(false, false, false); setStatus("ACTIVATING…"); handler.post { runActivation() } }
+    private fun onActivateClicked() { if (!sessionHeld) return; setButtons(false, false, false); setStatus("ACTIVATING..."); handler.post { runActivation() } }
     private fun onRealtimeClicked() { if (!sessionHeld) return; setButtons(activated != true, false, true); acquireWakeLock(); handler.post { startRealtime() } }
-    private fun onHistoryClicked() { if (!sessionHeld) return; setButtons(false, false, false); setStatus("HISTORY…"); handler.post { startHistory() } }
+    private fun onHistoryClicked() { if (!sessionHeld) return; setButtons(false, false, false); setStatus("HISTORY..."); handler.post { startHistory() } }
 
     /** Destructive. */
     private fun runActivation() {
-        val localStart = runCatching { buildLocalStartNow() }.getOrElse { logi("ACTIVATE ABORT — LocalStartTime build failed: $it"); reEnableAfterOp(); return }
-        logi("ACTIVATE 1/5 — setNewSensor(0x20) localStart=${localStart.toHex()}")
+        val localStart = runCatching { buildLocalStartNow() }.getOrElse { logi("ACTIVATE ABORT - LocalStartTime build failed: $it"); reEnableAfterOp(); return }
+        logi("ACTIVATE 1/5 - setNewSensor(0x20) localStart=${localStart.toHex()}")
         sendCommand("setNewSensor(0x20)", { aidexCmdSetNewSensor(sess!!, iv!!, localStart) }) { r1 ->
             logi("setNewSensor reply: $r1 (expect Ack 0x120)")
-            logi("ACTIVATE 2/5 — setDynamicAdvMode(0x35 01)")
+            logi("ACTIVATE 2/5 - setDynamicAdvMode(0x35 01)")
             sendCommand("setDynamicAdvMode(0x35)", { aidexCmdSetDynamicAdvMode(sess!!, iv!!) }) { r2 ->
                 logi("setDynamicAdvMode reply: $r2 (expect Ack 0x135)")
-                logi("ACTIVATE 3/5 — setAutoUpdate(0x34 01)")
+                logi("ACTIVATE 3/5 - setAutoUpdate(0x34 01)")
                 sendCommand("setAutoUpdate(0x34)", { aidexCmdSetAutoUpdate(sess!!, iv!!) }) { r3 ->
                     logi("setAutoUpdate reply: $r3 (expect Ack 0x134)")
-                    logi("ACTIVATE 4/5 — getStartTime(0x21) confirm")
+                    logi("ACTIVATE 4/5 - getStartTime(0x21) confirm")
                     sendCommand("getStartTime(0x21) confirm", { aidexCmdGetStartTime(sess!!, iv!!) }) { r4 ->
                         val ok = isActivated(r4); activated = ok; startStr = fmtStart(r4)
-                        logi("post-activation startTime: $startStr → ${if (ok) "ACTIVATED" else "STILL NOT ACTIVATED"}")
-                        logi("ACTIVATE 5/5 — getBroadcast(0x11)")
+                        logi("post-activation startTime: $startStr -> ${if (ok) "ACTIVATED" else "STILL NOT ACTIVATED"}")
+                        logi("ACTIVATE 5/5 - getBroadcast(0x11)")
                         sendCommand("getBroadcast(0x11)", { aidexCmdGetBroadcast(sess!!, iv!!) }) { r5 ->
                             glucStr = fmtCurrent(r5)
-                            setStatus("ACTIVATE ${if (ok) "OK" else "INCONCLUSIVE"} — ACTIVATED=${if (ok) "yes" else "no"}\nstartTime: $startStr\nglucose: $glucStr")
-                            logi("ACTIVATE ${if (ok) "OK" else "INCONCLUSIVE"} — 0x20/0x35/0x34 sent; startTime=[$startStr]; glucose=[$glucStr]")
+                            setStatus("ACTIVATE ${if (ok) "OK" else "INCONCLUSIVE"} - ACTIVATED=${if (ok) "yes" else "no"}\nstartTime: $startStr\nglucose: $glucStr")
+                            logi("ACTIVATE ${if (ok) "OK" else "INCONCLUSIVE"} - 0x20/0x35/0x34 sent; startTime=[$startStr]; glucose=[$glucStr]")
                             reEnableAfterOp()
                         }
                     }
@@ -660,10 +660,10 @@ class AidexBringupActivity : Activity() {
     @SuppressLint("MissingPermission")
     private fun startRealtime() {
         val g = gatt; val f3 = f003Char
-        if (g == null || f3 == null) { setStatus("REALTIME ABORT — no F003"); logi("REALTIME ABORT — F003 not found (F003 realtime is private-bonded §4.1; may need Option A)"); reEnableAfterOp(); return }
+        if (g == null || f3 == null) { setStatus("REALTIME ABORT - no F003"); logi("REALTIME ABORT - F003 not found (F003 realtime is private-bonded S4.1; may need Option A)"); reEnableAfterOp(); return }
         runCatching { g.setCharacteristicNotification(f3, true) }
-        setStatus("REALTIME — F003 notify on\n(lock the phone to test survival)")
-        logi("REALTIME — enabling F003 notify (private-bonded §4.1). If Option B (unbonded), F003 may 0x05; lock the screen to watch survival.")
+        setStatus("REALTIME - F003 notify on\n(lock the phone to test survival)")
+        logi("REALTIME - enabling F003 notify (private-bonded S4.1). If Option B (unbonded), F003 may 0x05; lock the screen to watch survival.")
         writeCccdEnable(f3)
     }
 
@@ -671,17 +671,17 @@ class AidexBringupActivity : Activity() {
         val s = sess ?: return; val v = iv ?: return
         val pt = runCatching { aidexDecryptFrame(s, v, value) }.getOrElse { logi("F003 decrypt failed: $it (ct=${value.toHex()})"); return }
         val rt = runCatching { aidexParseRealtime(pt) }.getOrElse { logi("F003 parseRealtime failed: $it (pt=${pt.toHex()})"); return }
-        logi("F003 REALTIME — ${rt.glucoseMgdl} mg/dL trend=${rt.trendTenthsPerMin * 0.1}mg/dL/min minFromStart=${rt.minFromStart} warmup=${rt.warmup} valid=${rt.valid} type=${rt.readingType}")
+        logi("F003 REALTIME - ${rt.glucoseMgdl} mg/dL trend=${rt.trendTenthsPerMin * 0.1}mg/dL/min minFromStart=${rt.minFromStart} warmup=${rt.warmup} valid=${rt.valid} type=${rt.readingType}")
     }
 
     private fun startHistory() {
         histLastId = null; histStartHistory = null; activationEpoch = null
         sendCommand("getStartTime(0x21)", { aidexCmdGetStartTime(sess!!, iv!!) }) { r ->
             if (r is AidexResponse.StartTime && isActivated(r)) { activationEpoch = r.time.epochSecs; logi("history: activationEpoch=${r.time.epochSecs}") }
-            else logi("history: UNACTIVATED — ids logged without wall-clock ts")
+            else logi("history: UNACTIVATED - ids logged without wall-clock ts")
             sendCommand("getLastId(0x22)", { aidexCmdGetLastId(sess!!, iv!!) }) { r2 ->
                 val lastId = (r2 as? AidexResponse.LastId)?.lastId
-                if (lastId == null) { setStatus("HISTORY ABORT — getLastId=$r2"); logi("HISTORY ABORT — getLastId=$r2"); reEnableAfterOp(); return@sendCommand }
+                if (lastId == null) { setStatus("HISTORY ABORT - getLastId=$r2"); logi("HISTORY ABORT - getLastId=$r2"); reEnableAfterOp(); return@sendCommand }
                 histLastId = lastId
                 logi("history: lastId(absolute)=$lastId; paging from relId=1")
                 requestHistoryPage(1)
@@ -701,8 +701,8 @@ class AidexBringupActivity : Activity() {
             val lastInBatch = startId + n - 1
             logi("history batch: startId=$startId n=$n lastInBatch=$lastInBatch (target=$histLastId)")
             if (n == 0 || lastInBatch >= (histLastId ?: 0)) {
-                setStatus("HISTORY OK — through id=$lastInBatch / ${histLastId}")
-                logi("HISTORY OK — paged through id=$lastInBatch of lastId=$histLastId")
+                setStatus("HISTORY OK - through id=$lastInBatch / ${histLastId}")
+                logi("HISTORY OK - paged through id=$lastInBatch of lastId=$histLastId")
                 reEnableAfterOp()
             } else requestHistoryPage((startId + n) - (histStartHistory ?: (startId - 1)))
         }
@@ -712,14 +712,14 @@ class AidexBringupActivity : Activity() {
 
     @SuppressLint("MissingPermission")
     private fun sendCommand(label: String, build: () -> ByteArray, onResp: (AidexResponse) -> Unit) {
-        val cipher = runCatching { build() }.getOrElse { logi("ABORT — build '$label' failed: $it"); reEnableAfterOp(); return }
+        val cipher = runCatching { build() }.getOrElse { logi("ABORT - build '$label' failed: $it"); reEnableAfterOp(); return }
         val g = gatt; val f2 = f002Char
-        if (g == null || f2 == null) { logi("ABORT — no gatt/F002 for '$label'"); return }
+        if (g == null || f2 == null) { logi("ABORT - no gatt/F002 for '$label'"); return }
         pendingResponse = onResp
         lastCmdLabel = label
         handler.removeCallbacks(cmdTimeout)
         handler.postDelayed(cmdTimeout, CMD_TIMEOUT_MS)
-        logi("CMD $label → F002 (${cipher.toHex()})")
+        logi("CMD $label -> F002 (${cipher.toHex()})")
         val res = runCatching { g.writeCharacteristic(f2, cipher, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) }.getOrDefault(-99)
         logi("writeCharacteristic(F002 '$label') issued result=$res (0=SUCCESS)")
     }
@@ -735,7 +735,7 @@ class AidexBringupActivity : Activity() {
     }
 
     private val cmdTimeout = Runnable {
-        if (pendingResponse != null) { logi("STALLED — no F002 reply to '$lastCmdLabel' within ${CMD_TIMEOUT_MS / 1000}s"); reEnableAfterOp() }
+        if (pendingResponse != null) { logi("STALLED - no F002 reply to '$lastCmdLabel' within ${CMD_TIMEOUT_MS / 1000}s"); reEnableAfterOp() }
     }
 
     @Suppress("WakelockTimeout")

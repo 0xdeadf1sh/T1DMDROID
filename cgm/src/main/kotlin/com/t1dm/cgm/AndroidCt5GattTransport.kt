@@ -44,7 +44,7 @@ class AndroidCt5GattTransport(
     )
 
     override fun connect() {
-        log.gatt(TAG, "connectGatt(autoConnect=false, TRANSPORT_LE) → ${device.address}")
+        log.gatt(TAG, "connectGatt(autoConnect=false, TRANSPORT_LE) -> ${device.address}")
         pacer.start()
         gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
         if (gatt == null) {
@@ -54,10 +54,10 @@ class AndroidCt5GattTransport(
     }
 
     override fun requestMtu(mtu: Int): Boolean =
-        (gatt?.requestMtu(mtu) ?: false).also { log.gatt(TAG, "requestMtu($mtu) → $it") }
+        (gatt?.requestMtu(mtu) ?: false).also { log.gatt(TAG, "requestMtu($mtu) -> $it") }
 
     override fun discoverServices(): Boolean =
-        (gatt?.discoverServices() ?: false).also { log.gatt(TAG, "discoverServices() → $it") }
+        (gatt?.discoverServices() ?: false).also { log.gatt(TAG, "discoverServices() -> $it") }
 
     override fun setNotify(enable: Boolean): Boolean {
         val g = gatt ?: return false
@@ -71,7 +71,7 @@ class AndroidCt5GattTransport(
             BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
         }
         val status = g.writeDescriptorCompat(cccd, value)
-        log.gatt(TAG, "CCCD 0x1001 notify=$enable → status $status")
+        log.gatt(TAG, "CCCD 0x1001 notify=$enable -> status $status")
         return status == BluetoothStatusCodes.SUCCESS
     }
 
@@ -98,7 +98,7 @@ class AndroidCt5GattTransport(
         val g = gatt ?: return false
         val c = chars[Ct5Char.WRITE] ?: return false
         val status = g.writeCharacteristicCompat(c, value, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
-        if (status != BluetoothStatusCodes.SUCCESS) log.gatt(TAG, "writeCharacteristic → status $status", CgmLogLevel.W)
+        if (status != BluetoothStatusCodes.SUCCESS) log.gatt(TAG, "writeCharacteristic -> status $status", CgmLogLevel.W)
         return status == BluetoothStatusCodes.SUCCESS
     }
 

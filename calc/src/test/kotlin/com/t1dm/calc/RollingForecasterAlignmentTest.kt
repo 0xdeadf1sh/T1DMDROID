@@ -158,7 +158,7 @@ class RollingForecasterAlignmentTest {
 
         val futureCall = native.bucketizeCalls.first { it.kind == CurveKind.INSULIN && it.nSteps == request.fullRollSteps }
         val contextCall = native.bucketizeCalls.first { it.kind == CurveKind.INSULIN && it.nSteps == nCtx }
-        assertEquals("future dose channel origin must be G + n·STEP (== InferenceController's predZone)", predZoneStartMs, futureCall.gridStartMs)
+        assertEquals("future dose channel origin must be G + n*STEP (== InferenceController's predZone)", predZoneStartMs, futureCall.gridStartMs)
         assertEquals("context dose channel origin must be series.gridStartMs", g, contextCall.gridStartMs)
         assertFalse(
             "no bucketize may originate at the raw non-grid nowMs (the pre-fix future origin)",

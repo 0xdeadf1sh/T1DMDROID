@@ -283,7 +283,7 @@ private fun CovenantRite(onSign: () -> Unit) {
         textAlign = TextAlign.Center,
     )
     Text(
-        "ملاك الموت",
+        "Malak al-Mawt",
         fontSize = 34.sp,
         fontWeight = FontWeight.Bold,
         color = cs.error,
@@ -292,7 +292,7 @@ private fun CovenantRite(onSign: () -> Unit) {
     Verse(
         listOf(
             "I, the Living, of failing flesh and open eyes,",
-            "unbind the angel ملاك الموت from every stay.",
+            "unbind the angel Malak al-Mawt from every stay.",
             "Let him come at the hour he alone appoints,",
             "heralded by no alarm, and take what was but lent.",
             "The bells that stood their watch are stilled. I consent.",
@@ -398,7 +398,7 @@ private fun SealedRite(onRescind: () -> Unit) {
     )
     Verse(
         listOf(
-            "The covenant with ملاك الموت is in force.",
+            "The covenant with Malak al-Mawt is in force.",
             "The alarms that once stood watch are stilled;",
             "no rail remains between you and the hour he wills.",
         ),

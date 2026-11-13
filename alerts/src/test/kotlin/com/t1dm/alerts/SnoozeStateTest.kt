@@ -29,13 +29,13 @@ class SnoozeStateTest {
     fun `a worse severity pierces an active snooze`() {
         val s = SnoozeState.NONE.snooze(lowBreach(), untilMs = 15 * MIN)
         assertTrue(s.silences(lowBreach(), nowMs = 5 * MIN))
-        assertFalse("LOW→URGENT_LOW escalation must re-fire", s.silences(urgentLowBreach(), nowMs = 5 * MIN))
+        assertFalse("LOW->URGENT_LOW escalation must re-fire", s.silences(urgentLowBreach(), nowMs = 5 * MIN))
     }
 
     @Test
     fun `crossing to the other excursion pierces an active snooze`() {
         val s = SnoozeState.NONE.snooze(lowBreach(), untilMs = 15 * MIN)
-        assertFalse("LOW→HIGH is a new condition and must re-fire", s.silences(highBreach(), nowMs = 5 * MIN))
+        assertFalse("LOW->HIGH is a new condition and must re-fire", s.silences(highBreach(), nowMs = 5 * MIN))
     }
 
     @Test
@@ -56,13 +56,13 @@ class SnoozeStateTest {
         assertTrue("WARNING low is dismissable", lowBreach().isDismissable())
         assertTrue("WARNING high is dismissable", highBreach().isDismissable())
         assertTrue("WARNING signal-loss is dismissable", loss(AlarmSeverity.WARNING).isDismissable())
-        assertFalse("urgent-low (CRITICAL) is NOT dismissable — Snooze only", urgentLowBreach().isDismissable())
+        assertFalse("urgent-low (CRITICAL) is NOT dismissable - Snooze only", urgentLowBreach().isDismissable())
         assertFalse("critical signal-loss is NOT dismissable", loss(AlarmSeverity.CRITICAL).isDismissable())
         assertFalse("over-temperature is never dismissable", overTemp().isDismissable())
     }
 
     @Test
-    fun `dismissing a CRITICAL urgent breach is a no-op — no unbounded silence of an urgent tier`() {
+    fun `dismissing a CRITICAL urgent breach is a no-op - no unbounded silence of an urgent tier`() {
         val s = SnoozeState.NONE.dismiss(urgentLowBreach())
         assertTrue("no entry recorded", s.entries.isEmpty())
         assertFalse("the urgent alarm still presents", s.silences(urgentLowBreach(), nowMs = 5 * MIN))

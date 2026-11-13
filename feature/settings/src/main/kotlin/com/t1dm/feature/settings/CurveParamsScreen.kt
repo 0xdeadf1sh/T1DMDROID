@@ -56,13 +56,13 @@ fun CurveParamsScreen(
     SettingsScaffold(SettingsScreenKey.CURVES) {
         SettingsNote("How a dose becomes its curve")
 
-        SettingsSectionHeader("Custom carb-appearance curve (Bézier)")
+        SettingsSectionHeader("Custom carb-appearance curve (Bezier)")
         SettingsNote("Drag to shape; area = meal total")
         SettingsAnchor(curveCarbBezier) {
             BezierDesigner(carbCurve, defaultDurationMin = 180.0, onSave = onSaveCarbCurve)
         }
 
-        SettingsSectionHeader("Custom insulin-action curve (Bézier)")
+        SettingsSectionHeader("Custom insulin-action curve (Bezier)")
         SettingsNote("PK action shape (not delivery) - units-per-5-min, area = the dose.")
         SettingsAnchor(curveInsulinBezier) {
             BezierDesigner(insulinCurve, defaultDurationMin = 300.0, onSave = onSaveInsulinCurve)
@@ -182,8 +182,8 @@ private fun Kv(k: String, v: String) {
 private val curveCarbBezier = SettingsKnob(
     id = "curves.carb_bezier",
     screen = SettingsScreenKey.CURVES,
-    section = "Custom carb-appearance curve (Bézier)",
-    label = "Custom carb-appearance curve (Bézier)",
+    section = "Custom carb-appearance curve (Bezier)",
+    label = "Custom carb-appearance curve (Bezier)",
     subtitle = "Draw the grams-per-5-min appearance shape; its area is the meal total",
     synonyms = listOf(
         "carb", "carbs", "carbohydrate", "meal", "appearance", "ra", "absorption", "bezier",
@@ -194,8 +194,8 @@ private val curveCarbBezier = SettingsKnob(
 private val curveInsulinBezier = SettingsKnob(
     id = "curves.insulin_bezier",
     screen = SettingsScreenKey.CURVES,
-    section = "Custom insulin-action curve (Bézier)",
-    label = "Custom insulin-action curve (Bézier)",
+    section = "Custom insulin-action curve (Bezier)",
+    label = "Custom insulin-action curve (Bezier)",
     subtitle = "Draw the units-per-5-min PK action shape (not delivery); its area is the dose",
     synonyms = listOf(
         "insulin", "action", "pk", "bezier", "curve", "designer", "custom curve", "iob",

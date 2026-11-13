@@ -958,7 +958,7 @@ mod tests {
     fn close(got: f64, want: f64, what: &str) {
         assert!(
             (got - want).abs() < SUITE_TOL,
-            "{what}: got {got}, want {want} (Δ {})",
+            "{what}: got {got}, want {want} (d {})",
             (got - want).abs()
         );
     }
@@ -979,14 +979,14 @@ mod tests {
         let pct = |f: fn(ClarkeZone) -> bool| {
             100.0 * pts.iter().filter(|p| f(p.clarke)).count() as f64 / n as f64
         };
-        close(pct(|z| z == ClarkeZone::A), got.clarke_a, &format!("{what}.points→A"));
+        close(pct(|z| z == ClarkeZone::A), got.clarke_a, &format!("{what}.points->A"));
         close(
             pct(|z| matches!(z, ClarkeZone::A | ClarkeZone::B)),
             got.clarke_ab,
-            &format!("{what}.points→AB"),
+            &format!("{what}.points->AB"),
         );
-        close(pct(|z| z == ClarkeZone::D), got.clarke_d, &format!("{what}.points→D"));
-        close(pct(|z| z == ClarkeZone::E), got.clarke_e, &format!("{what}.points→E"));
+        close(pct(|z| z == ClarkeZone::D), got.clarke_d, &format!("{what}.points->D"));
+        close(pct(|z| z == ClarkeZone::E), got.clarke_e, &format!("{what}.points->E"));
         let counted: usize = [ClarkeZone::A, ClarkeZone::B, ClarkeZone::C, ClarkeZone::D, ClarkeZone::E]
             .iter()
             .map(|z| pts.iter().filter(|p| p.clarke == *z).count())
@@ -1003,11 +1003,11 @@ mod tests {
         let pts = &got.points;
         let n = pts.len() as f64;
         let pct = |z: DtsZone| 100.0 * pts.iter().filter(|p| p.dts == z).count() as f64 / n;
-        close(pct(DtsZone::A), got.dts_a, &format!("{what}.points→dtsA"));
-        close(pct(DtsZone::B), got.dts_b, &format!("{what}.points→dtsB"));
-        close(pct(DtsZone::C), got.dts_c, &format!("{what}.points→dtsC"));
-        close(pct(DtsZone::D), got.dts_d, &format!("{what}.points→dtsD"));
-        close(pct(DtsZone::E), got.dts_e, &format!("{what}.points→dtsE"));
+        close(pct(DtsZone::A), got.dts_a, &format!("{what}.points->dtsA"));
+        close(pct(DtsZone::B), got.dts_b, &format!("{what}.points->dtsB"));
+        close(pct(DtsZone::C), got.dts_c, &format!("{what}.points->dtsC"));
+        close(pct(DtsZone::D), got.dts_d, &format!("{what}.points->dtsD"));
+        close(pct(DtsZone::E), got.dts_e, &format!("{what}.points->dtsE"));
         close(
             got.dts_a + got.dts_b + got.dts_c + got.dts_d + got.dts_e,
             100.0,
@@ -1161,7 +1161,7 @@ mod tests {
                 }] = true;
             }
         }
-        assert!(seen.iter().all(|&s| s), "a zone is unreachable on 0–400 mg/dL: {seen:?}");
+        assert!(seen.iter().all(|&s| s), "a zone is unreachable on 0-400 mg/dL: {seen:?}");
     }
 
     /// Axis lengths deliberately unequal: a transposed index survives a square lattice silently.
@@ -1285,7 +1285,7 @@ mod tests {
                 seen[z as usize] = true;
             }
         }
-        assert!(seen.iter().all(|&s| s), "a DTS zone is unreachable on 0–400 mg/dL: {seen:?}");
+        assert!(seen.iter().all(|&s| s), "a DTS zone is unreachable on 0-400 mg/dL: {seen:?}");
     }
 
     /// Axis lengths deliberately unequal; this grid is asymmetric, so a transpose is visible.
@@ -1336,7 +1336,7 @@ mod tests {
         for t in &TREND_CATEGORY_TABLES {
             for row in t {
                 for &c in row {
-                    assert!((1..=5).contains(&c), "category {c} is not 1–5");
+                    assert!((1..=5).contains(&c), "category {c} is not 1-5");
                 }
             }
         }
@@ -1442,7 +1442,7 @@ mod tests {
         let s = forecast_metrics_suite(vec![w], vec![5], cfg(), false).unwrap();
         let m = &s.horizons[0].trend;
         assert_eq!(m.n, 0);
-        assert!(m.category_pct.is_empty(), "no pair scored ⇒ no shares to draw");
+        assert!(m.category_pct.is_empty(), "no pair scored => no shares to draw");
         assert_eq!(m.counts.iter().sum::<u32>(), 0);
         assert_eq!(m.counts.len(), TREND_BINS * TREND_BINS);
     }
@@ -1597,7 +1597,7 @@ mod tests {
             assert_eq!(QUANTILE_LEVELS[i], tau, "{name} resolved to the wrong position");
             assert_eq!(tau < 0.5, lower, "{name} sits on the wrong side of the median");
         }
-        assert_eq!(tau_index(0.5), Some(3), "the median is index 3 (SPEC §6)");
+        assert_eq!(tau_index(0.5), Some(3), "the median is index 3 (SPEC S6)");
         assert_eq!(tau_index(0.3), None, "a level outside the fan has no position");
         assert!(QUANTILE_LEVELS.windows(2).all(|w| w[0] < w[1]));
     }

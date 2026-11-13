@@ -67,12 +67,12 @@ class OkHttpNightscoutClient(
         when {
             r.ok -> {
                 val s = runCatching { NsJson.decodeFromString<NsStatusDto>(String(r.body, Charsets.UTF_8)) }.getOrNull()
-                if (s == null) "ok" else "ok — ${s.name} ${s.version}".trimEnd()
+                if (s == null) "ok" else "ok - ${s.name} ${s.version}".trimEnd()
             }
-            r.code == 401 || r.code == 403 -> "HTTP ${r.code} — secret rejected"
+            r.code == 401 || r.code == 403 -> "HTTP ${r.code} - secret rejected"
             else -> "HTTP ${r.code}"
         }
-    }.getOrElse { if (it is NightscoutDisabledException) "off — set a URL and secret" else "unreachable" }
+    }.getOrElse { if (it is NightscoutDisabledException) "off - set a URL and secret" else "unreachable" }
 
     /** Two ways to recognise a treatment: client_id in notes, else (type, timestamp, amount). */
     override suspend fun alreadyPosted(request: SyncRequest): Boolean {

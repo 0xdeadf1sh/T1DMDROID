@@ -25,7 +25,7 @@ class ContrastTest {
         assertEquals(contrastRatio(a, b), contrastRatio(b, a), 1e-6f)
     }
 
-    @Test fun `sRGB is not linear — mid grey is nowhere near half`() {
+    @Test fun `sRGB is not linear - mid grey is nowhere near half`() {
         assertEquals(0.2158f, relativeLuminanceArgb(0xFF808080.toInt()), 1e-3f)
     }
 
@@ -120,7 +120,7 @@ class ContrastTest {
         assertEquals(Color.Black, legibleInkOn(p.surfaceVariant, p.ink))
     }
 
-    @Test fun `no palette can defeat the panel — the ink it ends up with always clears AA`() {
+    @Test fun `no palette can defeat the panel - the ink it ends up with always clears AA`() {
         for (s in 0..255 step 17) for (i in 0..255 step 17) {
             val p = imported(Color(s / 255f, s / 255f, s / 255f), Color(i / 255f, i / 255f, i / 255f))
             val ratio = contrastRatio(legibleInkOn(p.surfaceVariant, p.ink), p.surfaceVariant)
@@ -151,7 +151,7 @@ class ContrastTest {
         }
     }
 
-    @Test fun `whatever it returns, what is PAINTED clears AA — at any panel alpha`() {
+    @Test fun `whatever it returns, what is PAINTED clears AA - at any panel alpha`() {
         val page = Color(0xFF060A12)
         for (a in 0..255 step 51) for (s in 0..255 step 51) for (i in 0..255 step 85) {
             val panel = Color(s / 255f, s / 255f, s / 255f, a / 255f)

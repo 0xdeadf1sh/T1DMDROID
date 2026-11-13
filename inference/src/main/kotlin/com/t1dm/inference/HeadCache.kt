@@ -81,7 +81,7 @@ class HeadCache(private val native: NativeCore) {
         set(
             bundle.id,
             if (worst.isFinite() && worst <= TOL) {
-                Timber.tag(TAG).i("head parity for %s: max|Δ| = %.3e", bundle.id, worst)
+                Timber.tag(TAG).i("head parity for %s: max|d| = %.3e", bundle.id, worst)
                 State.Ready(state.head, worst)
             } else {
                 State.Unusable("head disagrees with the graph by %.3e".format(worst))

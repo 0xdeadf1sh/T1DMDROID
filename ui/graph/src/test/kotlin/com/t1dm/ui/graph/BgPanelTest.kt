@@ -59,8 +59,8 @@ class BgPanelTest {
 
     @Test fun fixedRange_convertsToMmol() {
         val (lo, hi) = fixedYRange(5f, 9f, UnitSpace.MmolL, 20, 250)!!
-        assertTrue("floor covers 20 mg/dL ≈ 1.1 mmol/L", lo <= 20f / 18.0182f)
-        assertTrue("ceiling covers 250 mg/dL ≈ 13.9 mmol/L", hi >= 250f / 18.0182f)
+        assertTrue("floor covers 20 mg/dL ~ 1.1 mmol/L", lo <= 20f / 18.0182f)
+        assertTrue("ceiling covers 250 mg/dL ~ 13.9 mmol/L", hi >= 250f / 18.0182f)
     }
 
     @Test fun fixedRange_convertsToRisk() {

@@ -14,14 +14,14 @@ fun loraAttachRefusal(
 ): String? {
     // Never overridable (edit after override unweighed); fittedAtMs==0 means imported, not old.
     if (fittedAtMs > 0L && historyMutatedAtMs != null && historyMutatedAtMs > fittedAtMs) {
-        return "Fitted on a dose or meal history that has since been edited — re-fit it"
+        return "Fitted on a dose or meal history that has since been edited - re-fit it"
     }
     // The probe measures a forecast; a fill never reaches the dose calculator.
     if (overrideAtMs != null || kind != MaskGeometry.FORECAST) return null
     return when (verdict) {
         LoraGuardVerdict.PASS -> null
         LoraGuardVerdict.ABSENT ->
-            "Never checked against the model's dose response — fit it on this phone, or override"
+            "Never checked against the model's dose response - fit it on this phone, or override"
         LoraGuardVerdict.BLOCKED ->
             if (why.isBlank()) "Changed the model's dose response" else why
         LoraGuardVerdict.INCONCLUSIVE ->

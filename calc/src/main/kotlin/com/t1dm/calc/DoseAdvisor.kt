@@ -33,7 +33,7 @@ class DoseAdvisor(
 
         // §3.6-E: a missing or disagreeing backend fails closed.
         if (backend == null) {
-            return AdviceResult.Refused(listOf("No selected model — refusing to recommend a dose."))
+            return AdviceResult.Refused(listOf("No selected model - refusing to recommend a dose."))
         }
         if (backend.blind) {
             return AdviceResult.Refused(listOf(BLIND_MODEL_REFUSAL))
@@ -41,7 +41,7 @@ class DoseAdvisor(
         if (!backend.trustworthy) {
             return AdviceResult.Refused(
                 listOf(
-                    "Selected backend ${backend.backend} is not the fp32 CPU authority — " +
+                    "Selected backend ${backend.backend} is not the fp32 CPU authority - " +
                         "withholding the dose to fail safe (the forecast may still show).",
                 ),
             )
@@ -60,7 +60,7 @@ class DoseAdvisor(
 
         if (config.rails.hypoTreatment && inHypoTerritory(anchor, result.baseline, config)) {
             val grams = rescueCarbs(anchor, config)
-            notes.add("Hypo-treatment path: current/near-term BG is low — withholding insulin, recommend ~${grams.toInt()} g fast carbs.")
+            notes.add("Hypo-treatment path: current/near-term BG is low - withholding insulin, recommend ~${grams.toInt()} g fast carbs.")
             val zero = result.ranked.firstOrNull { it.doseU == 0.0 } ?: Candidate(0.0, 0.0, result.baseline)
             return AdviceResult.Recommended(
                 best = zero,
@@ -77,7 +77,7 @@ class DoseAdvisor(
         // Ineligible baseline (bypassed gate) is unverified, not low; candidates keep their veto.
         val baselineVeto = if (zeroCandidate.fan.eligible) Rails.predictedLowVeto(zeroCandidate.fan, config) else RailVerdict.Pass
         if (baselineVeto is RailVerdict.Block) {
-            notes.add("Every dose withheld — 0 U vetoed: ${baselineVeto.reason}")
+            notes.add("Every dose withheld - 0 U vetoed: ${baselineVeto.reason}")
             chosen = zeroCandidate
         }
         for (c in result.ranked) {
@@ -85,13 +85,13 @@ class DoseAdvisor(
             if (c.score == Double.POSITIVE_INFINITY) continue
             val veto = Rails.predictedLowVeto(c.fan, config)
             val ceiling = Rails.iobCeiling(iob, c.doseU, config)
-            if (veto is RailVerdict.Block) { if (c.doseU > 0.0) notes.add("Skipped ${fmt(c.doseU)} U — ${veto.reason}"); continue }
-            if (ceiling is RailVerdict.Block) { notes.add("Skipped ${fmt(c.doseU)} U — ${ceiling.reason}"); continue }
+            if (veto is RailVerdict.Block) { if (c.doseU > 0.0) notes.add("Skipped ${fmt(c.doseU)} U - ${veto.reason}"); continue }
+            if (ceiling is RailVerdict.Block) { notes.add("Skipped ${fmt(c.doseU)} U - ${ceiling.reason}"); continue }
             chosen = c
             break
         }
         if (chosen == null) {
-            notes.add("Every nonzero dose was vetoed by a fail-closed rail — recommending 0 U.")
+            notes.add("Every nonzero dose was vetoed by a fail-closed rail - recommending 0 U.")
             chosen = zeroCandidate
         }
 

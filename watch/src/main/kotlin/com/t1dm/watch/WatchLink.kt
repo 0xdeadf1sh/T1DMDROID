@@ -246,7 +246,7 @@ class WatchLink internal constructor(
         val d = CompletableDeferred<ControlFrame.HelloAck>().also { helloAck = it }
         c.writeKex(codec.kex(WatchHandshake.hello(hs)))
         val ack = withTimeoutOrNull(config.handshakeTimeoutMs) { d.await() }.also { helloAck = null }
-            ?: error("no answer — open pairing on the device")
+            ?: error("no answer - open pairing on the device")
         val sas = WatchHandshake.onHelloAck(hs, ack)
         _state.update { it.copy(phase = WatchLinkPhase.AWAIT_SAS, sas = sas) }
     }
@@ -400,7 +400,7 @@ class WatchLink internal constructor(
             if (session.state == WatchSessionState.LIVE) {
                 onReconnected()
             } else {
-                fail("Session could not be resumed from persisted keys — re-pair required")
+                fail("Session could not be resumed from persisted keys - re-pair required")
             }
         } catch (e: Exception) {
             if (e.isCancellation()) throw e
@@ -461,7 +461,7 @@ class WatchLink internal constructor(
         val live = session
         if (live?.state == WatchSessionState.LIVE && status.epoch != live.epoch) {
             teardown()
-            error("${conn.deviceName} at epoch ${status.epoch}, not ${live.epoch} — pair again")
+            error("${conn.deviceName} at epoch ${status.epoch}, not ${live.epoch} - pair again")
         }
         val now = (known ?: WatchDevice(status.deviceId, status.name, null)).copy(address = conn.address)
         device = now
@@ -495,8 +495,8 @@ class WatchLink internal constructor(
             is ControlFrame.HelloAck -> helloAck?.complete(f)
             is ControlFrame.ConfirmAck -> confirmAck?.complete(f)
             is ControlFrame.PushAck -> _state.update { it.copy(lastAckSeq = f.seq) }
-            is ControlFrame.ErrEpoch -> if (settled) rejected("Epoch ${f.watchEpoch} refused — pair again")
-            is ControlFrame.ErrAuth -> if (settled) rejected("Keys refused — pair again")
+            is ControlFrame.ErrEpoch -> if (settled) rejected("Epoch ${f.watchEpoch} refused - pair again")
+            is ControlFrame.ErrAuth -> if (settled) rejected("Keys refused - pair again")
             null -> Timber.tag(TAG).w("unparseable control frame (%d bytes)", bytes.size)
         }
     }

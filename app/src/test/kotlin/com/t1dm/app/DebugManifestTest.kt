@@ -22,7 +22,7 @@ class DebugManifestTest {
             val nodes = doc.getElementsByTagName(tag)
             (0 until nodes.length).map { nodes.item(it) as Element }
         }.filter { it.getAttributeNS(ANDROID_NS, "exported") == "true" }
-        assertTrue("found no exported component — did the manifest move?", exported.isNotEmpty())
+        assertTrue("found no exported component - did the manifest move?", exported.isNotEmpty())
         for (component in exported) {
             assertEquals(
                 component.getAttributeNS(ANDROID_NS, "name"),

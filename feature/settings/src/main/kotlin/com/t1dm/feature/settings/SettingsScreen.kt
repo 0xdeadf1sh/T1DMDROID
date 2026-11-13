@@ -64,7 +64,7 @@ fun SettingsScreen(
                 SettingsSectionHeader("Forecast")
                 SettingsNavRow("Forecast", "Warmup, cadence, models at once, thermal gate", onClick = onOpenForecast)
                 SettingsNavRow("Dose calculator", "Objective, asymmetry, rails, thresholds - unbounded", onClick = onOpenCalculator)
-                SettingsNavRow("Curve & PK parameters", "Carb & insulin presets, Bézier designers", onClick = onOpenCurveParams)
+                SettingsNavRow("Curve & PK parameters", "Carb & insulin presets, Bezier designers", onClick = onOpenCurveParams)
                 SettingsNavRow("Models & backend", "Running model; backend", onClick = onOpenModels)
 
                 SettingsSectionHeader("Devices")

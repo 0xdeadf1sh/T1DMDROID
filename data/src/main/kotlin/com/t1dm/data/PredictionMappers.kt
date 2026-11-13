@@ -11,7 +11,7 @@ import com.t1dm.data.db.toDoubleList
 internal fun ModelPrediction.toEntity(nowMs: Long): PredictionEntity {
     val h = medianBg.size
     val nq = nQuantiles
-    require(bandsMgdl.size == h * nq) { "bands ${bandsMgdl.size} != H·nQ = ${h * nq}" }
+    require(bandsMgdl.size == h * nq) { "bands ${bandsMgdl.size} != H*nQ = ${h * nq}" }
     val fanQMajor = DoubleArray(h * nq)
     for (s in 0 until h) {
         for (q in 0 until nq) {

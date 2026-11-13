@@ -422,7 +422,7 @@ class GolfLoopTest {
         }
         settle()
         assertEquals("a frozen scene is not stepped", stepsAtHole, world.steps)
-        assertEquals("…nor re-published", tickAtHole, bus.tick)
+        assertEquals("...nor re-published", tickAtHole, bus.tick)
         assertEquals(describedAtHole, feel.frames)
         assertTrue("and every held frame says so", feel.holds >= 20)
 

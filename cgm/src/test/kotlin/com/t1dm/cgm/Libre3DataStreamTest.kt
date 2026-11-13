@@ -254,7 +254,7 @@ class Libre3DataStreamTest {
         assertEquals("the reading's own instant", reading.measuredAtMs, arrow.sampledAtMs)
         assertEquals("published before the reading", 0, readingsThen)
         assertEquals(60, reading.minFromStart)
-        assertEquals("measuredAtMs = activation + lifeCount*60_000 (§11)", ACTIVATION_MS + 60 * 60_000L, reading.measuredAtMs)
+        assertEquals("measuredAtMs = activation + lifeCount*60_000 (S11)", ACTIVATION_MS + 60 * 60_000L, reading.measuredAtMs)
         assertEquals(ReadingFlag.NORMAL, reading.flag)
         assertEquals(ReadingProvenance.MEASURED, reading.provenance)
         assertTrue(rig.statuses.contains(CgmSourceStatus.Live))
@@ -479,7 +479,7 @@ class Libre3DataStreamTest {
         runCurrent()
 
         assertEquals(
-            "the tap's kit pair at bound 0 — nothing historical accepted yet (the realtime " +
+            "the tap's kit pair at bound 0 - nothing historical accepted yet (the realtime " +
                 "count asks for data the sensor has not committed; 17-min lag, live 2026-09-24)",
             listOf(Libre3DataChar.PatchControl.uuid, Libre3DataChar.PatchControl.uuid),
             rig.fake.writes.map { it.first },
@@ -645,7 +645,7 @@ class Libre3DataStreamTest {
             rig.native.historicalRangeRequests,
         )
         assertEquals(
-            "nothing advanced — no walk, no persist — the stored floor stays absent",
+            "nothing advanced - no walk, no persist - the stored floor stays absent",
             false,
             rig.repo.sensorSecrets.containsKey(SOURCE_ID),
         )
@@ -673,14 +673,14 @@ class Libre3DataStreamTest {
         )
         deliverRealtime(rig, 1500)
 
-        assertEquals("the top-up alone — no ≥ pair, no walk, no clinical", 1, rig.fake.writes.size)
+        assertEquals("the top-up alone - no >= pair, no walk, no clinical", 1, rig.fake.writes.size)
         assertEquals(
             "keyed on this session's 1500, not the persisted 1378: the missed minutes",
             listOf(1363 to 1483),
             rig.native.historicalRangeRequests,
         )
         assertTrue(rig.native.clinicalRangeRequests.isEmpty())
-        assertEquals("the walk is the manual tap's job — the floor never persisted",
+        assertEquals("the walk is the manual tap's job - the floor never persisted",
             null, rig.repo.sensorSecrets[SOURCE_ID]?.let { Libre3SensorState.decode(it)?.lastHistoricalFloorLifeCount })
         rig.drop()
     }
@@ -853,7 +853,7 @@ class Libre3DataStreamTest {
 
         // The machine scripts straight to Established: no pairing writes, link stays open.
         assertTrue(fake.connectCalled)
-        assertFalse("the link stays open for the data plane (§4)", fake.closed)
+        assertFalse("the link stays open for the data plane (S4)", fake.closed)
         assertTrue(fake.enableDataCharsCalled)
         plane.onFeed = { char, _ -> if (char == Libre3DataChar.GlucoseData) listOf(usableRealtime()) else emptyList() }
         fake.deliverDataNotify(Libre3DataChar.GlucoseData, glucosePrefix)
@@ -989,7 +989,7 @@ class Libre3DataStreamTest {
 
         assertEquals(CgmSourceStatus.SignalLost, source.status.value)
         assertEquals(
-            "§15: the tables gate names the offender on the row",
+            "S15: the tables gate names the offender on the row",
             "tables: runtime table missing: sbox_12bit_full.bin",
             source.failure.value,
         )
@@ -1016,7 +1016,7 @@ class Libre3DataStreamTest {
         source.start()
         runCurrent()
 
-        assertEquals("§15: 0xB1 reads as the account class on the row", "account/region mismatch", source.failure.value)
+        assertEquals("S15: 0xB1 reads as the account class on the row", "account/region mismatch", source.failure.value)
         source.close()
     }
 

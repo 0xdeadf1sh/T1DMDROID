@@ -34,7 +34,7 @@ class GameCameraTest {
     }
 
     @Test
-    fun `the rule is stable — re-applying it to its own result changes nothing`() {
+    fun `the rule is stable - re-applying it to its own result changes nothing`() {
         val c = GameCamera()
         val once = c.targetBottomFrom(0f, 95f, viewH)
         assertEquals(once, c.targetBottomFrom(once, 95f, viewH), 0.0001f)

@@ -189,7 +189,7 @@ class InferenceController(
         for (id in runningIds) loaded[id] = loadModel(id)
 
         val truncated = if (installed.size > cap)
-            "running $cap of ${installed.size} installed models (cap in Settings → Forecast & models)"
+            "running $cap of ${installed.size} installed models (cap in Settings -> Forecast & models)"
         else null
         val note = when {
             discovered.isEmpty() && store.refused.isNotEmpty() ->
@@ -201,8 +201,8 @@ class InferenceController(
                 "refused ${first.file}: ${first.reason}" + if (rest > 0) " (+$rest more)" else ""
             }
             discovered.isEmpty() ->
-                "no model — import a model zip"
-            else -> listOfNotNull(noPteNote(), truncated).joinToString(" · ").ifEmpty { null }
+                "no model - import a model zip"
+            else -> listOfNotNull(noPteNote(), truncated).joinToString(" | ").ifEmpty { null }
         }
         // runFromHistory returns at descAny == null before its own clear; nothing else drops these.
         val noModel = installed.isEmpty()
@@ -283,7 +283,7 @@ class InferenceController(
     /** Null unless the selected model has no working .pte. */
     private fun noPteNote(): String? {
         val pte = loaded[selectedId]?.takeIf { !it.real }?.bundle?.pte ?: return null
-        return "no forecast — ${pte.name} ${if (pte.exists()) "won't load" else "missing"}"
+        return "no forecast - ${pte.name} ${if (pte.exists()) "won't load" else "missing"}"
     }
 
     /** Debug-only, not wired in release. */
@@ -311,7 +311,7 @@ class InferenceController(
             predictions = listOf(pred),
             lastCycleTsMs = cycleTs,
             lastCause = InferenceCause.MANUAL,
-            note = "DEGENERATE forecast forced (debug) — ineligible for rails/alerts",
+            note = "DEGENERATE forecast forced (debug) - ineligible for rails/alerts",
         )
         Timber.tag(TAG).w("debugPublishDegenerate: forced NON_FINITE forecast for %s", id)
     }
@@ -353,9 +353,9 @@ class InferenceController(
             lastCycleTsMs = cycleTs,
             lastCause = InferenceCause.MANUAL,
             warmup = null,
-            note = "SYNTHETIC eligible forecast (debug) ${startBg.toInt()}→${endBg.toInt()} mg/dL",
+            note = "SYNTHETIC eligible forecast (debug) ${startBg.toInt()}->${endBg.toInt()} mg/dL",
         )
-        Timber.tag(TAG).w("debugPublishForecast: %s %.0f→%.0f", id, startBg, endBg)
+        Timber.tag(TAG).w("debugPublishForecast: %s %.0f->%.0f", id, startBg, endBg)
     }
 
     /** [real] false when [StubBackend] stood in for a failed .pte: treated as no model. */
@@ -878,7 +878,7 @@ class InferenceController(
         val block = if (thermalBlocked) t.currentC > t.thresholdC - t.resumeMarginC
                     else t.currentC >= t.thresholdC
         thermalBlocked = block
-        val note = if (block) "inference paused — device at %.1f°C ≥ %.1f°C threshold".format(t.currentC, t.thresholdC) else null
+        val note = if (block) "inference paused - device at %.1fC >= %.1fC threshold".format(t.currentC, t.thresholdC) else null
         thermalVerdict = ThermalVerdict(cycleNowMs, note)
         return note
     }
@@ -956,10 +956,10 @@ class InferenceController(
                 circadianLowContext = warmupBelief != null,
                 realBackendAvailable = selReal,
                 selectedHasTimeSection = selHasTime,
-                note = "collecting context — %.1f / %.0f h of measured data".format(measuredHours, requiredHours),
+                note = "collecting context - %.1f / %.0f h of measured data".format(measuredHours, requiredHours),
             )
             Timber.tag(TAG).i(
-                "warmup: %.1f/%.0f h measured — forecast suppressed; circadian=%s",
+                "warmup: %.1f/%.0f h measured - forecast suppressed; circadian=%s",
                 measuredHours, requiredHours,
                 warmupBelief?.let { "%.2fh R=%.3f".format(it.first.predictedHour, it.first.resultantR) } ?: "n/a",
             )
@@ -976,7 +976,7 @@ class InferenceController(
                 circadianLowContext = false,
                 realBackendAvailable = selReal,
                 selectedHasTimeSection = selHasTime,
-                note = "collecting context — needs ≥${minSteps / 12} h of BG",
+                note = "collecting context - needs >=${minSteps / 12} h of BG",
             )
             Timber.tag(TAG).i("cycle skipped: still collecting context")
             return
@@ -1087,7 +1087,7 @@ class InferenceController(
             selectedHasTimeSection = selHasTime,
             warmup = null, // a published cycle clears the warmup banner
             note = if (stale) {
-                "forecast STALE — last real BG is ${(nowMs - series.anchorTsMs) / 60_000} min old"
+                "forecast STALE - last real BG is ${(nowMs - series.anchorTsMs) / 60_000} min old"
             } else {
                 noPteNote()
             },

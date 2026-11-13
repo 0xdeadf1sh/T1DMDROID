@@ -32,7 +32,7 @@ class AndroidAidexGattTransport(
     private val chars = HashMap<AidexChar, BluetoothGattCharacteristic>()
 
     override fun connect() {
-        log.gatt(TAG, "connectGatt(autoConnect=false, TRANSPORT_LE) → ${device.address}")
+        log.gatt(TAG, "connectGatt(autoConnect=false, TRANSPORT_LE) -> ${device.address}")
         gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
         if (gatt == null) {
             log.gatt(TAG, "connectGatt returned null", CgmLogLevel.E)
@@ -41,7 +41,7 @@ class AndroidAidexGattTransport(
     }
 
     override fun discoverServices(): Boolean =
-        (gatt?.discoverServices() ?: false).also { log.gatt(TAG, "discoverServices() → $it") }
+        (gatt?.discoverServices() ?: false).also { log.gatt(TAG, "discoverServices() -> $it") }
 
     override fun setNotify(char: AidexChar, enable: Boolean): Boolean {
         val g = gatt ?: return false
@@ -51,7 +51,7 @@ class AndroidAidexGattTransport(
         val value = if (enable) BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
         else BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
         val status = g.writeDescriptorCompat(cccd, value)
-        log.gatt(TAG, "CCCD $char notify=$enable → status $status")
+        log.gatt(TAG, "CCCD $char notify=$enable -> status $status")
         return status == BluetoothStatusCodes.SUCCESS
     }
 
@@ -61,14 +61,14 @@ class AndroidAidexGattTransport(
         val type = if (withResponse) BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
         else BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
         val status = g.writeCharacteristicCompat(c, value, type)
-        if (status != BluetoothStatusCodes.SUCCESS) log.gatt(TAG, "write $char → status $status", CgmLogLevel.W)
+        if (status != BluetoothStatusCodes.SUCCESS) log.gatt(TAG, "write $char -> status $status", CgmLogLevel.W)
         return status == BluetoothStatusCodes.SUCCESS
     }
 
     override fun read(char: AidexChar): Boolean {
         val g = gatt ?: return false
         val c = chars[char] ?: return false
-        return g.readCharacteristic(c).also { log.gatt(TAG, "read $char → $it") }
+        return g.readCharacteristic(c).also { log.gatt(TAG, "read $char -> $it") }
     }
 
     override fun readRemoteRssi(): Boolean = (gatt?.readRemoteRssi() ?: false)

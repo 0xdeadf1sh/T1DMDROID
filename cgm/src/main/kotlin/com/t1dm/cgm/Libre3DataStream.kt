@@ -112,7 +112,7 @@ class Libre3DataStream(
         val repaired = repository.divideRatesByTenOnce(
             "${Libre3FamilyDriver.VENDOR_ID}:", RATE_REPAIR_BEFORE_MS, RATE_REPAIR_KEY,
         )
-        if (repaired > 0) log.i(TAG, "rate repair: $repaired stored rates ÷10")
+        if (repaired > 0) log.i(TAG, "rate repair: $repaired stored rates /10")
         var plane: Libre3DataPlaneHandle? = null
         try {
             val live = when (val started = startDataPlane()) {
@@ -141,9 +141,9 @@ class Libre3DataStream(
                     gattFailures.onReceive { Setup.LinkFailed(it.reason) }
                 }
             }) {
-                null -> return Outcome.Failed("the data characteristics did not arm in $ENABLE_MS ms (§5.10)")
+                null -> return Outcome.Failed("the data characteristics did not arm in $ENABLE_MS ms (S5.10)")
                 is Setup.LinkFailed -> return Outcome.Failed("enable failed: ${setup.reason}")
-                Setup.Armed -> log.i(TAG, "data plane for ${sensor.serial} armed (§5.1 order); streaming")
+                Setup.Armed -> log.i(TAG, "data plane for ${sensor.serial} armed (S5.1 order); streaming")
             }
             return coroutineScope {
                 // Off the read loop: its replies arrive through that loop.
@@ -151,7 +151,7 @@ class Libre3DataStream(
                     delay(armBackfillDelayMs)
                     val count = withTimeoutOrNull(ARM_LIVE_WAIT_MS) { liveLifeCount.filterNotNull().first() }
                     if (count == null) {
-                        log.i(TAG, "top-up skipped — no realtime frame in ${ARM_LIVE_WAIT_MS / 1000} s")
+                        log.i(TAG, "top-up skipped - no realtime frame in ${ARM_LIVE_WAIT_MS / 1000} s")
                         return@launch
                     }
                     backfillLock.withLock { sendGapTopUp(live, count) }
@@ -213,7 +213,7 @@ class Libre3DataStream(
             null
         }
         if (updates == null) {
-            log.w(TAG, "feed ${char.name} refused (${chunk.size} B) — frame dropped, stream continues")
+            log.w(TAG, "feed ${char.name} refused (${chunk.size} B) - frame dropped, stream continues")
             return false
         }
         for (update in updates) {
@@ -272,7 +272,7 @@ class Libre3DataStream(
             glucose,
         )
         if (prior != null && r.lifeCount > prior + 1) {
-            log.w(TAG, "life count jumped $prior → ${r.lifeCount}: ${r.lifeCount - prior - 1} missed", glucose)
+            log.w(TAG, "life count jumped $prior -> ${r.lifeCount}: ${r.lifeCount - prior - 1} missed", glucose)
         }
         val flag = when {
             r.mgdl == null -> {
@@ -334,12 +334,12 @@ class Libre3DataStream(
             )
         }
         if (!s.isPatchStateActive) {
-            log.i(TAG, "patch state ${s.patchState} is not active (3/5/7 = expired/error handling, §5.7)")
+            log.i(TAG, "patch state ${s.patchState} is not active (3/5/7 = expired/error handling, S5.7)")
         }
         if (s.isPatchStateTerminated || s.isShutdownTerminated) {
             log.w(
                 TAG,
-                "patch terminated (state=${s.patchState}, shutdown=${s.isShutdownTerminated}) — stream ends",
+                "patch terminated (state=${s.patchState}, shutdown=${s.isShutdownTerminated}) - stream ends",
             )
             return true
         }
@@ -490,7 +490,7 @@ class Libre3DataStream(
     suspend fun requestBackfill() {
         val plane = handle
         if (plane == null) {
-            log.i(TAG, "backfill refused — the data plane is not armed")
+            log.i(TAG, "backfill refused - the data plane is not armed")
             return
         }
         // §14 phase 6: kit pair, live-edge top-up, walk; a reconnect runs only sendGapTopUp.
@@ -515,12 +515,12 @@ class Libre3DataStream(
         backfillLock.withLock {
             val lowerBound = state.lastHistoricalLifeCount ?: 0
             val historical = historicalBackfillCmd(lowerBound) ?: run {
-                log.w(TAG, "backfill skipped — the historical command could not be built")
+                log.w(TAG, "backfill skipped - the historical command could not be built")
                 return
             }
-            sendPatchControl(plane, historical, "historical ≥ $lowerBound")
+            sendPatchControl(plane, historical, "historical >= $lowerBound")
             val clinical = clinicalBackfillCmd(lowerBound)
-            if (clinical != null) sendPatchControl(plane, clinical, "clinical ≥ $lowerBound")
+            if (clinical != null) sendPatchControl(plane, clinical, "clinical >= $lowerBound")
             walkGap(plane, sendTopUp(plane, liveCount))
         }
     }
@@ -533,7 +533,7 @@ class Libre3DataStream(
      */
     private suspend fun sendTopUp(plane: Libre3DataPlaneHandle, liveCount: Int?): Int? {
         if (liveCount == null) {
-            log.i(TAG, "top-up skipped — no realtime life count yet")
+            log.i(TAG, "top-up skipped - no realtime life count yet")
             return null
         }
         val window = topUpWindow(liveCount) ?: return null
@@ -547,7 +547,7 @@ class Libre3DataStream(
         val window = topUpWindow(liveCount) ?: return
         val missing = missingMinutes(window)
         if (missing == null) {
-            log.i(TAG, "top-up skipped — every slot in [${window.first}, ${window.last}] is stored")
+            log.i(TAG, "top-up skipped - every slot in [${window.first}, ${window.last}] is stored")
             return
         }
         sendRange(plane, missing.first, missing.last, withClinical = false)
@@ -558,7 +558,7 @@ class Libre3DataStream(
         val end = liveCount - COMMITTED_HISTORY_LAG_MIN
         val start = maxOf(state.lastHistoricalFloorLifeCount ?: 0, end - RANGE_PROBE_WINDOW_MIN)
         if (end <= start) {
-            log.i(TAG, "top-up skipped — nothing committed past the floor ${state.lastHistoricalFloorLifeCount}")
+            log.i(TAG, "top-up skipped - nothing committed past the floor ${state.lastHistoricalFloorLifeCount}")
             return null
         }
         return start..end
@@ -589,14 +589,14 @@ class Libre3DataStream(
         while (bottom < topUpStart && windows < WALK_MAX_WINDOWS) {
             val hi = minOf(bottom + WALK_WINDOW_MIN, topUpStart)
             if (!sendRange(plane, bottom, hi)) {
-                log.w(TAG, "backfill walk stopped at [$bottom, $hi] — the write was not confirmed; re-tap later")
+                log.w(TAG, "backfill walk stopped at [$bottom, $hi] - the write was not confirmed; re-tap later")
                 return
             }
             bottom = hi
             advanceFloor(bottom)
             windows++
         }
-        log.i(TAG, "backfill walk done: $windows window(s), floor → $bottom (top-up starts at $topUpStart)")
+        log.i(TAG, "backfill walk done: $windows window(s), floor -> $bottom (top-up starts at $topUpStart)")
     }
 
     /** One bounded range, historical then clinical; true only when every write confirmed. */
@@ -607,7 +607,7 @@ class Libre3DataStream(
         withClinical: Boolean = true,
     ): Boolean {
         val historical = historicalBackfillRangeCmd(start, end) ?: run {
-            log.w(TAG, "range [$start, $end] skipped — the historical range command could not be built")
+            log.w(TAG, "range [$start, $end] skipped - the historical range command could not be built")
             return false
         }
         if (!sendPatchControl(plane, historical, "historical range [$start, $end]")) return false
@@ -624,18 +624,18 @@ class Libre3DataStream(
             throw e
         } catch (e: Exception) {
             // A tap races the stream's teardown: uniffi throws on a closed session.
-            log.w(TAG, "backfill stopped — the $what frame threw ${e.javaClass.simpleName}: ${e.message}")
+            log.w(TAG, "backfill stopped - the $what frame threw ${e.javaClass.simpleName}: ${e.message}")
             return false
         }
         if (frame == null) {
-            log.w(TAG, "backfill skipped — the $what frame could not be encrypted")
+            log.w(TAG, "backfill skipped - the $what frame could not be encrypted")
             return false
         }
         val reply = CompletableDeferred<ByteArray?>()
         pendingReply = reply
         val done = CompletableDeferred<Boolean>()
         val history = CgmLogTopic.HISTORY
-        log.dec(null, "patchControl ← $what", history, bytes = plaintext, opens = true)
+        log.dec(null, "patchControl <- $what", history, bytes = plaintext, opens = true)
         transport.writeChunk(Libre3DataChar.PatchControl.uuid, frame) { ok -> done.complete(ok) }
         val sent = withTimeoutOrNull(BACKFILL_WRITE_MS) { done.await() } == true
         if (sent) {

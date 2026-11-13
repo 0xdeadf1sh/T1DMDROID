@@ -14,13 +14,13 @@ object GraphIo {
     /** Tensor.fromBlob reads a direct buffer BY REFERENCE — each run needs its own GraphTensors. */
     fun tensors(gi: GraphInput): GraphTensors {
         require(gi.patches.size == gi.t * gi.patchDim) {
-            "patches ${gi.patches.size} != T·PATCH_DIM ${gi.t * gi.patchDim}"
+            "patches ${gi.patches.size} != T*PATCH_DIM${gi.t * gi.patchDim}"
         }
         require(gi.attnMask.size == gi.t * gi.t) {
-            "attn_mask ${gi.attnMask.size} != T² ${gi.t * gi.t}"
+            "attn_mask ${gi.attnMask.size} != T^2${gi.t * gi.t}"
         }
         require(gi.slotSel.size == gi.mSlots * gi.t) {
-            "slot_sel ${gi.slotSel.size} != M·T ${gi.mSlots * gi.t}"
+            "slot_sel ${gi.slotSel.size} != M*T${gi.mSlots * gi.t}"
         }
         fun buf(src: FloatArray): FloatBuffer = directFloats(src.size).apply { put(src); rewind() }
         return GraphTensors(

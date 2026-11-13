@@ -350,7 +350,7 @@ pub(crate) fn oriented(verts: Vec<Vector>, idx: Vec<[u32; 2]>) -> SharedShape {
 pub(crate) fn validate_terrain(terrain: TerrainSpec) -> Result<Terrain, CoreError> {
     let n = terrain.heights.len();
     if n < MIN_TERRAIN_SAMPLES {
-        return Err(dec(format!("terrain: {n} samples (need ≥ {MIN_TERRAIN_SAMPLES})")));
+        return Err(dec(format!("terrain: {n} samples (need >= {MIN_TERRAIN_SAMPLES})")));
     }
     if n > MAX_TERRAIN_SAMPLES {
         return Err(dec(format!("terrain: {n} samples (max {MAX_TERRAIN_SAMPLES})")));

@@ -50,7 +50,7 @@ class NightscoutClientTest {
         server.enqueue(MockResponse().setResponseCode(200).setBody("""{"status":"ok","name":"ns","version":"1.2"}"""))
         assertTrue(client().probe().startsWith("ok"))
 
-        assertEquals("off — set a URL and secret", client(enabled = false).probe())
+        assertEquals("off - set a URL and secret", client(enabled = false).probe())
     }
 
     private val treatment = NsTreatmentDto(

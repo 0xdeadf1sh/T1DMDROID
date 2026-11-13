@@ -263,7 +263,7 @@ impl Forecast {
             return Err(dec(format!("forecast: {l} levels")));
         }
         if self.fan.len() != h * l {
-            return Err(dec(format!("forecast: fan {} != {h}×{l}", self.fan.len())));
+            return Err(dec(format!("forecast: fan {} != {h}x{l}", self.fan.len())));
         }
         if h > 0 && self.step_min == 0 {
             return Err(dec("forecast: step_min 0"));

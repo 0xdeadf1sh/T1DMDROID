@@ -556,7 +556,7 @@ pub fn parse_descriptor(json: String) -> Result<ModelDescriptor, CoreError> {
         match declared {
             Some(v) if v != patch_dim => {
                 return Err(CoreError::Decode {
-                    reason: format!("{name} {v} != PATCH_SIZE·N_INPUT_FEATURES {patch_dim}"),
+                    reason: format!("{name} {v} != PATCH_SIZE*N_INPUT_FEATURES {patch_dim}"),
                 })
             }
             _ => {}
@@ -836,7 +836,7 @@ fn resolve_mask_spans(
     }
     if out.is_empty() {
         return Err(CoreError::Internal {
-            reason: "masked set is empty — the head must be given at least one masked patch"
+            reason: "masked set is empty - the head must be given at least one masked patch"
                 .into(),
         });
     }
@@ -927,7 +927,7 @@ pub fn build_graph_input(
         if a.len() != n_dose || a.iter().any(|v| v.len() != pred_steps) {
             let lens: Vec<usize> = a.iter().map(Vec::len).collect();
             return refuse(format!(
-                "announced doses must be {n_dose} channels of P·S {pred_steps} steps, got {lens:?}"
+                "announced doses must be {n_dose} channels of P*S {pred_steps} steps, got {lens:?}"
             ));
         }
     }
@@ -1203,12 +1203,12 @@ pub fn step_states(
     let d = desc.d_model as usize;
     if hidden.len() != t * d {
         return Err(CoreError::Internal {
-            reason: format!("hidden has {} values, want t {t} × d_model {d}", hidden.len()),
+            reason: format!("hidden has {} values, want t {t} x d_model {d}", hidden.len()),
         });
     }
     if attn_mask.len() != t * t {
         return Err(CoreError::Internal {
-            reason: format!("attn_mask has {} values, want t² {}", attn_mask.len(), t * t),
+            reason: format!("attn_mask has {} values, want t^2 {}", attn_mask.len(), t * t),
         });
     }
     if slot_patch.is_empty() || slot_patch.len() > desc.max_masked_patches as usize {
@@ -1295,7 +1295,7 @@ pub fn assemble_decode(
     if head_raw.is_empty() || head_raw.len() % stride != 0 {
         return Err(CoreError::Internal {
             reason: format!(
-                "head_raw length {} is not a multiple of PATCH_SIZE·N_QUANTILES {stride}",
+                "head_raw length {} is not a multiple of PATCH_SIZE*N_QUANTILES {stride}",
                 head_raw.len()
             ),
         });
@@ -1440,7 +1440,7 @@ pub fn forecast_slice(f: &Forecast, from_patch: i32, to_patch: i32) -> Result<Fo
     {
         return Err(CoreError::Internal {
             reason: format!(
-                "forecast arrays do not match {} slots × {PATCH_SIZE} steps",
+                "forecast arrays do not match {} slots x {PATCH_SIZE} steps",
                 f.slot_patch.len()
             ),
         });
@@ -1486,7 +1486,7 @@ pub fn band_line(desc: &ModelDescriptor, f: &Forecast, tau: f64) -> Result<Vec<f
     if f.q_tau_risk.len() != n_steps * N_QUANTILES {
         return Err(CoreError::Internal {
             reason: format!(
-                "fan of {} values does not match {n_steps} steps × {N_QUANTILES} levels",
+                "fan of {} values does not match {n_steps} steps x {N_QUANTILES} levels",
                 f.q_tau_risk.len()
             ),
         });
@@ -1851,7 +1851,7 @@ mod tests {
         for (i, (g, w)) in got.iter().zip(want).enumerate() {
             assert!(
                 (g - w).abs() <= tol,
-                "{what}[{i}]: got {g}, want {w} (|Δ|={:.3e} > {tol:.1e})",
+                "{what}[{i}]: got {g}, want {w} (|d|={:.3e} > {tol:.1e})",
                 (g - w).abs()
             );
         }
@@ -2165,10 +2165,10 @@ mod tests {
             matches!(r, Err(CoreError::Decode { .. }))
         };
 
-        assert!(is_decode(bad("SCALE", serde_json::json!(0.0))), "scale 0 ⇒ f_inv divides by 0");
+        assert!(is_decode(bad("SCALE", serde_json::json!(0.0))), "scale 0 => f_inv divides by 0");
         assert!(is_decode(bad("SCALE", serde_json::json!(-1.509))), "negative scale inverts f");
         assert!(is_decode(bad("POWER", serde_json::json!(0.0))));
-        assert!(is_decode(bad("SCALE", serde_json::json!(f64::NAN))), "NaN → JSON null");
+        assert!(is_decode(bad("SCALE", serde_json::json!(f64::NAN))), "NaN -> JSON null");
         // ln(g) < 0 makes ln(g)^power NaN for a fractional power; ln(1) = 0 is total.
         assert!(bad("BG_CLAMP_MIN", serde_json::json!(1.0)).is_ok(), "1.0 is the rail, not below it");
         assert!(is_decode(bad("BG_CLAMP_MIN", serde_json::json!(0.99))));
@@ -2186,7 +2186,7 @@ mod tests {
             assert!((own - mgdl).abs() < 1e-9, "f_inv(f({mgdl})) = {own} under its own params");
             assert!(
                 (wrong - mgdl).abs() > 5.0,
-                "decoding {mgdl} mg/dL under the wrong scale gave {wrong} — if this ever \
+                "decoding {mgdl} mg/dL under the wrong scale gave {wrong} - if this ever \
                  stops differing, the two parameterizations have been unified by accident"
             );
         }
@@ -2488,13 +2488,13 @@ mod tests {
             let (hour, r) = time_of_day_resultant(&probs, bin_hours);
             assert!(
                 (r - want_r).abs() <= r_tol,
-                "{name}: R got {r}, want {want_r} (|Δ|={:.3e} > {r_tol:.1e})",
+                "{name}: R got {r}, want {want_r} (|d|={:.3e} > {r_tol:.1e})",
                 (r - want_r).abs()
             );
             assert_eq!(r >= r_deg, hour_defined, "{name}: hour_defined vs R>=eps");
             if hour_defined {
                 let dh = circ_dhour(hour, want_hour);
-                assert!(dh <= hour_tol, "{name}: hour got {hour}, want {want_hour} (circΔ={dh:.3e} > {hour_tol:.1e})");
+                assert!(dh <= hour_tol, "{name}: hour got {hour}, want {want_hour} (circd={dh:.3e} > {hour_tol:.1e})");
             }
         }
     }
@@ -2522,7 +2522,7 @@ mod tests {
         assert_eq!(pt.bin_hours, bin_hours);
         assert_close(&pt.probs, &f64s(&want["probs"]), 1e-4, "decode_time probs");
         let dh = circ_dhour(pt.predicted_hour, want["hour"].as_f64().unwrap());
-        assert!(dh <= g["hour_tol"].as_f64().unwrap(), "decode_time hour circΔ={dh:.3e}");
+        assert!(dh <= g["hour_tol"].as_f64().unwrap(), "decode_time hour circd={dh:.3e}");
         assert!((pt.resultant_r - want["R"].as_f64().unwrap()).abs() <= g["R_tol"].as_f64().unwrap());
     }
 
@@ -2822,7 +2822,7 @@ mod tests {
                 assert_eq!(gi.attn_mask[row * t + col], d.neg_fill as f32);
             }
         }
-        assert!(checked > 0, "the case has no visible→masked pair to check");
+        assert!(checked > 0, "the case has no visible->masked pair to check");
         // No row may be entirely blocked, or its softmax is NaN.
         for row in 0..t {
             assert!(

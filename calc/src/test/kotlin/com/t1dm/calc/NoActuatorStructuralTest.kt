@@ -29,7 +29,7 @@ class NoActuatorStructuralTest {
                 for (f in c.fields) if (forbidden.containsMatchIn(f.name)) add("${c.simpleName}.${f.name}")
             }
         }
-        assertTrue("advisory-only violated — actuation-shaped members: $offenders", offenders.isEmpty())
+        assertTrue("advisory-only violated - actuation-shaped members: $offenders", offenders.isEmpty())
     }
 
     @Test

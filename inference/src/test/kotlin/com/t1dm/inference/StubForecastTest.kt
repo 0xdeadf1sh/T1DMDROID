@@ -30,7 +30,7 @@ class StubForecastTest {
         assertTrue(s.predictions.isEmpty())
         assertTrue(store.persisted.isEmpty())
         assertFalse(s.realBackendAvailable)
-        assertEquals("no forecast — a.xnnpack.pte missing", s.note)
+        assertEquals("no forecast - a.xnnpack.pte missing", s.note)
     }
 
     @Test
@@ -40,7 +40,7 @@ class StubForecastTest {
         val controller = controller(dir, RecordingPredictions())
         controller.refreshModels()
 
-        assertEquals("no forecast — a.xnnpack.pte won't load", controller.state.value.note)
+        assertEquals("no forecast - a.xnnpack.pte won't load", controller.state.value.note)
     }
 
     @Test

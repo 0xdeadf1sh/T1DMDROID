@@ -33,7 +33,7 @@ class GolfFeelTest {
         GolfFeelTracker(MAX_LAUNCH).also { it.observe(first) }
 
     @Test
-    fun `the first observation never fires — a ball placed in the air does not thud`() {
+    fun `the first observation never fires - a ball placed in the air does not thud`() {
         val t = GolfFeelTracker(MAX_LAUNCH)
         val first = t.observe(ball(airborne = true, atRest = false, impact = 900f, strokes = 3))
         assertNull(first.cue)

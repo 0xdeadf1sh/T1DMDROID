@@ -84,7 +84,7 @@ class AndroidLibre3GattTransport(
     override fun connect(onReady: () -> Unit, onGattError: (reason: String) -> Unit) {
         this.onReady = onReady
         this.onGattError = onGattError
-        log.gatt(TAG, "connectGatt(autoConnect=false, TRANSPORT_LE) → ${device.address}")
+        log.gatt(TAG, "connectGatt(autoConnect=false, TRANSPORT_LE) -> ${device.address}")
         val g = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
         if (g == null) {
             log.w(TAG, "connectGatt returned null")
@@ -99,7 +99,7 @@ class AndroidLibre3GattTransport(
         val g = gatt
         val c = chars[charUuid.lowercase()]
         if (g == null || c == null) {
-            log.w(TAG, "write to $charUuid refused — no link or characteristic")
+            log.w(TAG, "write to $charUuid refused - no link or characteristic")
             onDone(false)
             return
         }
@@ -136,13 +136,13 @@ class AndroidLibre3GattTransport(
     override fun enableDataChars(onReady: () -> Unit, onFail: (String) -> Unit) {
         val g = gatt
         if (g == null) {
-            log.w(TAG, "enableDataChars refused — no link")
+            log.w(TAG, "enableDataChars refused - no link")
             onFail("no link for the data characteristics")
             return
         }
         val svc = g.getService(Libre3Gatt.DATA_SERVICE_UUID)
         if (svc == null) {
-            onFail("the primary data service (§5.1) is absent")
+            onFail("the primary data service (S5.1) is absent")
             return
         }
         synchronized(chars) {
@@ -212,12 +212,12 @@ class AndroidLibre3GattTransport(
         if (next == null) {
             val dataReady = synchronized(this) { dataOnReady }
             if (dataReady != null) {
-                log.gatt(TAG, "data characteristics armed (§5.1 order)")
+                log.gatt(TAG, "data characteristics armed (S5.1 order)")
                 synchronized(this) { dataOnReady = null }
                 dataReady()
                 return
             }
-            log.gatt(TAG, "handshake characteristics armed (§5.1 order)")
+            log.gatt(TAG, "handshake characteristics armed (S5.1 order)")
             onReady?.invoke()
             return
         }
@@ -256,7 +256,7 @@ class AndroidLibre3GattTransport(
             }
             val svc = g.getService(Libre3Gatt.SECURITY_SERVICE_UUID)
             if (svc == null) {
-                fail("the security service (§5.1) is absent")
+                fail("the security service (S5.1) is absent")
                 return
             }
             synchronized(chars) { chars.clear() }

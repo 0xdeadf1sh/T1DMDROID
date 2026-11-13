@@ -45,7 +45,7 @@ class HapticMixerTest {
     private fun Rig.lastArm() = renderer.arms.last()
 
     @Test
-    fun `off costs nothing at all — no arm, no shot, at any level`() {
+    fun `off costs nothing at all - no arm, no shot, at any level`() {
         val rig = Rig(HapticStrength.OFF)
         repeat(60) { rig.frame(1f, texture = 1f) }
         HapticCue.entries.forEach { rig.mixer.cue(it, 1f) }
@@ -123,7 +123,7 @@ class HapticMixerTest {
     }
 
     @Test
-    fun `silence is immediate — an airborne frame does not wait for the control period`() {
+    fun `silence is immediate - an airborne frame does not wait for the control period`() {
         val rig = Rig()
         rig.frame(0.8f)
         val armed = rig.renderer.arms.size
@@ -204,7 +204,7 @@ class HapticMixerTest {
     }
 
     @Test
-    fun `a dropped cue is never played later — nothing is queued`() {
+    fun `a dropped cue is never played later - nothing is queued`() {
         val rig = Rig()
         rig.mixer.cue(HapticCue.Shock)
         rig.clock.advance(10)

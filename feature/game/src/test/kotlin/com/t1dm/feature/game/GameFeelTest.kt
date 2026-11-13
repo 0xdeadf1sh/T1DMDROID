@@ -87,7 +87,7 @@ class GameFeelTest {
 
 
     @Test
-    fun `the first observation never fires — a car placed in the air does not thud`() {
+    fun `the first observation never fires - a car placed in the air does not thud`() {
         val t = FeelTracker()
         val first = t.observe(car(airborne = true, impulse = 900f))
         assertNull(first.cue)

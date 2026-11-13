@@ -94,7 +94,7 @@ class ArchiveCodecTest {
 
     @Test
     fun `a unicode note survives intact`() {
-        val text = "café · 早餐 · 🥐 · Ω"
+        val text = "caf\u00e9 \u00b7 \u65e9\u9910 \u00b7 \uD83E\uDD50 \u00b7 \u03a9"
         assertEquals(text, Archive.readDose(parse(render { Archive.write(it, dose(note = text)) })).note)
     }
 

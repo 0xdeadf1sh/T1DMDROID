@@ -58,7 +58,7 @@ class CgmLogFoldTest {
     fun `a line without a topic splits the folds around it`() {
         push(0, 100)
         push(180_000, 101)
-        add(200_000, CgmLogTopic.NONE, text = "phase LIVE → FAILED")
+        add(200_000, CgmLogTopic.NONE, text = "phase LIVE -> FAILED")
         push(360_000, 102)
         push(540_000, 103)
         push(720_000, 104)

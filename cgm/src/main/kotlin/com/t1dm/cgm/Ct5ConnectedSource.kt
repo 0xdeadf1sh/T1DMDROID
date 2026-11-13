@@ -116,7 +116,7 @@ class Ct5ConnectedSource(
     @Volatile
     private var phase = Phase.IDLE
         set(value) {
-            if (value != field) log.d(TAG, "phase $field → $value")
+            if (value != field) log.d(TAG, "phase $field -> $value")
             field = value
         }
 
@@ -276,16 +276,16 @@ class Ct5ConnectedSource(
 
     private fun beginBind() {
         if (phase != Phase.AWAITING_BIND) {
-            log.w(TAG, "bind ignored — phase is $phase, not AWAITING_BIND")
+            log.w(TAG, "bind ignored - phase is $phase, not AWAITING_BIND")
             return
         }
         if (state != null) {
-            log.w(TAG, "bind ignored — this sensor is already bound")
+            log.w(TAG, "bind ignored - this sensor is already bound")
             return
         }
         if (claimedElsewhere) {
             // Belt-and-braces: never reaches AWAITING_BIND; its absence would risk a live wear.
-            log.w(TAG, "bind refused — the air says $bsn is claimed (flag=$advertisedBound) and no key is held")
+            log.w(TAG, "bind refused - the air says $bsn is claimed (flag=$advertisedBound) and no key is held")
             return
         }
         log.i(TAG, "bind requested by the user for $bsn")
@@ -407,11 +407,11 @@ class Ct5ConnectedSource(
         if (state == null) {
             if (claimedElsewhere) {
                 // Claimed+unreadable: a held link pins forever; hand back now, covers UNKNOWN too.
-                fail("the air says $bsn is claimed (flag=$advertisedBound) and no key is held — nothing to read or claim")
+                fail("the air says $bsn is claimed (flag=$advertisedBound) and no key is held - nothing to read or claim")
                 return
             }
             // The link is HELD here so the user can bind; nothing happens on its own.
-            log.i(TAG, "$bsn is unbound — holding the link and awaiting an explicit bind")
+            log.i(TAG, "$bsn is unbound - holding the link and awaiting an explicit bind")
             enter(Phase.AWAITING_BIND)
             return
         }
@@ -497,7 +497,7 @@ class Ct5ConnectedSource(
             Ct5BindVerdict.REJECTED -> {
                 if (!st.initialised) {
                     // Unplanted blob is a password for nothing; keeping it blocks bind forever.
-                    log.w(TAG, "the sensor never took the unfinished bind for $bsn — releasing the key")
+                    log.w(TAG, "the sensor never took the unfinished bind for $bsn - releasing the key")
                     repository.clearSensorSecret(descriptor.id)
                     // The driver's own cache of "a secret is held" can't see this happen.
                     onSecretReleased(bsn)
@@ -512,7 +512,7 @@ class Ct5ConnectedSource(
                     return
                 }
                 // A finished bind's secret is the real unbind password; kept, user must rebind.
-                fail("the sensor refused the stored identity for $bsn — it needs rebinding")
+                fail("the sensor refused the stored identity for $bsn - it needs rebinding")
                 return
             }
             // Ambiguous verdict is never positive; a wrong key surfaces later in plausible().
@@ -572,7 +572,7 @@ class Ct5ConnectedSource(
             fail("the sensor's identity string decodes to K = 0, which cannot be used")
             return
         }
-        log.i(TAG, "identity ${id.ssn} → K=${id.kX100}/100 R=${id.rX100}/100 lifetime=${id.lifeTime}")
+        log.i(TAG, "identity ${id.ssn} -> K=${id.kX100}/100 R=${id.rX100}/100 lifetime=${id.lifeTime}")
         bindIdentity = id
         // Only place the lifetime code appears; unpublished, the 2 extended-warmup codes are dead.
         _declaredWarmupWindowMin.value = Ct5Constants.warmupWindowMinFor(id.lifeTime)
@@ -599,7 +599,7 @@ class Ct5ConnectedSource(
         // Length and nonce validated before key derivation; vendor checks neither, no replay.
         val cipherId = session.cipherIdFromSetIdReply(frame, a, b)
         if (cipherId == null) {
-            fail("setID reply rejected (${frame.size} B) — no key derived, nothing persisted")
+            fail("setID reply rejected (${frame.size} B) - no key derived, nothing persisted")
             return
         }
         // Persists before 0x38, marked unfinished: RANDOM_ID is the unbind password 0x38 plants.
@@ -617,7 +617,7 @@ class Ct5ConnectedSource(
         )
         // Sealing (Keystore+SQLite) can throw; uncaught it kills the collector, 0x38 unsent.
         if (!persistSecret(fresh)) {
-            fail("the bind secret could not be stored — stopping before setParameters")
+            fail("the bind secret could not be stored - stopping before setParameters")
             return
         }
         state = fresh
@@ -661,7 +661,7 @@ class Ct5ConnectedSource(
             cipherId = p.cipherId,
         )
         if (!ok) {
-            fail("setParameters echo did not match what was sent — stopping before init")
+            fail("setParameters echo did not match what was sent - stopping before init")
             return
         }
         enter(Phase.BIND_INIT)
@@ -682,7 +682,7 @@ class Ct5ConnectedSource(
             // As in onBindSetId: storage suspends, watchdog may have failed the session under this.
             if (phase != Phase.BIND_INIT) return
         }
-        log.i(TAG, "bind complete for $bsn — the sensor is running")
+        log.i(TAG, "bind complete for $bsn - the sensor is running")
         bindNonceA = null
         bindNonceB = null
         bindRandomId = null
@@ -696,7 +696,7 @@ class Ct5ConnectedSource(
         enter(Phase.LIVE)
         // Settled here: a link dying before the first push is loss-of-signal, not unreadable.
         onAuthenticated()
-        log.i(TAG, "session LIVE for $bsn — awaiting pushes every ${Ct5Constants.SAMPLE_INTERVAL_MS / 1000} s")
+        log.i(TAG, "session LIVE for $bsn - awaiting pushes every ${Ct5Constants.SAMPLE_INTERVAL_MS / 1000} s")
         // Cosmetic, clock never read back; sent after LIVE so its ladder timeout is a no-op.
         sendSetDate()
         // Pull not started here: instants derive from bindTimeMs, proven by the first push.
@@ -714,7 +714,7 @@ class Ct5ConnectedSource(
     private suspend fun onPull(request: PullRequest) {
         val st = state ?: return
         if (phase != Phase.LIVE || batchInFlight || !backfillStarted) {
-            log.i(TAG, "$request pull for $bsn ignored — phase=$phase inFlight=$batchInFlight pushed=$backfillStarted")
+            log.i(TAG, "$request pull for $bsn ignored - phase=$phase inFlight=$batchInFlight pushed=$backfillStarted")
             return
         }
         if (request == PullRequest.GAPS) {
@@ -757,7 +757,7 @@ class Ct5ConnectedSource(
         if (liveAdvanced && backfillCursor > liveId) rewindCursor(liveId - 1)
         if (!anchorTrusted) {
             // Unrepaired anchor: unlike live, a recovered sample has no receive-time fallback.
-            log.w(TAG, "backfill for $bsn refused — the anchor could not be trusted at sample $liveId")
+            log.w(TAG, "backfill for $bsn refused - the anchor could not be trusted at sample $liveId")
             backfillOver = true
             return
         }
@@ -837,7 +837,7 @@ class Ct5ConnectedSource(
             null,
             "history from ${batch.startId}: ${batch.samples.size}/${batch.slots} slots" +
                 (if (batch.endOfHistory) ", end of store" else "") +
-                batch.samples.joinToString(prefix = " · ", separator = " · ") { describe(it) },
+                batch.samples.joinToString(prefix = " | ", separator = " | ") { describe(it) },
             CgmLogTopic.HISTORY,
         )
         // Not lastProgressMs: a history reply proves the link, not the sensor, alive.
@@ -988,9 +988,9 @@ class Ct5ConnectedSource(
         backfillOver = true
         batchInFlight = false
         if (recovered > 0) {
-            log.i(TAG, "backfill for $bsn recovered $recovered samples — $why")
+            log.i(TAG, "backfill for $bsn recovered $recovered samples - $why")
         } else {
-            log.i(TAG, "backfill for $bsn recovered nothing — $why")
+            log.i(TAG, "backfill for $bsn recovered nothing - $why")
         }
     }
 
@@ -1011,7 +1011,7 @@ class Ct5ConnectedSource(
     private suspend fun rewindCursor(to: Int) {
         val target = to.coerceAtLeast(0)
         if (target >= backfillCursor) return
-        log.w(TAG, "cursor for $bsn was ahead of the live stream at $backfillCursor — rewound to $target")
+        log.w(TAG, "cursor for $bsn was ahead of the live stream at $backfillCursor - rewound to $target")
         trimCursorTo(target)
     }
 
@@ -1031,14 +1031,14 @@ class Ct5ConnectedSource(
         }
         val st = state
         if (st == null) {
-            log.d(TAG, "push ignored — no key held for $bsn")
+            log.d(TAG, "push ignored - no key held for $bsn")
             return
         }
         val rxMs = nowMs()
         // Checksum-valid = progress regardless of the gate; watchdog fed before any drop.
         val push = session.parsePush(frame, st.cipherId)
         if (push == null) {
-            log.w(TAG, "push rejected (${frame.size} B) — length, opcode or checksum")
+            log.w(TAG, "push rejected (${frame.size} B) - length, opcode or checksum")
             return
         }
         lastProgressMs = rxMs
@@ -1048,7 +1048,7 @@ class Ct5ConnectedSource(
         log.dec(null, "push ${describe(push)}", CgmLogTopic.GLUCOSE)
         if (liveAdvanced && alreadyDelivered > 0 && push.glucoseId > alreadyDelivered + 1) {
             val missed = push.glucoseId - alreadyDelivered - 1
-            log.w(TAG, "counter jumped $alreadyDelivered → ${push.glucoseId}: $missed missed", CgmLogTopic.GLUCOSE)
+            log.w(TAG, "counter jumped $alreadyDelivered -> ${push.glucoseId}: $missed missed", CgmLogTopic.GLUCOSE)
         }
         if (push.glucoseId > highestLiveId) {
             highestLiveId = push.glucoseId
@@ -1096,7 +1096,7 @@ class Ct5ConnectedSource(
             implausibleRun++
             log.w(
                 TAG,
-                "push ${push.glucoseId} decoded to ${push.tempCx100 / 100} C — implausible " +
+                "push ${push.glucoseId} decoded to ${push.tempCx100 / 100} C - implausible " +
                     "($implausibleRun in a row); the key may not be the sensor's",
             )
             // Obfuscated, as received: an 8-bit key, so these bytes are what a search runs over.
@@ -1331,7 +1331,7 @@ class Ct5ConnectedSource(
                     continue
                 }
                 val idleMin = (nowMs() - since) / 60_000
-                log.w(TAG, "watchdog: $p silent for ${idleMin}m — treating the link as dead")
+                log.w(TAG, "watchdog: $p silent for ${idleMin}m - treating the link as dead")
                 fail("nothing came back for ${idleMin}m in $p")
                 return@launch
             }
@@ -1360,7 +1360,7 @@ class Ct5ConnectedSource(
     private fun send(frame: ByteArray) {
         val opcode = frame[0].toInt() and 0xFF
         val topic = ct5LogTopic(opcode)
-        log.i(TAG, "→ 0x${opcode.toString(16)} (${frame.size} B) in $phase", topic, opens = topic != CgmLogTopic.NONE)
+        log.i(TAG, "-> 0x${opcode.toString(16)} (${frame.size} B) in $phase", topic, opens = topic != CgmLogTopic.NONE)
         outstanding = opcode
         transport.sendPaced(frame, Ct5Constants.ladderFor(opcode), expectReply = true)
     }

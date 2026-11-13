@@ -132,7 +132,7 @@ class ExerciseRecorder(
         if (!source.isEnabled()) return LOCATION_OFF
         val sinceMs = nowMs - (bucketer.lastFix?.tsMs ?: session.startMs)
         if (sinceMs >= STALE_FIX_MS) return "No fix for ${sinceMs / 60_000} min"
-        if (lowPowerNow) return "Low power — ${LocationSource.LOW_POWER_MIN_TIME_MS / 1000} s fixes"
+        if (lowPowerNow) return "Low power - ${LocationSource.LOW_POWER_MIN_TIME_MS / 1000} s fixes"
         return null
     }
 
@@ -166,9 +166,9 @@ class ExerciseRecorder(
         /** Below this a pace is the receiver's own scatter divided by a small number. */
         const val MIN_PACE_DISTANCE_M = 50.0
 
-        const val LOCATION_OFF = "Location off — no track"
+        const val LOCATION_OFF = "Location off - no track"
 
         /** Separate from "no fix", which would point the user at the sky, not at the toggle. */
-        const val NO_PRECISE = "Approximate location — no track"
+        const val NO_PRECISE = "Approximate location - no track"
     }
 }

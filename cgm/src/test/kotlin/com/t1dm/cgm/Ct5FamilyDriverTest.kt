@@ -706,7 +706,7 @@ class Ct5FamilyDriverTest {
 
         val interactive = driver(TestScope(), FakeCgmRepository(), screenOn = true)
         assertEquals(
-            "an interactive sweep is unchanged — this costs latency and must not be paid while somebody is watching",
+            "an interactive sweep is unchanged - this costs latency and must not be paid while somebody is watching",
             Ct5FamilyDriver.DISCOVERY_SWEEP_MS,
             interactive.sweepWindowMs(),
         )

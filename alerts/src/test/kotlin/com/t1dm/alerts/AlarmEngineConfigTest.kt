@@ -56,7 +56,7 @@ class AlarmEngineConfigTest {
         val e = AlarmEngine(default) // default lossMin = 20
         e.onReading(reading(120, rxWallMs = 0))
         e.onTick(15 * MIN)
-        assertNull("15 min < 20 min window ⇒ no loss yet", e.state.value.signalLoss)
+        assertNull("15 min < 20 min window => no loss yet", e.state.value.signalLoss)
 
         e.updateConfig(default.copy(lossMin = 10))
         e.onTick(15 * MIN) // 15 min >= the new 10 min window

@@ -189,7 +189,7 @@ class CgmConsoleTest {
             entry(CgmLogKind.RX, "GlucoseData", 15, monoNs = 1),
             entry(CgmLogKind.RX, "GlucoseData", 20, monoNs = 2),
             entry(CgmLogKind.DEC, null, 2, monoNs = 3, text = "realtime 5: 110 mg/dL", rxNs = 2),
-            entry(CgmLogKind.DEC, null, null, monoNs = 4, text = "patchControl ← top-up"),
+            entry(CgmLogKind.DEC, null, null, monoNs = 4, text = "patchControl <- top-up"),
             entry(CgmLogKind.RX, "F001", null, monoNs = 5),
             entry(CgmLogKind.DEC, null, null, monoNs = 6, text = "realtime 5 stored", rxNs = 2),
             entry(CgmLogKind.RX, "adv", 31, monoNs = 7),
@@ -293,8 +293,8 @@ class CgmConsoleTest {
         assertEquals("AB CD", run("encrypt 3 1 da 38 67", view(libre)).lines.single().text)
         assertEquals(listOf("seal 3 1 3 B"), host.calls)
 
-        host.sealed = CgmFrameResult.Refused("kind 9: 0–7")
-        assertEquals("kind 9: 0–7", run("encrypt 9 1 00", view(libre)).lines.single().text)
+        host.sealed = CgmFrameResult.Refused("kind 9: 0-7")
+        assertEquals("kind 9: 0-7", run("encrypt 9 1 00", view(libre)).lines.single().text)
 
         assertEquals(CgmReplyTone.ERR, run("encrypt 3 x 00", view(libre)).lines.single().tone)
         assertEquals(CgmReplyTone.ERR, run("encrypt 3 1", view(libre)).lines.single().tone)

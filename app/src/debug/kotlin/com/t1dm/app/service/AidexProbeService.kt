@@ -127,7 +127,7 @@ class AidexProbeService : Service() {
         )
         val action = intent?.action
         if (action == ACTION_PROBE_STOP) {
-            logi("STOP requested via receiver — tearing down")
+            logi("STOP requested via receiver - tearing down")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -147,7 +147,7 @@ class AidexProbeService : Service() {
 
     override fun onDestroy() {
         stopping = true
-        logi("onDestroy — stopping scan, closing GATT")
+        logi("onDestroy - stopping scan, closing GATT")
         handler.removeCallbacksAndMessages(null)
         stopScan()
         closeGatt()
@@ -158,7 +158,7 @@ class AidexProbeService : Service() {
 
     private fun startLegacy(m: Mode) {
         if (started) {
-            logi("$m ignored — probe already running mode=$mode")
+            logi("$m ignored - probe already running mode=$mode")
             return
         }
         started = true
@@ -179,7 +179,7 @@ class AidexProbeService : Service() {
 
         val phase: () -> Unit = { runStagedPhase(m) }
         if (sessionReady && gatt != null && lastBootstrapSerial == serial) {
-            logi("$m — reusing the live bonded session for $serial")
+            logi("$m - reusing the live bonded session for $serial")
             handler.post(phase)
         } else {
             onSessionReady = phase
@@ -191,7 +191,7 @@ class AidexProbeService : Service() {
             }
             sessionReady = false
             hs = Hs.IDLE
-            logi("$m — no live session for $serial; bootstrapping scan→connect→bond→handshake")
+            logi("$m - no live session for $serial; bootstrapping scan->connect->bond->handshake")
             handler.post { startScan() }
         }
     }
@@ -215,7 +215,7 @@ class AidexProbeService : Service() {
             Mode.BRINGUP -> bringupSurvey()
             Mode.ACTIVATE -> {
                 if (activated == true && !activateForce) {
-                    emitVerdict("ACTIVATE REFUSED — a prior BRINGUP found this sensor ALREADY ACTIVATED; pass --ei force 1 to override")
+                    emitVerdict("ACTIVATE REFUSED - a prior BRINGUP found this sensor ALREADY ACTIVATED; pass --ei force 1 to override")
                 } else {
                     activateFlow()
                 }
@@ -257,7 +257,7 @@ class AidexProbeService : Service() {
         override fun run() {
             if (scanning && !stopping) {
                 val who = targetSerial?.let { "serial *$it" } ?: "any AiDEX"
-                logi("SCANNING… still looking for $who (sensor must be advertising / not held by another central)")
+                logi("SCANNING... still looking for $who (sensor must be advertising / not held by another central)")
                 handler.postDelayed(this, SCAN_HEARTBEAT_MS)
             }
         }
@@ -290,7 +290,7 @@ class AidexProbeService : Service() {
     @SuppressLint("MissingPermission")
     private fun connect(device: BluetoothDevice) {
         if (stopping) return
-        logi("connectGatt(autoConnect=false, TRANSPORT_LE) → ${device.address}")
+        logi("connectGatt(autoConnect=false, TRANSPORT_LE) -> ${device.address}")
         gatt = runCatching {
             device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
         }.getOrElse {
@@ -316,14 +316,14 @@ class AidexProbeService : Service() {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     reconnectAttempts = 0
-                    updateNotif("CONNECTED — mode=$mode")
-                    logi("LINK UP — discoverServices()")
+                    updateNotif("CONNECTED - mode=$mode")
+                    logi("LINK UP - discoverServices()")
                     handler.post { runCatching { g.discoverServices() } }
                     if (mode == Mode.SURVIVAL) startHeartbeat()
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     stopHeartbeat()
-                    logi("LINK DOWN — status=$status (${gattStatusName(status)}).")
+                    logi("LINK DOWN - status=$status (${gattStatusName(status)}).")
                     runCatching { g.close() }
                     if (gatt === g) gatt = null
                     sessionReady = false
@@ -332,10 +332,10 @@ class AidexProbeService : Service() {
                             logi("survival mode: THIS is the teardown signal; if it coincides with screen-off the OS is dropping the link")
                             scheduleReconnect()
                         }
-                        Mode.BOND -> logi("bond mode: not auto-reconnecting — verdict arrives via ACTION_BOND_STATE_CHANGED")
-                        Mode.REALTIME -> logi("REALTIME LINK DOWN status=$status — if this coincides with screen-off, the connection did NOT survive (survival FAIL); no auto-reconnect")
-                        Mode.HANDSHAKE -> if (!verdictEmitted) emitVerdict("BONDING REQUIRED — link dropped mid-handshake (unbonded) at phase=$hs status=$status (${gattStatusName(status)}) — the current sensor needs a fresh/reset sensor")
-                        Mode.BRINGUP, Mode.ACTIVATE, Mode.HISTORY -> if (!verdictEmitted) emitVerdict("$mode LINK DROP before verdict — status=$status (${gattStatusName(status)}) at phase=$hs")
+                        Mode.BOND -> logi("bond mode: not auto-reconnecting - verdict arrives via ACTION_BOND_STATE_CHANGED")
+                        Mode.REALTIME -> logi("REALTIME LINK DOWN status=$status - if this coincides with screen-off, the connection did NOT survive (survival FAIL); no auto-reconnect")
+                        Mode.HANDSHAKE -> if (!verdictEmitted) emitVerdict("BONDING REQUIRED - link dropped mid-handshake (unbonded) at phase=$hs status=$status (${gattStatusName(status)}) - the current sensor needs a fresh/reset sensor")
+                        Mode.BRINGUP, Mode.ACTIVATE, Mode.HISTORY -> if (!verdictEmitted) emitVerdict("$mode LINK DROP before verdict - status=$status (${gattStatusName(status)}) at phase=$hs")
                     }
                 }
             }
@@ -416,7 +416,7 @@ class AidexProbeService : Service() {
             logi("onDescriptorWrite ${descriptor.uuid} (char $chUuid) status=$status (${gattStatusName(status)})")
             when {
                 chUuid == F003_UUID -> {
-                    if (status == 5) logi("F003 CCCD Insufficient-Auth (0x05) — F003 is private-bonded (§4.1); the bond is required")
+                    if (status == 5) logi("F003 CCCD Insufficient-Auth (0x05) - F003 is private-bonded (S4.1); the bond is required")
                     else logi("F003 realtime notify enabled")
                 }
                 hs == Hs.CCCD_F001 || hs == Hs.CCCD_F002 -> handler.post { onCccdWritten(status) }
@@ -425,7 +425,7 @@ class AidexProbeService : Service() {
         }
 
         override fun onReadRemoteRssi(g: BluetoothGatt, rssi: Int, status: Int) {
-            if (status == BluetoothGatt.GATT_SUCCESS) logi("HEARTBEAT OK rssi=${rssi}dBm — LINK ALIVE")
+            if (status == BluetoothGatt.GATT_SUCCESS) logi("HEARTBEAT OK rssi=${rssi}dBm - LINK ALIVE")
             else logi("HEARTBEAT FAILED readRemoteRssi status=$status (${gattStatusName(status)})")
         }
     }
@@ -433,35 +433,35 @@ class AidexProbeService : Service() {
     @SuppressLint("MissingPermission")
     private fun startBond() {
         val dev = target ?: run { logi("BOND: no target device"); return }
-        logi("BOND mode → device.createBond() on ${dev.address} (current bondState=${bondName(dev.bondState)})")
+        logi("BOND mode -> device.createBond() on ${dev.address} (current bondState=${bondName(dev.bondState)})")
         val ok = runCatching { dev.createBond() }.getOrDefault(false)
-        logi("createBond() returned $ok — watching ACTION_BOND_STATE_CHANGED for the SMP outcome")
-        if (!ok) logi("BOND RESULT: createBond() refused to start — stack rejected pairing outright")
+        logi("createBond() returned $ok - watching ACTION_BOND_STATE_CHANGED for the SMP outcome")
+        if (!ok) logi("BOND RESULT: createBond() refused to start - stack rejected pairing outright")
     }
 
     private fun onBondF002Read(value: ByteArray, status: Int) {
         if (status == BluetoothGatt.GATT_SUCCESS) {
             logi("F002 READ OK status=0 len=${value.size} bytes=${value.toHex()}")
-            logi("BOND RESULT: PAIRED (link encrypted, F002 read status=0) — K90 is now a bonded central")
+            logi("BOND RESULT: PAIRED (link encrypted, F002 read status=0) - K90 is now a bonded central")
         } else {
             logi("F002 READ FAILED status=$status (${gattStatusName(status)})")
-            if (status == 5) logi("BOND RESULT: bonded per OS but F002 STILL 0x05 — encrypted-link access unusable")
+            if (status == 5) logi("BOND RESULT: bonded per OS but F002 STILL 0x05 - encrypted-link access unusable")
         }
     }
 
     @SuppressLint("MissingPermission")
     private fun beginBondedSession() {
-        val dev = target ?: run { emitVerdict("$mode ABORT — no target device"); return }
+        val dev = target ?: run { emitVerdict("$mode ABORT - no target device"); return }
         if (dev.bondState == BluetoothDevice.BOND_BONDED) {
-            logi("$mode: already bonded → handshake")
+            logi("$mode: already bonded -> handshake")
             doHandshake()
             return
         }
         awaitingBondThenHandshake = true
-        logi("$mode: createBond() on ${dev.address} — a fresh/unbonded AiDEX should Just-Works-bond")
+        logi("$mode: createBond() on ${dev.address} - a fresh/unbonded AiDEX should Just-Works-bond")
         val ok = runCatching { dev.createBond() }.getOrDefault(false)
-        logi("createBond() returned $ok — awaiting BOND_BONDED")
-        if (!ok) emitVerdict("$mode FAILED — createBond() refused to start (returned false)")
+        logi("createBond() returned $ok - awaiting BOND_BONDED")
+        if (!ok) emitVerdict("$mode FAILED - createBond() refused to start (returned false)")
     }
 
     // CGM.md §4.4
@@ -471,13 +471,13 @@ class AidexProbeService : Service() {
         val f1 = f001Char
         val f2 = f002Char
         if (g == null || f1 == null || f2 == null) {
-            emitVerdict("$mode ABORT — 0x181F/F001/F002 not found (gatt=${g != null} f001=${f1 != null} f002=${f2 != null})")
+            emitVerdict("$mode ABORT - 0x181F/F001/F002 not found (gatt=${g != null} f001=${f1 != null} f002=${f2 != null})")
             return
         }
         runCatching { g.setCharacteristicNotification(f1, true) }
         runCatching { g.setCharacteristicNotification(f2, true) }
         handler.postDelayed(sessionWatchdog, SESSION_WATCHDOG_MS)
-        logi("handshake — enabling F001 notify (CCCD 0x2902); a 0x05 here means the link is not encrypted")
+        logi("handshake - enabling F001 notify (CCCD 0x2902); a 0x05 here means the link is not encrypted")
         hs = Hs.CCCD_F001
         writeCccdEnable(f1)
     }
@@ -486,7 +486,7 @@ class AidexProbeService : Service() {
     private fun writeCccdEnable(ch: BluetoothGattCharacteristic) {
         val g = gatt ?: return
         val cccd = ch.getDescriptor(CCCD_UUID) ?: run {
-            emitVerdict("$mode ABORT — CCCD 0x2902 absent on ${ch.uuid}")
+            emitVerdict("$mode ABORT - CCCD 0x2902 absent on ${ch.uuid}")
             return
         }
         val res = runCatching {
@@ -499,18 +499,18 @@ class AidexProbeService : Service() {
         if (verdictEmitted) return
         if (status == 5) { handshakeAuthFail("F001/F002 CCCD"); return }
         if (status != BluetoothGatt.GATT_SUCCESS) {
-            emitVerdict("$mode INCONCLUSIVE — CCCD write failed status=$status (${gattStatusName(status)}) at phase=$hs")
+            emitVerdict("$mode INCONCLUSIVE - CCCD write failed status=$status (${gattStatusName(status)}) at phase=$hs")
             return
         }
         when (hs) {
             Hs.CCCD_F001 -> {
                 val f2 = f002Char ?: return
-                logi("handshake — enabling F002 notify")
+                logi("handshake - enabling F002 notify")
                 hs = Hs.CCCD_F002
                 writeCccdEnable(f2)
             }
             Hs.CCCD_F002 -> {
-                logi("handshake — both CCCDs enabled; writing serial-derived askKey to F001")
+                logi("handshake - both CCCDs enabled; writing serial-derived askKey to F001")
                 hs = Hs.ASKKEY
                 writeAskKey()
             }
@@ -523,12 +523,12 @@ class AidexProbeService : Service() {
         val g = gatt ?: return
         val f1 = f001Char ?: return
         val ak = runCatching { aidexAskkey(serialForCrypto) }.getOrElse {
-            emitVerdict("$mode ABORT — aidexAskkey($serialForCrypto) failed: $it"); return
+            emitVerdict("$mode ABORT - aidexAskkey($serialForCrypto) failed: $it"); return
         }
         iv = runCatching { aidexIv(serialForCrypto) }.getOrElse {
-            emitVerdict("$mode ABORT — aidexIv($serialForCrypto) failed: $it"); return
+            emitVerdict("$mode ABORT - aidexIv($serialForCrypto) failed: $it"); return
         }
-        logi("askKey=${ak.toHex()} iv=${iv?.toHex()} — writeCharacteristic(F001, WRITE_TYPE_DEFAULT)")
+        logi("askKey=${ak.toHex()} iv=${iv?.toHex()} - writeCharacteristic(F001, WRITE_TYPE_DEFAULT)")
         hs = Hs.MASTERKEY
         val res = runCatching {
             g.writeCharacteristic(f1, ak, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
@@ -541,9 +541,9 @@ class AidexProbeService : Service() {
         logi("onCharacteristicWrite F001 (askKey) status=$status (${gattStatusName(status)})")
         if (status == 5) { handshakeAuthFail("F001 askKey write"); return }
         if (status != BluetoothGatt.GATT_SUCCESS) {
-            emitVerdict("$mode INCONCLUSIVE — askKey write failed status=$status (${gattStatusName(status)})"); return
+            emitVerdict("$mode INCONCLUSIVE - askKey write failed status=$status (${gattStatusName(status)})"); return
         }
-        logi("askKey written — awaiting the 16-byte masterkey NOTIFY on F001")
+        logi("askKey written - awaiting the 16-byte masterkey NOTIFY on F001")
     }
 
     @SuppressLint("MissingPermission")
@@ -553,9 +553,9 @@ class AidexProbeService : Service() {
         masterkey = value.copyOf()
         val g = gatt
         val f2 = f002Char
-        if (g == null || f2 == null) { emitVerdict("$mode ABORT — no gatt/F002 for blob read"); return }
+        if (g == null || f2 == null) { emitVerdict("$mode ABORT - no gatt/F002 for blob read"); return }
         hs = Hs.BLOB
-        logi("handshake — reading the 17-byte session blob from F002")
+        logi("handshake - reading the 17-byte session blob from F002")
         val ok = runCatching { g.readCharacteristic(f2) }.getOrDefault(false)
         logi("readCharacteristic(F002 session blob) issued=$ok")
     }
@@ -565,11 +565,11 @@ class AidexProbeService : Service() {
         logi("F002 READ (session blob) status=$status (${gattStatusName(status)}) len=${value.size} bytes=${value.toHex()}")
         if (status == 5) { handshakeAuthFail("F002 blob read"); return }
         if (status != BluetoothGatt.GATT_SUCCESS) {
-            emitVerdict("$mode INCONCLUSIVE — F002 blob read failed status=$status (${gattStatusName(status)})"); return
+            emitVerdict("$mode INCONCLUSIVE - F002 blob read failed status=$status (${gattStatusName(status)})"); return
         }
-        val mk = masterkey ?: run { emitVerdict("$mode ABORT — masterkey missing"); return }
+        val mk = masterkey ?: run { emitVerdict("$mode ABORT - masterkey missing"); return }
         val s = runCatching { aidexDeriveSession(serialForCrypto, mk, value) }.getOrElse {
-            emitVerdict("$mode INCONCLUSIVE — aidexDeriveSession failed: $it (blob/masterkey/serial mismatch or CRC8)"); return
+            emitVerdict("$mode INCONCLUSIVE - aidexDeriveSession failed: $it (blob/masterkey/serial mismatch or CRC8)"); return
         }
         sess = s
         sessionReady = true
@@ -584,25 +584,25 @@ class AidexProbeService : Service() {
 
     private fun handshakeAuthFail(where: String) {
         if (mode == Mode.HANDSHAKE) {
-            emitVerdict("BONDING REQUIRED — $where refused UNBONDED (status 0x05 GATT_INSUFFICIENT_AUTHENTICATION) — the current sensor needs a fresh/reset sensor (CGM.md §4.2)")
+            emitVerdict("BONDING REQUIRED - $where refused UNBONDED (status 0x05 GATT_INSUFFICIENT_AUTHENTICATION) - the current sensor needs a fresh/reset sensor (CGM.md S4.2)")
         } else {
-            emitVerdict("$mode ABORT — $where returned 0x05 despite a bonded link (unexpected)")
+            emitVerdict("$mode ABORT - $where returned 0x05 despite a bonded link (unexpected)")
         }
     }
 
     @SuppressLint("MissingPermission")
     private fun sendCommand(label: String, build: () -> ByteArray, onResp: (AidexResponse) -> Unit) {
         val cipher = runCatching { build() }.getOrElse {
-            emitVerdict("$mode ABORT — build '$label' failed: $it"); return
+            emitVerdict("$mode ABORT - build '$label' failed: $it"); return
         }
         val g = gatt
         val f2 = f002Char
-        if (g == null || f2 == null) { emitVerdict("$mode ABORT — no gatt/F002 to send '$label'"); return }
+        if (g == null || f2 == null) { emitVerdict("$mode ABORT - no gatt/F002 to send '$label'"); return }
         pendingResponse = onResp
         lastCmdLabel = label
         handler.removeCallbacks(cmdTimeout)
         handler.postDelayed(cmdTimeout, CMD_TIMEOUT_MS)
-        logi("CMD $label → F002 (${cipher.toHex()})")
+        logi("CMD $label -> F002 (${cipher.toHex()})")
         val res = runCatching {
             g.writeCharacteristic(f2, cipher, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
         }.getOrDefault(-99)
@@ -627,7 +627,7 @@ class AidexProbeService : Service() {
 
     private val cmdTimeout = Runnable {
         if (!verdictEmitted && pendingResponse != null) {
-            emitVerdict("$mode STALLED — no F002 reply to '$lastCmdLabel' within ${CMD_TIMEOUT_MS / 1000}s")
+            emitVerdict("$mode STALLED - no F002 reply to '$lastCmdLabel' within ${CMD_TIMEOUT_MS / 1000}s")
         }
     }
 
@@ -638,11 +638,11 @@ class AidexProbeService : Service() {
             sendCommand("getStartTime(0x21)", { aidexCmdGetStartTime(sess!!, iv!!) }) { r2 ->
                 activated = isActivated(r2)
                 startStr = fmtStart(r2)
-                logi("startTime: $startStr → ${if (activated == true) "ACTIVATED" else "UNACTIVATED"}")
+                logi("startTime: $startStr -> ${if (activated == true) "ACTIVATED" else "UNACTIVATED"}")
                 sendCommand("getBroadcast(0x11)", { aidexCmdGetBroadcast(sess!!, iv!!) }) { r3 ->
                     glucStr = fmtCurrent(r3)
                     logi("current: $glucStr")
-                    emitVerdict("BRINGUP OK — bonded; ACTIVATED=${if (activated == true) "yes" else "no"}; deviceInfo=[${dvcInfoStr ?: "n/a"}]; glucose=[${glucStr ?: "n/a"}]")
+                    emitVerdict("BRINGUP OK - bonded; ACTIVATED=${if (activated == true) "yes" else "no"}; deviceInfo=[${dvcInfoStr ?: "n/a"}]; glucose=[${glucStr ?: "n/a"}]")
                 }
             }
         }
@@ -652,36 +652,36 @@ class AidexProbeService : Service() {
         sendCommand("getStartTime(0x21) [pre-check]", { aidexCmdGetStartTime(sess!!, iv!!) }) { r ->
             val already = isActivated(r)
             if (already && !activateForce) {
-                emitVerdict("ACTIVATE REFUSED — sensor already ACTIVATED (startTime=${fmtStart(r)}); pass --ei force 1 to override")
+                emitVerdict("ACTIVATE REFUSED - sensor already ACTIVATED (startTime=${fmtStart(r)}); pass --ei force 1 to override")
                 return@sendCommand
             }
-            if (already) logi("ACTIVATE: already activated but force=1 — proceeding (resets the session clock)")
+            if (already) logi("ACTIVATE: already activated but force=1 - proceeding (resets the session clock)")
             runActivationSteps()
         }
     }
 
     private fun runActivationSteps() {
         val localStart = runCatching { buildLocalStartNow() }.getOrElse {
-            emitVerdict("ACTIVATE ABORT — building LocalStartTime failed: $it"); return
+            emitVerdict("ACTIVATE ABORT - building LocalStartTime failed: $it"); return
         }
-        logi("ACTIVATE step 1/5 — setNewSensor(0x20) with LocalStartTime=${localStart.toHex()}")
+        logi("ACTIVATE step 1/5 - setNewSensor(0x20) with LocalStartTime=${localStart.toHex()}")
         sendCommand("setNewSensor(0x20)", { aidexCmdSetNewSensor(sess!!, iv!!, localStart) }) { r1 ->
             logi("setNewSensor reply: $r1 (expect Ack 0x120)")
-            logi("ACTIVATE step 2/5 — setDynamicAdvMode(0x35 01)")
+            logi("ACTIVATE step 2/5 - setDynamicAdvMode(0x35 01)")
             sendCommand("setDynamicAdvMode(0x35)", { aidexCmdSetDynamicAdvMode(sess!!, iv!!) }) { r2 ->
                 logi("setDynamicAdvMode reply: $r2 (expect Ack 0x135)")
-                logi("ACTIVATE step 3/5 — setAutoUpdate(0x34 01)")
+                logi("ACTIVATE step 3/5 - setAutoUpdate(0x34 01)")
                 sendCommand("setAutoUpdate(0x34)", { aidexCmdSetAutoUpdate(sess!!, iv!!) }) { r3 ->
                     logi("setAutoUpdate reply: $r3 (expect Ack 0x134)")
-                    logi("ACTIVATE step 4/5 — getStartTime(0x21) to confirm activation")
+                    logi("ACTIVATE step 4/5 - getStartTime(0x21) to confirm activation")
                     sendCommand("getStartTime(0x21) [confirm]", { aidexCmdGetStartTime(sess!!, iv!!) }) { r4 ->
                         val ok = isActivated(r4)
                         activated = ok
-                        logi("post-activation startTime: ${fmtStart(r4)} → ${if (ok) "ACTIVATED" else "STILL NOT ACTIVATED"}")
-                        logi("ACTIVATE step 5/5 — getBroadcast(0x11)")
+                        logi("post-activation startTime: ${fmtStart(r4)} -> ${if (ok) "ACTIVATED" else "STILL NOT ACTIVATED"}")
+                        logi("ACTIVATE step 5/5 - getBroadcast(0x11)")
                         sendCommand("getBroadcast(0x11)", { aidexCmdGetBroadcast(sess!!, iv!!) }) { r5 ->
                             val gs = fmtCurrent(r5)
-                            emitVerdict("ACTIVATE ${if (ok) "OK" else "INCONCLUSIVE"} — 0x20/0x35/0x34 sent; post startTime=[${fmtStart(r4)}]; glucose=[$gs]")
+                            emitVerdict("ACTIVATE ${if (ok) "OK" else "INCONCLUSIVE"} - 0x20/0x35/0x34 sent; post startTime=[${fmtStart(r4)}]; glucose=[$gs]")
                         }
                     }
                 }
@@ -709,11 +709,11 @@ class AidexProbeService : Service() {
         val g = gatt
         val f3 = f003Char
         if (g == null || f3 == null) {
-            emitVerdict("REALTIME ABORT — F003 characteristic not found (gatt=${g != null} f003=${f3 != null})")
+            emitVerdict("REALTIME ABORT - F003 characteristic not found (gatt=${g != null} f003=${f3 != null})")
             return
         }
         runCatching { g.setCharacteristicNotification(f3, true) }
-        logi("REALTIME — enabling F003 notify (private-bonded, §4.1). Awaiting realtime pushes; runs until PROBE_STOP. Lock the screen to test survival.")
+        logi("REALTIME - enabling F003 notify (private-bonded, S4.1). Awaiting realtime pushes; runs until PROBE_STOP. Lock the screen to test survival.")
         writeCccdEnable(f3)
     }
 
@@ -726,7 +726,7 @@ class AidexProbeService : Service() {
         val rt = runCatching { aidexParseRealtime(pt) }.getOrElse {
             logi("F003 parseRealtime failed: $it (pt=${pt.toHex()})"); return
         }
-        logi("F003 REALTIME — ${rt.glucoseMgdl} mg/dL trend=${rt.trendTenthsPerMin * 0.1}mg/dL/min minFromStart=${rt.minFromStart} warmup=${rt.warmup} valid=${rt.valid} type=${rt.readingType} isReal=${rt.isReal}")
+        logi("F003 REALTIME - ${rt.glucoseMgdl} mg/dL trend=${rt.trendTenthsPerMin * 0.1}mg/dL/min minFromStart=${rt.minFromStart} warmup=${rt.warmup} valid=${rt.valid} type=${rt.readingType} isReal=${rt.isReal}")
     }
 
     private fun startHistory() {
@@ -738,11 +738,11 @@ class AidexProbeService : Service() {
                 activationEpoch = r.time.epochSecs
                 logi("history: activationEpoch=${r.time.epochSecs} (${fmtStart(r)})")
             } else {
-                logi("history: sensor UNACTIVATED (${fmtStart(r)}) — ids will be logged without wall-clock timestamps")
+                logi("history: sensor UNACTIVATED (${fmtStart(r)}) - ids will be logged without wall-clock timestamps")
             }
             sendCommand("getLastId(0x22)", { aidexCmdGetLastId(sess!!, iv!!) }) { r2 ->
                 val lastId = (r2 as? AidexResponse.LastId)?.lastId
-                if (lastId == null) { emitVerdict("HISTORY ABORT — getLastId returned $r2"); return@sendCommand }
+                if (lastId == null) { emitVerdict("HISTORY ABORT - getLastId returned $r2"); return@sendCommand }
                 histLastId = lastId
                 logi("history: lastId(absolute)=$lastId; paging from relId=1")
                 requestHistoryPage(1)
@@ -766,7 +766,7 @@ class AidexProbeService : Service() {
             logi("history batch: startId=$startId n=$n lastInBatch=$lastInBatch (target lastId=$histLastId)")
             val done = n == 0 || lastInBatch >= (histLastId ?: 0)
             if (done) {
-                emitVerdict("HISTORY OK — paged through to id=$lastInBatch of lastId=${histLastId}")
+                emitVerdict("HISTORY OK - paged through to id=$lastInBatch of lastId=${histLastId}")
             } else {
                 val nextRel = (startId + n) - (histStartHistory ?: (startId - 1))
                 requestHistoryPage(nextRel)
@@ -785,29 +785,29 @@ class AidexProbeService : Service() {
             val prev = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, -1)
             val now = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
             val reason = intent.getIntExtra("android.bluetooth.device.extra.REASON", -1)
-            logi("BOND STATE ${bondName(prev)} → ${bondName(now)} reason=$reason (${unbondReasonName(reason)})")
+            logi("BOND STATE ${bondName(prev)} -> ${bondName(now)} reason=$reason (${unbondReasonName(reason)})")
 
             when (mode) {
                 Mode.BOND -> when (now) {
                     BluetoothDevice.BOND_BONDED -> {
-                        updateNotif("BONDED — proving §4.2 access")
-                        logi("BOND_BONDED — proving access with an F002 read")
+                        updateNotif("BONDED - proving S4.2 access")
+                        logi("BOND_BONDED - proving access with an F002 read")
                         handler.post { readF002ForBond() }
                     }
                     BluetoothDevice.BOND_NONE -> if (prev == BluetoothDevice.BOND_BONDING) {
-                        logi("BOND RESULT: BOND REFUSED (BONDING→NONE reason=$reason ${unbondReasonName(reason)}) — sensor bonded elsewhere / Pairing-not-supported (§4.2); reset from the official app (§8) first")
+                        logi("BOND RESULT: BOND REFUSED (BONDING->NONE reason=$reason ${unbondReasonName(reason)}) - sensor bonded elsewhere / Pairing-not-supported (S4.2); reset from the official app (S8) first")
                     }
                 }
                 Mode.BRINGUP, Mode.ACTIVATE, Mode.REALTIME, Mode.HISTORY -> when (now) {
                     BluetoothDevice.BOND_BONDED -> {
-                        logi("BONDED (Just-Works) — staged bring-up; proceeding to handshake")
+                        logi("BONDED (Just-Works) - staged bring-up; proceeding to handshake")
                         if (awaitingBondThenHandshake) {
                             awaitingBondThenHandshake = false
                             handler.post { doHandshake() }
                         }
                     }
                     BluetoothDevice.BOND_NONE -> if (prev == BluetoothDevice.BOND_BONDING && !verdictEmitted) {
-                        emitVerdict("$mode FAILED — the fresh sensor refused to bond (reason=$reason ${unbondReasonName(reason)}) — not Just-Works pairable or already bonded elsewhere")
+                        emitVerdict("$mode FAILED - the fresh sensor refused to bond (reason=$reason ${unbondReasonName(reason)}) - not Just-Works pairable or already bonded elsewhere")
                     }
                 }
                 else -> {}
@@ -819,7 +819,7 @@ class AidexProbeService : Service() {
     private fun readF002ForBond() {
         val g = gatt
         val ch = f002Char
-        if (g == null || ch == null) { logi("F002 read skipped — gatt=${g != null} f002=${ch != null}"); return }
+        if (g == null || ch == null) { logi("F002 read skipped - gatt=${g != null} f002=${ch != null}"); return }
         val ok = runCatching { g.readCharacteristic(ch) }.getOrDefault(false)
         logi("readCharacteristic(0xF002) issued=$ok")
     }
@@ -831,7 +831,7 @@ class AidexProbeService : Service() {
                 startStr = fmtStart(r2); logi("startTime: $startStr")
                 sendCommand("getBroadcast(0x11)", { aidexCmdGetBroadcast(sess!!, iv!!) }) { r3 ->
                     glucStr = fmtCurrent(r3); logi("current: $glucStr")
-                    emitVerdict("UNBONDED HANDSHAKE OK — session derived; deviceInfo=[${dvcInfoStr ?: "n/a"}] startTime=[${startStr ?: "n/a"}] glucose=[${glucStr ?: "n/a"}] — the F001/F002 serial-AES handshake works WITHOUT an Android bond")
+                    emitVerdict("UNBONDED HANDSHAKE OK - session derived; deviceInfo=[${dvcInfoStr ?: "n/a"}] startTime=[${startStr ?: "n/a"}] glucose=[${glucStr ?: "n/a"}] - the F001/F002 serial-AES handshake works WITHOUT an Android bond")
                 }
             }
         }
@@ -857,7 +857,7 @@ class AidexProbeService : Service() {
 
     private val sessionWatchdog = Runnable {
         if (!sessionReady && !verdictEmitted) {
-            emitVerdict("$mode INCONCLUSIVE — no session within ${SESSION_WATCHDOG_MS / 1000}s (stalled at phase=$hs); check the sensor is advertising and not held elsewhere")
+            emitVerdict("$mode INCONCLUSIVE - no session within ${SESSION_WATCHDOG_MS / 1000}s (stalled at phase=$hs); check the sensor is advertising and not held elsewhere")
         }
     }
 
@@ -874,7 +874,7 @@ class AidexProbeService : Service() {
         @SuppressLint("MissingPermission")
         override fun run() {
             if (stopping) return
-            val g = gatt ?: run { logi("HEARTBEAT skipped — no live GATT"); return }
+            val g = gatt ?: run { logi("HEARTBEAT skipped - no live GATT"); return }
             val issued = runCatching { g.readRemoteRssi() }.getOrDefault(false)
             if (!issued) logi("HEARTBEAT readRemoteRssi() rejected (link busy/down?)")
             handler.postDelayed(this, HEARTBEAT_MS)
@@ -892,11 +892,11 @@ class AidexProbeService : Service() {
         if (stopping) return
         if (reconnectAttempts >= MAX_RECONNECT) {
             logi("RECONNECT giving up after $MAX_RECONNECT attempts")
-            updateNotif("Link lost — gave up reconnecting")
+            updateNotif("Link lost - gave up reconnecting")
             return
         }
         reconnectAttempts++
-        logi("RECONNECT attempt $reconnectAttempts/$MAX_RECONNECT — re-scanning in ${RECONNECT_DELAY_MS}ms")
+        logi("RECONNECT attempt $reconnectAttempts/$MAX_RECONNECT - re-scanning in ${RECONNECT_DELAY_MS}ms")
         handler.postDelayed({ if (!stopping) startScan() }, RECONNECT_DELAY_MS)
     }
 
@@ -1004,7 +1004,7 @@ class AidexProbeService : Service() {
             22 -> "GATT_CONN_TERMINATE_LOCAL_HOST"
             34 -> "GATT_CONN_LMP_TIMEOUT"
             62 -> "GATT_CONN_FAIL_ESTABLISH"
-            133 -> "GATT_ERROR/133 (generic — often transient)"
+            133 -> "GATT_ERROR/133 (generic - often transient)"
             137 -> "GATT_AUTH_FAIL"
             else -> "status=$status"
         }

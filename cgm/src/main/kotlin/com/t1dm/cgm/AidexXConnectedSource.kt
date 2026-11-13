@@ -84,7 +84,7 @@ class AidexXConnectedSource(
     @Volatile
     private var phase = Phase.IDLE
         set(value) {
-            if (value != field) log.d(TAG, "phase $field → $value")
+            if (value != field) log.d(TAG, "phase $field -> $value")
             field = value
         }
     private lateinit var ivBytes: ByteArray
@@ -287,7 +287,7 @@ class AidexXConnectedSource(
     private suspend fun onCommand(command: SensorCommand) {
         val s = sess
         if (phase != Phase.LIVE || s == null) {
-            log.w(TAG, "$command ignored — phase=$phase, key=${s != null}")
+            log.w(TAG, "$command ignored - phase=$phase, key=${s != null}")
             return
         }
         disarmReplyDeadline()
@@ -557,7 +557,7 @@ class AidexXConnectedSource(
                     log.i(TAG, "sensor already activated (start ${resp.year}, epoch ${resp.epochSecs}); reading")
                     subscribeRealtime()
                 } else {
-                    log.i(TAG, "sensor UNACTIVATED (year=${resp.year}); running fresh-sensor activation (§7)")
+                    log.i(TAG, "sensor UNACTIVATED (year=${resp.year}); running fresh-sensor activation (S7)")
                     beginActivation()
                 }
             }
@@ -685,16 +685,16 @@ class AidexXConnectedSource(
         val summary = "realtime min=${rt.minFromStart} g=${rt.glucoseMgdl} trend=${rt.trendTenthsPerMin} " +
             "valid=${rt.valid} warmup=${rt.warmup} type=${rt.readingType}"
         if (dedup.contains(rt.minFromStart)) {
-            log.dec(null, "$summary — already delivered", CgmLogTopic.GLUCOSE, bytes = pt)
+            log.dec(null, "$summary - already delivered", CgmLogTopic.GLUCOSE, bytes = pt)
             return
         }
         dedup.record(rt.minFromStart)
         val flag = flagFor(rt.valid, rt.glucoseMgdl, warmupBit = rt.warmup, minFromStart = rt.minFromStart)
         if (flag == ReadingFlag.INVALID) {
-            log.dec(TAG, "$summary — dropped", CgmLogTopic.GLUCOSE, level = CgmLogLevel.W, bytes = pt)
+            log.dec(TAG, "$summary - dropped", CgmLogTopic.GLUCOSE, level = CgmLogLevel.W, bytes = pt)
             return
         }
-        log.dec(null, "$summary — stored $flag", CgmLogTopic.GLUCOSE, value = rt.glucoseMgdl, bytes = pt)
+        log.dec(null, "$summary - stored $flag", CgmLogTopic.GLUCOSE, value = rt.glucoseMgdl, bytes = pt)
         val decoded = DecodedAdvert(
             minFromStart = rt.minFromStart,
             status = 0,
@@ -773,7 +773,7 @@ class AidexXConnectedSource(
         phase = Phase.LIVE
         lastReadingMs = nowMs()
         backfillCursor = repository.loadSourceCursor(descriptor.id)
-        log.i(TAG, "$what — realtime on F003 armed")
+        log.i(TAG, "$what - realtime on F003 armed")
         // The anchor is 0x21's and already proven, so unlike CT5 this needs no push before it pulls.
         pullRequests.trySend(PullRequest.AUTO)
     }
@@ -781,12 +781,12 @@ class AidexXConnectedSource(
     /** Opens a pull; the ceiling, and on a first ask the range base, are fetched before any record. */
     private suspend fun onPull(request: PullRequest) {
         if (phase != Phase.LIVE || batchInFlight || awaitingLastId) {
-            log.i(TAG, "$request pull ignored — phase=$phase inFlight=$batchInFlight awaitingCeiling=$awaitingLastId")
+            log.i(TAG, "$request pull ignored - phase=$phase inFlight=$batchInFlight awaitingCeiling=$awaitingLastId")
             return
         }
         if (activationEpochMs() == null) {
             // A recovered sample has no receive-time fallback: without the anchor it would be misdated.
-            log.w(TAG, "$request pull refused — no plausible activation time was read this session")
+            log.w(TAG, "$request pull refused - no plausible activation time was read this session")
             return
         }
         pendingRequest = request
@@ -809,7 +809,7 @@ class AidexXConnectedSource(
         lastAbsoluteId = lastId
         // A reset restarts ids at 1: a cursor past the newest id belongs to the previous wear.
         if (backfillCursor > lastId) {
-            log.i(TAG, "history: cursor $backfillCursor is past the newest id $lastId — a new wear; cursor reset")
+            log.i(TAG, "history: cursor $backfillCursor is past the newest id $lastId - a new wear; cursor reset")
             backfillCursor = 0
             repository.saveSourceCursor(descriptor.id, backfillCursor)
         }
@@ -940,9 +940,9 @@ class AidexXConnectedSource(
         batchInFlight = false
         if (recovered > 0) {
             repository.saveSourceCursor(descriptor.id, backfillCursor)
-            log.i(TAG, "history: recovered $recovered samples — $why")
+            log.i(TAG, "history: recovered $recovered samples - $why")
         } else {
-            log.i(TAG, "history: recovered nothing — $why")
+            log.i(TAG, "history: recovered nothing - $why")
         }
     }
 
@@ -1060,7 +1060,7 @@ class AidexXConnectedSource(
     }
 
     private fun writeF002(bytes: ByteArray, what: String, topic: CgmLogTopic = CgmLogTopic.NONE) {
-        if (topic == CgmLogTopic.NONE) log.i(TAG, "F002 ← $what") else log.d(TAG, "F002 ← $what", topic, opens = true)
+        if (topic == CgmLogTopic.NONE) log.i(TAG, "F002 <- $what") else log.d(TAG, "F002 <- $what", topic, opens = true)
         log.tx("F002", bytes, topic, what)
         // F002 is WRITE_NR only; write-with-response is rejected by the sensor.
         if (!transport.write(AidexChar.F002, bytes, withResponse = false)) fail("$what write rejected")
@@ -1074,8 +1074,8 @@ class AidexXConnectedSource(
 
     private fun describe(resp: AidexSessionResponse): String = when (resp) {
         is AidexSessionResponse.History ->
-            "history from ${resp.startId}: ${resp.samples.size} records · " +
-                resp.samples.joinToString(" · ") { "#${it.recordId} ${it.glucoseMgdl} v=${it.valid} w=${it.warmup}" }
+            "history from ${resp.startId}: ${resp.samples.size} records | " +
+                resp.samples.joinToString(" | ") { "#${it.recordId} ${it.glucoseMgdl} v=${it.valid} w=${it.warmup}" }
         else -> resp.toString()
     }
 }

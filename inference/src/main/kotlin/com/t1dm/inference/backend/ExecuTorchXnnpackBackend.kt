@@ -35,7 +35,7 @@ class ExecuTorchXnnpackBackend : InferenceBackend {
         require(out.isNotEmpty() && out[0].isTensor) { "backend returned no head_raw tensor" }
         val head = out[0].toTensor().dataAsFloatArray
         require(head.size == x.mSlots * PATCH_SIZE * N_Q) {
-            "head_raw size ${head.size} != M·S·7 ${x.mSlots * PATCH_SIZE * N_Q}"
+            "head_raw size ${head.size} != M*S*7${x.mSlots * PATCH_SIZE * N_Q}"
         }
         // Time probe and adapter seam, both optional: an export emitting neither leaves them null.
         fun optional(i: Int): FloatArray? =

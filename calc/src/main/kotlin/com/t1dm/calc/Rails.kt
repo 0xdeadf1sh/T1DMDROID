@@ -20,11 +20,11 @@ object Rails {
         return when (baseline.eligibility) {
             ForecastEligibility.ELIGIBLE -> RailVerdict.Pass
             ForecastEligibility.MISSING ->
-                RailVerdict.Block(name, "No forecast available (no selected model / context) — refusing to recommend a dose.")
+                RailVerdict.Block(name, "No forecast available (no selected model / context) - refusing to recommend a dose.")
             ForecastEligibility.STALE ->
-                RailVerdict.Block(name, "Forecast is stale (anchor too old) — refusing to recommend a dose.")
+                RailVerdict.Block(name, "Forecast is stale (anchor too old) - refusing to recommend a dose.")
             ForecastEligibility.DEGENERATE ->
-                RailVerdict.Block(name, "Forecast is degenerate (${baseline.worstStatus}) — refusing to recommend a dose.")
+                RailVerdict.Block(name, "Forecast is degenerate (${baseline.worstStatus}) - refusing to recommend a dose.")
         }
     }
 
@@ -33,11 +33,11 @@ object Rails {
         val name = "predicted-low"
         if (!config.rails.predictedLowVeto) return RailVerdict.Pass
         if (!fan.eligible) {
-            return RailVerdict.Block(name, "Cannot verify the low risk of this dose (forecast ${fan.eligibility}) — vetoing to fail safe.")
+            return RailVerdict.Block(name, "Cannot verify the low risk of this dose (forecast ${fan.eligibility}) - vetoing to fail safe.")
         }
         val window = fan.validatedWindow()
         if (window.isEmpty()) {
-            return RailVerdict.Block(name, "Cannot verify the low risk of this dose (no validated forecast window) — vetoing to fail safe.")
+            return RailVerdict.Block(name, "Cannot verify the low risk of this dose (no validated forecast window) - vetoing to fail safe.")
         }
         val idx = fan.firstMedianBelow(config.predictedLowThresholdMgdl)
         if (idx != null) {
@@ -54,7 +54,7 @@ object Rails {
         if (!config.rails.iobCeiling) return RailVerdict.Pass
         if (candidateU <= 0.0) return RailVerdict.Pass
         val iobU = iob?.bolusIobU
-            ?: return RailVerdict.Block(name, "Active insulin (IOB) is unknown — dose log unavailable — blocking a nonzero dose to fail safe.")
+            ?: return RailVerdict.Block(name, "Active insulin (IOB) is unknown - dose log unavailable - blocking a nonzero dose to fail safe.")
         val total = iobU + candidateU
         if (total > config.iobCeilingU) {
             return RailVerdict.Block(
@@ -72,12 +72,12 @@ object Rails {
         if (candidateU <= 0.0) return RailVerdict.Pass
         val lastTs = iob?.lastLoggedDoseTsMs
         if (lastTs == null) {
-            return RailVerdict.RequireConfirm(name, "No dose has been logged — IOB is assumed 0. Confirm you have not taken recent insulin.")
+            return RailVerdict.RequireConfirm(name, "No dose has been logged - IOB is assumed 0. Confirm you have not taken recent insulin.")
         }
         val gap = nowMs - lastTs
         if (gap > config.longGapSinceLogMs) {
             val mins = gap / 60_000L
-            return RailVerdict.RequireConfirm(name, "Last logged dose was $mins min ago — IOB may under-count. Confirm no unlogged insulin is active.")
+            return RailVerdict.RequireConfirm(name, "Last logged dose was $mins min ago - IOB may under-count. Confirm no unlogged insulin is active.")
         }
         return RailVerdict.Pass
     }

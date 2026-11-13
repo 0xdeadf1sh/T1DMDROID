@@ -499,7 +499,7 @@ class Ct5FamilyDriver(
                     } else {
                         "the air says it is claimed and no key is held here"
                     }
-                    Log.i(TAG, "${dev.bsn} is heard but not listed — $why")
+                    Log.i(TAG, "${dev.bsn} is heard but not listed - $why")
                 }
                 return@mapNotNull null
             }

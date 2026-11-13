@@ -1061,11 +1061,11 @@ fun GlucoseGraph(
                         if (i < sm.size - 1 && sm.breakAfter[i]) flush()
                     }
                     flush()
-                    val leg = measurer.measure("sensor — smoothed", traceLegendStyle)
+                    val leg = measurer.measure("sensor - smoothed", traceLegendStyle)
                     drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotTop + 2f))
                 } else if (smoothable || (smoothed != null && !smoothed.isEmpty)) {
                     // Label the raw trace, so the toggle's state is legible.
-                    val leg = measurer.measure("sensor — raw", traceLegendStyle)
+                    val leg = measurer.measure("sensor - raw", traceLegendStyle)
                     drawText(leg, topLeft = Offset((plotRight - leg.size.width - 4f).coerceAtLeast(plotLeft), plotTop + 2f))
                 }
 

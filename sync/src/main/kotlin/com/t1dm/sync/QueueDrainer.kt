@@ -117,7 +117,7 @@ class QueueDrainer(
                 response.ok -> rows.forEach { dao.delete(it.id); sent++ }
                 response.authError -> {
                     rows.forEach { reschedule(it, now); retried++ }
-                    error = "HTTP ${response.code} — secret rejected"
+                    error = "HTTP ${response.code} - secret rejected"
                 }
                 response.permanentClientError -> {
                     Timber.tag(TAG).w("dropping %d row(s): HTTP %d", rows.size, response.code)
