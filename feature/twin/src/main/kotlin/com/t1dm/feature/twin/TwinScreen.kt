@@ -56,8 +56,6 @@ fun TwinScreen(
     }
     val effective = effectiveScan(latest, overrides, draft)
     var trait by remember { mutableStateOf(TwinTrait.HEIGHT) }
-    // Read at event time, not from `effective`: several drag events land between recompositions.
-    fun current(t: TwinTrait) = draft[t.key] ?: overrides[t.key] ?: latest?.get(t) ?: t.mid()
     val edited = overrides.keys + draft.keys
 
     Box(modifier.fillMaxSize()) {
@@ -68,19 +66,8 @@ fun TwinScreen(
                     Modifier.fillMaxSize(),
                     onOrbit = { tut.orbitRad += it },
                     onZoom = { tut.zoomLog += it },
-                    onEditDrag = if (editing && effective != null) {
-                        { up -> draft[trait.key] = nudged(trait, current(trait), up) }
-                    } else {
-                        null
-                    },
-                    onEditEnd = {
-                        draft[trait.key]?.let { onOverride(trait.key, it) }
-                        tut.slides++
-                    },
+                    callouts = !editing,
                 )
-                if (editing && effective != null) {
-                    TwinEditGauge(trait, effective[trait] ?: trait.mid(), trait.key in edited, Modifier.fillMaxSize())
-                }
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -106,13 +93,20 @@ fun TwinScreen(
                 BackHandler { editing = false }
                 TwinEditBar(
                     selected = trait,
+                    value = effective[trait] ?: trait.mid(),
                     edited = edited,
                     onSelect = { haptics.perform(HapticEvent.Tap); trait = it },
+                    onDrag = { draft[trait.key] = it },
+                    onCommit = {
+                        draft[trait.key]?.let { onOverride(trait.key, it) }
+                        tut.slides++
+                    },
                     onReset = {
                         draft.clear()
                         onResetOverrides()
                     },
                     onDone = { editing = false },
+                    modifier = Modifier.tutorialTarget(tut, TutorialTarget.PANEL),
                 )
             } else {
                 Row(

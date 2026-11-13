@@ -13,7 +13,9 @@ import android.view.Choreographer
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.TextureView
-import android.view.ViewConfiguration
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
@@ -41,8 +43,7 @@ fun TwinView(
     modifier: Modifier = Modifier,
     onOrbit: (rad: Float) -> Unit = {},
     onZoom: (absLogScale: Float) -> Unit = {},
-    onEditDrag: ((up: Float) -> Unit)? = null,
-    onEditEnd: () -> Unit = {},
+    callouts: Boolean = true,
 ) {
     val context = LocalContext.current
     val body = remember { loadBody(context) }
@@ -55,8 +56,6 @@ fun TwinView(
     view.renderer.animate = animate
     view.onOrbit = onOrbit
     view.onZoom = onZoom
-    view.onEditDrag = onEditDrag
-    view.onEditEnd = onEditEnd
 
     LaunchedEffect(scan?.id) {
         view.renderer.setTarget(TwinMorphs.weights(scan, body), assemble = true)
@@ -84,7 +83,9 @@ fun TwinView(
     }
     Box(modifier) {
         AndroidView(factory = { view }, modifier = Modifier.fillMaxSize())
-        TwinCallouts(scan, Modifier.fillMaxSize())
+        AnimatedVisibility(callouts, Modifier.fillMaxSize(), enter = fadeIn(), exit = fadeOut()) {
+            TwinCallouts(scan, Modifier.fillMaxSize())
+        }
     }
 }
 
@@ -103,14 +104,6 @@ internal class TwinTextureView(context: Context, body: TwinBody) : TextureView(c
     var animate = true
     var onOrbit: (Float) -> Unit = {}
     var onZoom: (Float) -> Unit = {}
-
-    /** Non-null: vertical drag edits (+ = up, share of height); horizontal drag only orbits. */
-    var onEditDrag: ((Float) -> Unit)? = null
-    var onEditEnd: () -> Unit = {}
-    private val slop = ViewConfiguration.get(context).scaledTouchSlop
-    private var axis = Axis.NONE
-    private var downX = 0f
-    private var downY = 0f
     private var gl: GlThread? = null
     private var running = false
     private var lastFrameNs = 0L
@@ -182,60 +175,28 @@ internal class TwinTextureView(context: Context, body: TwinBody) : TextureView(c
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 track(e, 0)
-                axis = Axis.NONE
-                downX = e.x
-                downY = e.y
                 parent?.requestDisallowInterceptTouchEvent(true)
             }
-            MotionEvent.ACTION_POINTER_DOWN -> endEdit(Axis.PINCH)
             // The finger that stays down takes over; its stale delta was what snapped the view.
             MotionEvent.ACTION_POINTER_UP -> track(e, if (e.actionIndex == 0) 1 else 0)
             MotionEvent.ACTION_MOVE -> if (!scale.isInProgress && e.pointerCount == 1) {
                 val i = e.findPointerIndex(activeId)
-                if (i >= 0) move(e.getX(i), e.getY(i))
+                if (i >= 0) {
+                    val dYaw = (e.getX(i) - lastX) / width * 4f
+                    renderer.yawTarget -= dYaw
+                    onOrbit(abs(dYaw))
+                    renderer.pitchTarget = (renderer.pitchTarget + (e.getY(i) - lastY) / height * 2f)
+                        .coerceIn(-0.2f, 0.9f)
+                    lastX = e.getX(i)
+                    lastY = e.getY(i)
+                }
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                endEdit(Axis.NONE)
-                parent?.requestDisallowInterceptTouchEvent(false)
-            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> parent?.requestDisallowInterceptTouchEvent(false)
         }
         renderer.lastTouchNs = System.nanoTime()
         kick()
         return true
     }
-
-    private fun move(x: Float, y: Float) {
-        val edit = onEditDrag
-        if (edit != null && axis == Axis.NONE) {
-            val dx = abs(x - downX)
-            val dy = abs(y - downY)
-            if (maxOf(dx, dy) > slop) axis = if (dy > dx) Axis.VERTICAL else Axis.HORIZONTAL
-        }
-        when {
-            edit == null -> {
-                orbit(x)
-                renderer.pitchTarget = (renderer.pitchTarget + (y - lastY) / height * 2f).coerceIn(-0.2f, 0.9f)
-            }
-            axis == Axis.VERTICAL -> edit(-(y - lastY) / height)
-            axis == Axis.HORIZONTAL -> orbit(x)
-            else -> Unit
-        }
-        lastX = x
-        lastY = y
-    }
-
-    private fun orbit(x: Float) {
-        val dYaw = (x - lastX) / width * 4f
-        renderer.yawTarget -= dYaw
-        onOrbit(abs(dYaw))
-    }
-
-    private fun endEdit(next: Axis) {
-        if (axis == Axis.VERTICAL) onEditEnd()
-        axis = next
-    }
-
-    private enum class Axis { NONE, HORIZONTAL, VERTICAL, PINCH }
 
     private fun track(e: MotionEvent, index: Int) {
         activeId = e.getPointerId(index)
