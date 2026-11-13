@@ -52,9 +52,9 @@ class LogEditDialogTest {
         InsulinChoice.Type(InsulinType(id = 1, name = name, kind = kind, durationMin = 360.0))
 
     private val catalogue = listOf(
-        preset("Aspart · NovoRapid/Novolog", InsulinFamily.RapidGamma),
-        preset("Lispro · Humalog", InsulinFamily.RapidGamma),
-        preset("Glargine U100 · Lantus", InsulinFamily.BasalBateman),
+        preset("Aspart - NovoRapid/Novolog", InsulinFamily.RapidGamma),
+        preset("Lispro - Humalog", InsulinFamily.RapidGamma),
+        preset("Glargine U100 - Lantus", InsulinFamily.BasalBateman),
         type("My pen", InsulinKind.BOLUS),
     )
 
@@ -67,11 +67,11 @@ class LogEditDialogTest {
     fun `only insulins of the row's own kind are offered`() {
         val bolus = offeredInsulins(dose(InsulinKind.BOLUS, null), catalogue)
         assertEquals(
-            listOf("Aspart · NovoRapid/Novolog", "Lispro · Humalog", "My pen"),
+            listOf("Aspart - NovoRapid/Novolog", "Lispro - Humalog", "My pen"),
             bolus.map { it.label },
         )
         assertEquals(
-            listOf("Glargine U100 · Lantus"),
+            listOf("Glargine U100 - Lantus"),
             offeredInsulins(dose(InsulinKind.BASAL, null), catalogue).map { it.label },
         )
     }
@@ -79,7 +79,7 @@ class LogEditDialogTest {
     @Test
     fun `the insulin the row was logged under opens selected, from either catalogue`() {
         // The regression: the note holds a preset LABEL, which no `insulin_type` name ever equals.
-        val entry = dose(InsulinKind.BOLUS, "Lispro · Humalog")
+        val entry = dose(InsulinKind.BOLUS, "Lispro - Humalog")
         assertEquals(1, loggedInsulinIndex(entry, offeredInsulins(entry, catalogue)))
 
         val typed = dose(InsulinKind.BOLUS, "My pen")

@@ -38,14 +38,14 @@ class ConfirmLogDialogTest {
 
     @Test
     fun `a bolus restates units, kind and the resolved insulin`() {
-        val f = fields(PendingLog.Dose(4.0, InsulinKind.BOLUS, "Aspart · NovoRapid/Novolog"))
+        val f = fields(PendingLog.Dose(4.0, InsulinKind.BOLUS, "Aspart - NovoRapid/Novolog"))
         assertEquals("4 U bolus", f["Dose"])
-        assertEquals("Aspart · NovoRapid/Novolog", f["Insulin"])
+        assertEquals("Aspart - NovoRapid/Novolog", f["Insulin"])
     }
 
     @Test
     fun `a basal reads as basal`() {
-        val f = fields(PendingLog.Dose(18.0, InsulinKind.BASAL, "Glargine U100 · Lantus"))
+        val f = fields(PendingLog.Dose(18.0, InsulinKind.BASAL, "Glargine U100 - Lantus"))
         assertEquals("18 U basal", f["Dose"])
         assertEquals("Log this basal dose?", confirmTitle(PendingLog.Dose(18.0, InsulinKind.BASAL, "x")))
     }

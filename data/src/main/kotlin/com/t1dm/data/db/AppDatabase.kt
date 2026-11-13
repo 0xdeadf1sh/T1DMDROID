@@ -42,7 +42,7 @@ import kotlinx.coroutines.Dispatchers
         TwinOverrideEntity::class,
         TwinFaceEntity::class,
     ],
-    version = 35,
+    version = 36,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -80,7 +80,7 @@ abstract class AppDatabase : RoomDatabase() {
         const val NAME = "t1dm.db"
 
         /** Must equal `@Database(version)`; a bump lands on every branch, sharing one db file. */
-        const val SCHEMA_VERSION = 33
+        const val SCHEMA_VERSION = 36
 
         /** [FoodFts] isn't a Room entity: fresh installs create it, upgrades via MIGRATION_4_5. */
         fun build(context: Context): AppDatabase =

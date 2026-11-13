@@ -18,6 +18,7 @@ import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.InsulinTypeEntity
 import com.t1dm.data.db.LoggedDoseEntity
 import com.t1dm.data.db.LoggedMealEntity
+import com.t1dm.data.db.MigrationRunner
 import com.t1dm.data.db.PaintStrokeBlob
 import com.t1dm.data.db.PaintStrokeEntity
 import com.t1dm.data.db.SampleEntity
@@ -277,7 +278,7 @@ object Archive {
         kePerHour = o.dbl("ke"),
         customCurve = o.blob("cc"),
         tzOffsetMin = o.int("tz") ?: err("dose", "tz"),
-        note = o.str("n"),
+        note = MigrationRunner.presetLabel36(o.str("n")),
         updatedAt = o.long("ua") ?: err("dose", "ua"),
         // A file written before these columns has no lat; ua is the migration's own backfill rule.
         loggedAtMs = o.long("lat") ?: o.long("ua") ?: 0L,
@@ -404,7 +405,7 @@ object Archive {
 
     fun readBasal(o: JsonObject) = BasalScheduleEntity(
         scheduleId = o.str("sid") ?: err("basal", "sid"),
-        label = o.str("lb") ?: err("basal", "lb"),
+        label = MigrationRunner.presetLabel36(o.str("lb")) ?: err("basal", "lb"),
         timeOfDayMin = o.int("tod") ?: err("basal", "tod"),
         doseU = o.dbl("d") ?: err("basal", "d"),
         durationMin = o.dbl("dm") ?: err("basal", "dm"),

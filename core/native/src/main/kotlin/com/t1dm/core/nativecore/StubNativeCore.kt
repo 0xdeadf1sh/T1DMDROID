@@ -223,13 +223,13 @@ open class StubNativeCore : NativeCore {
         fun basal(label: String, ka: Double, ke: Double, actionH: Double) =
             InsulinPresetSpec(InsulinFamily.BasalBateman, label, 0.0, 0.0, 0.0, ka, ke, actionH * 60.0, "Label half-life")
         return listOf(
-            rapid("Aspart · NovoRapid/Novolog", 3.0, 30.0, 4.0, "Simulator shape"),
-            rapid("Faster aspart · Fiasp", 2.55, 35.0, 3.4, "Simulator shape"),
-            rapid("Lispro · Humalog", 3.0, 30.0, 4.0, "Simulator shape"),
-            rapid("Ultra-rapid lispro · Lyumjev", 2.55, 35.0, 3.4, "Simulator shape"),
-            basal("Glargine U100 · Lantus", 0.477, 0.0499, 73.0),
-            basal("Glargine U300 · Toujeo", 0.156, 0.0377, 101.0),
-            basal("Degludec · Tresiba", 0.187, 0.0277, 133.0),
+            rapid("Aspart - NovoRapid/Novolog", 3.0, 30.0, 4.0, "Simulator shape"),
+            rapid("Faster aspart - Fiasp", 2.55, 35.0, 3.4, "Simulator shape"),
+            rapid("Lispro - Humalog", 3.0, 30.0, 4.0, "Simulator shape"),
+            rapid("Ultra-rapid lispro - Lyumjev", 2.55, 35.0, 3.4, "Simulator shape"),
+            basal("Glargine U100 - Lantus", 0.477, 0.0499, 73.0),
+            basal("Glargine U300 - Toujeo", 0.156, 0.0377, 101.0),
+            basal("Degludec - Tresiba", 0.187, 0.0277, 133.0),
         )
     }
 

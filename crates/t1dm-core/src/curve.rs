@@ -258,13 +258,13 @@ pub fn insulin_preset_catalog() -> Vec<InsulinPresetSpec> {
         }
     }
     vec![
-        rapid(InsulinPreset::AspartNovorapid, "Aspart · NovoRapid/Novolog", RAPID, RAPID_CITE),
-        rapid(InsulinPreset::FiaspFasterAspart, "Faster aspart · Fiasp", ULTRA_RAPID, ULTRA_RAPID_CITE),
-        rapid(InsulinPreset::LisproHumalog, "Lispro · Humalog", RAPID, RAPID_CITE),
-        rapid(InsulinPreset::LisproLyumjev, "Ultra-rapid lispro · Lyumjev", ULTRA_RAPID, ULTRA_RAPID_CITE),
-        basal(InsulinPreset::GlargineU100Lantus, "Glargine U100 · Lantus", GLARGINE_U100.0, GLARGINE_U100.1, 73.0),
-        basal(InsulinPreset::GlargineU300Toujeo, "Glargine U300 · Toujeo", 0.156, 0.0377, 101.0),
-        basal(InsulinPreset::DegludecTresiba, "Degludec · Tresiba", 0.187, 0.0277, 133.0),
+        rapid(InsulinPreset::AspartNovorapid, "Aspart - NovoRapid/Novolog", RAPID, RAPID_CITE),
+        rapid(InsulinPreset::FiaspFasterAspart, "Faster aspart - Fiasp", ULTRA_RAPID, ULTRA_RAPID_CITE),
+        rapid(InsulinPreset::LisproHumalog, "Lispro - Humalog", RAPID, RAPID_CITE),
+        rapid(InsulinPreset::LisproLyumjev, "Ultra-rapid lispro - Lyumjev", ULTRA_RAPID, ULTRA_RAPID_CITE),
+        basal(InsulinPreset::GlargineU100Lantus, "Glargine U100 - Lantus", GLARGINE_U100.0, GLARGINE_U100.1, 73.0),
+        basal(InsulinPreset::GlargineU300Toujeo, "Glargine U300 - Toujeo", 0.156, 0.0377, 101.0),
+        basal(InsulinPreset::DegludecTresiba, "Degludec - Tresiba", 0.187, 0.0277, 133.0),
     ]
 }
 
@@ -629,7 +629,7 @@ mod tests {
         for (i, (g, w)) in got.iter().zip(want).enumerate() {
             assert!(
                 (g - w).abs() <= tol,
-                "{what}[{i}]: got {g}, want {w} (|Δ|={:.3e} > {tol:.1e})",
+                "{what}[{i}]: got {g}, want {w} (|d|={:.3e} > {tol:.1e})",
                 (g - w).abs()
             );
         }

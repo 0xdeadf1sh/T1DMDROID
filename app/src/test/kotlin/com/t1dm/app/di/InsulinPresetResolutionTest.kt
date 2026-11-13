@@ -20,13 +20,13 @@ class InsulinPresetResolutionTest {
         InsulinPresetSpec(InsulinFamily.BasalBateman, label, 0.0, 0.0, 0.0, 0.2, 0.03, actionH * 60.0, "cite")
 
     private val catalog = listOf(
-        rapid("Aspart · NovoRapid/Novolog", 45.0),
-        rapid("Faster aspart · Fiasp", 52.0),
-        rapid("Lispro · Humalog", 45.1),
-        rapid("Ultra-rapid lispro · Lyumjev", 52.1),
-        basal("Glargine U100 · Lantus", 73.0),
-        basal("Glargine U300 · Toujeo", 101.0),
-        basal("Degludec · Tresiba", 133.0),
+        rapid("Aspart - NovoRapid/Novolog", 45.0),
+        rapid("Faster aspart - Fiasp", 52.0),
+        rapid("Lispro - Humalog", 45.1),
+        rapid("Ultra-rapid lispro - Lyumjev", 52.1),
+        basal("Glargine U100 - Lantus", 73.0),
+        basal("Glargine U300 - Toujeo", 101.0),
+        basal("Degludec - Tresiba", 133.0),
     )
 
     private fun resolve(family: InsulinFamily, requested: String?, lastLogged: String? = null) =
@@ -34,35 +34,35 @@ class InsulinPresetResolutionTest {
 
     @Test
     fun `what the panel picked is what the writer commits`() {
-        val picked = resolve(InsulinFamily.RapidGamma, "Faster aspart · Fiasp")
-        assertEquals("Faster aspart · Fiasp", picked?.label)
+        val picked = resolve(InsulinFamily.RapidGamma, "Faster aspart - Fiasp")
+        assertEquals("Faster aspart - Fiasp", picked?.label)
         assertEquals(52.0, picked!!.gammaTheta, 0.0)
     }
 
     @Test
     fun `the pick beats the remembered insulin`() {
-        val picked = resolve(InsulinFamily.RapidGamma, "Lispro · Humalog", lastLogged = "Faster aspart · Fiasp")
-        assertEquals("Lispro · Humalog", picked?.label)
+        val picked = resolve(InsulinFamily.RapidGamma, "Lispro - Humalog", lastLogged = "Faster aspart - Fiasp")
+        assertEquals("Lispro - Humalog", picked?.label)
     }
 
     @Test
     fun `a caller with no pick inherits the last logged insulin of that kind`() {
         assertEquals(
-            "Degludec · Tresiba",
-            resolve(InsulinFamily.BasalBateman, requested = null, lastLogged = "Degludec · Tresiba")?.label,
+            "Degludec - Tresiba",
+            resolve(InsulinFamily.BasalBateman, requested = null, lastLogged = "Degludec - Tresiba")?.label,
         )
     }
 
     @Test
     fun `a fresh install falls back to the head of the family`() {
-        assertEquals("Aspart · NovoRapid/Novolog", resolve(InsulinFamily.RapidGamma, null)?.label)
-        assertEquals("Glargine U100 · Lantus", resolve(InsulinFamily.BasalBateman, null)?.label)
+        assertEquals("Aspart - NovoRapid/Novolog", resolve(InsulinFamily.RapidGamma, null)?.label)
+        assertEquals("Glargine U100 - Lantus", resolve(InsulinFamily.BasalBateman, null)?.label)
     }
 
     @Test
     fun `an unknown label falls through instead of failing`() {
         assertEquals(
-            "Aspart · NovoRapid/Novolog",
+            "Aspart - NovoRapid/Novolog",
             resolve(InsulinFamily.RapidGamma, "Insulin That Was Renamed", lastLogged = "Also Gone")?.label,
         )
     }
@@ -70,14 +70,14 @@ class InsulinPresetResolutionTest {
     /** A basal label selecting a rapid curve would commit a 42 h Bateman as a bolus. */
     @Test
     fun `a label from the other family is not honoured`() {
-        assertEquals("Aspart · NovoRapid/Novolog", resolve(InsulinFamily.RapidGamma, "Degludec · Tresiba")?.label)
-        assertEquals("Glargine U100 · Lantus", resolve(InsulinFamily.BasalBateman, "Lispro · Humalog")?.label)
+        assertEquals("Aspart - NovoRapid/Novolog", resolve(InsulinFamily.RapidGamma, "Degludec - Tresiba")?.label)
+        assertEquals("Glargine U100 - Lantus", resolve(InsulinFamily.BasalBateman, "Lispro - Humalog")?.label)
     }
 
     /** Null means no catalogue; the caller must fail closed rather than substitute one. */
     @Test
     fun `an empty catalogue resolves to nothing at all`() {
-        assertNull(resolveInsulinPreset(emptyList(), InsulinFamily.RapidGamma, "Lispro · Humalog", null))
+        assertNull(resolveInsulinPreset(emptyList(), InsulinFamily.RapidGamma, "Lispro - Humalog", null))
         assertNull(resolveInsulinPreset(catalog.filter { it.family == InsulinFamily.RapidGamma }, InsulinFamily.BasalBateman, null, null))
     }
 
@@ -98,19 +98,19 @@ class InsulinPresetResolutionTest {
     /** SPEC/invariants.md §5: a units edit must re-derive θ and duration for these. */
     @Test
     fun `a units edit re-resolves a rapid preset or a builtin bolus`() {
-        assertEquals("Lispro · Humalog", own(InsulinKind.BOLUS, "Lispro · Humalog")?.label)
+        assertEquals("Lispro - Humalog", own(InsulinKind.BOLUS, "Lispro - Humalog")?.label)
         assertEquals(InsulinChoice.Type(novorapid), own(InsulinKind.BOLUS, "Novorapid"))
     }
 
     @Test
     fun `a linear shape keeps its stored curve`() {
-        assertNull(own(InsulinKind.BASAL, "Degludec · Tresiba"))
+        assertNull(own(InsulinKind.BASAL, "Degludec - Tresiba"))
         assertNull(own(InsulinKind.BOLUS, "Slow"))
     }
 
     @Test
     fun `a kind mismatch or an unknown label resolves nothing`() {
-        assertNull(own(InsulinKind.BASAL, "Lispro · Humalog"))
+        assertNull(own(InsulinKind.BASAL, "Lispro - Humalog"))
         assertNull(own(InsulinKind.BOLUS, "Insulin That Was Renamed"))
     }
 }

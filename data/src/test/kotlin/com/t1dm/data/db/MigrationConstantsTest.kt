@@ -62,7 +62,7 @@ class MigrationConstantsTest {
             val (table, column) = m.destructured
             val create = createSqlOf(text, table)
             assertTrue(
-                "`$table` in schema 23 lacks the column v21-23 adds — migration: $column | createSql: $create",
+                "`$table` in schema 23 lacks the column v21-23 adds - migration: $column | createSql: $create",
                 create.contains(column.trim()),
             )
         }
@@ -113,6 +113,31 @@ class MigrationConstantsTest {
     @Test
     fun `the v35 twin face DDL is exactly what Room generates`() {
         assertEquals(createSqlOf(schemaText(35), "twin_face"), MigrationRunner.SQL_34_35_CREATE_TWIN_FACE)
+    }
+
+    @Test
+    fun `the v36 rename maps each old preset label to its ASCII spelling`() {
+        val dot = Char(0xB7)
+        assertEquals("Faster aspart - Fiasp", MigrationRunner.presetLabel36("Faster aspart $dot Fiasp"))
+        assertEquals("Ultra-rapid lispro - Lyumjev", MigrationRunner.presetLabel36("Ultra-rapid lispro $dot Lyumjev"))
+        assertEquals("Faster aspart - Fiasp", MigrationRunner.presetLabel36("Faster aspart - Fiasp"))
+        assertEquals("My pen $dot left", MigrationRunner.presetLabel36("My pen $dot left"))
+        assertEquals(null, MigrationRunner.presetLabel36(null))
+    }
+
+    @Test
+    fun `the v36 statements touch only label columns and leave ASCII behind`() {
+        val sql = MigrationRunner.SQL_35_36_PRESET_LABELS
+        assertEquals(MigrationRunner.PRESET_LABELS_36.size * 3, sql.size)
+        val targets = Regex("^UPDATE `(\\w+)` SET `(\\w+)` = '[ -~]+' WHERE `\\2` = '[^']+'$")
+        sql.forEach { s ->
+            val m = targets.matchEntire(s)
+            assertTrue("unexpected statement: $s", m != null)
+            assertTrue(s, m!!.groupValues[1] to m.groupValues[2] in setOf(
+                "logged_dose" to "note", "basal_schedule" to "label", "kv" to "value",
+            ))
+        }
+        assertTrue(MigrationRunner.PRESET_LABELS_36.all { l -> l.all { it.code in 0x20..0x7E } })
     }
 
     @Test
@@ -320,7 +345,7 @@ class MigrationConstantsTest {
             MigrationRunner.SQL_20_21_DOSE_MUTATED_ACTING,
             MigrationRunner.SQL_20_21_MEAL_MUTATED_AT,
         )) {
-            assertTrue("nullable — no row has been edited: $sql", !sql.contains("NOT NULL"))
+            assertTrue("nullable - no row has been edited: $sql", !sql.contains("NOT NULL"))
         }
         val create = MigrationRunner.SQL_20_21_CREATE_TOMBSTONE
         assertTrue(create, create.contains("`event_tombstone`"))

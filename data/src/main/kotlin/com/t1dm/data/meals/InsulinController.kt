@@ -119,9 +119,9 @@ class InsulinController(
     companion object {
         /** Builtin type name → the catalogue label its PK is read from. */
         val BUILTIN_PRESETS: List<Pair<String, String>> = listOf(
-            "Novorapid" to "Aspart · NovoRapid/Novolog",
-            "Lantus" to "Glargine U100 · Lantus",
-            "Tresiba" to "Degludec · Tresiba",
+            "Novorapid" to "Aspart - NovoRapid/Novolog",
+            "Lantus" to "Glargine U100 - Lantus",
+            "Tresiba" to "Degludec - Tresiba",
         )
 
         /** θ and duration grow with the dose, SPEC/invariants.md §5; others scale linearly. */

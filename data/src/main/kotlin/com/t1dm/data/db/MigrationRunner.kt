@@ -740,6 +740,38 @@ object MigrationRunner {
         }
     }
 
+    /** The insulin preset catalogue's labels from v36 on; before, U+00B7 stood for "-". */
+    val PRESET_LABELS_36 = listOf(
+        "Aspart - NovoRapid/Novolog",
+        "Faster aspart - Fiasp",
+        "Lispro - Humalog",
+        "Ultra-rapid lispro - Lyumjev",
+        "Glargine U100 - Lantus",
+        "Glargine U300 - Toujeo",
+        "Degludec - Tresiba",
+    )
+
+    private val PRESET_LABEL_RENAMES: Map<String, String> =
+        PRESET_LABELS_36.associateBy { it.replace(" - ", " ${Char(0xB7)} ") }
+
+    /** A stored label as the v36 catalogue spells it; anything else unchanged. */
+    fun presetLabel36(stored: String?): String? = stored?.let { PRESET_LABEL_RENAMES[it] ?: it }
+
+    internal val SQL_35_36_PRESET_LABELS: List<String> = PRESET_LABEL_RENAMES.flatMap { (old, new) ->
+        listOf(
+            "UPDATE `logged_dose` SET `note` = '$new' WHERE `note` = '$old'",
+            "UPDATE `basal_schedule` SET `label` = '$new' WHERE `label` = '$old'",
+            "UPDATE `kv` SET `value` = '$new' WHERE `value` = '$old'",
+        )
+    }
+
+    /** Doses, schedules and remembered presets match the catalogue by label. */
+    val MIGRATION_35_36 = object : Migration(35, 36) {
+        override fun migrate(connection: SQLiteConnection) {
+            SQL_35_36_PRESET_LABELS.forEach(connection::execSQL)
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -775,6 +807,7 @@ object MigrationRunner {
         MIGRATION_32_33,
         MIGRATION_33_34,
         MIGRATION_34_35,
+        MIGRATION_35_36,
     )
 
     fun <T : RoomDatabase> configure(builder: RoomDatabase.Builder<T>): RoomDatabase.Builder<T> =
