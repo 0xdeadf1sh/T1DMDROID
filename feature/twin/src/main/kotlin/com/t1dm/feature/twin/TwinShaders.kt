@@ -154,6 +154,61 @@ void main() {
 }
 """
 
+internal const val SYSTEM_VS = """#version 300 es
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec2 aAttr;
+uniform mat4 uMvp;
+out vec3 vW;
+out float vD;
+out float vC;
+void main() {
+    vW = aPos;
+    vD = aAttr.x;
+    vC = aAttr.y;
+    gl_Position = uMvp * vec4(aPos, 1.0);
+}
+"""
+
+/** Arteries pulse out from the heart each beat, veins drift back, nerves fire from the brain. */
+internal const val SYSTEM_FS = """#version 300 es
+precision highp float;
+in vec3 vW;
+in float vD;
+in float vC;
+uniform vec3 uEye;
+uniform float uT;
+uniform float uBeat;
+uniform float uLines;
+uniform float uVessels;
+uniform float uNerves;
+uniform vec3 uC1;
+uniform vec3 uC2;
+out vec4 o;
+void main() {
+    vec3 col;
+    if (vC < 0.5) {
+        float front = uBeat * 22.0;
+        float d = (vD - front) / 0.7;
+        col = uC2 * (0.22 + 1.3 * exp(-d * d) * max(0.0, 1.0 - front / 22.0)) * uVessels;
+    } else if (vC < 1.5) {
+        col = uC1 * (0.12 + 0.18 * (0.5 + 0.5 * sin(vD * 5.0 + uT * 3.0))) * uVessels;
+    } else {
+        float i = 0.15;
+        for (int k = 0; k < 3; k++) {
+            float d = (vD - fract(uT * 0.6 + float(k) / 3.0) * 16.0) / 0.3;
+            i += 1.5 * exp(-d * d);
+        }
+        col = mix(uC1, vec3(1.0), 0.4) * i * uNerves;
+    }
+    if (uLines < 0.5) {
+        vec3 n = normalize(cross(dFdx(vW), dFdy(vW)));
+        float rim = pow(1.0 - abs(dot(n, normalize(uEye - vW))), 1.5);
+        col *= 0.35 + 0.9 * rim;
+    }
+    o = vec4(col, 1.0);
+}
+"""
+
 internal const val SPARK_VS = """#version 300 es
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec4 aDist;

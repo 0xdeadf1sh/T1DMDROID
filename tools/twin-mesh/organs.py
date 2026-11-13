@@ -24,20 +24,21 @@ TRIS = {"heart": 6000, "brain": 8000}
 
 
 class BP3D:
-    """BodyParts3D's PART-OF tree: compound organ name → element meshes, in mm, z up."""
+    """A BodyParts3D tree ("partof" or "isa"): compound name → element meshes, in mm, z up."""
 
-    def __init__(self, cache: Path):
+    def __init__(self, cache: Path, tree: str = "partof"):
         d = cache / "bp3d"
         d.mkdir(parents=True, exist_ok=True)
-        for name in FILES:
+        files = [f.replace("partof", tree) for f in FILES]
+        for name in files:
             if not (d / name).exists():
                 with urllib.request.urlopen(BASE + name) as r:
                     (d / name).write_bytes(r.read())
         self.elements: dict[str, list[str]] = {}
-        for line in (d / "partof_element_parts.txt").read_text().splitlines()[1:]:
+        for line in (d / files[1]).read_text().splitlines()[1:]:
             _, name, fid = line.split("\t")
             self.elements.setdefault(name, []).append(fid)
-        self.zip = zipfile.ZipFile(d / FILES[2])
+        self.zip = zipfile.ZipFile(d / files[2])
         self.members = {Path(n).stem: n for n in self.zip.namelist() if n.endswith(".obj")}
 
     def mesh(self, fid: str):
@@ -81,10 +82,13 @@ def body_axes(bp: BP3D) -> np.ndarray:
     return np.stack([x, up, z])
 
 
-def decimate(pos, tri, n):
+def decimate(pos, tri, n, near_source=True):
+    """→ (positions, triangles, nearest source vertex per kept vertex, or None if not asked)."""
     if len(tri) <= n:
         return pos, tri, np.arange(len(pos))
     lo, lt = fast_simplification.simplify(pos.astype(np.float32), tri.astype(np.int32), 1 - n / len(tri))
+    if not near_source:
+        return lo.astype(np.float64), lt.astype(np.int64), None
     # Chunked: the full low × high distance matrix runs to gigabytes.
     near = np.concatenate([
         np.argmin(((lo[i:i + 256, None, :] - pos[None, :, :]) ** 2).sum(-1), axis=1)
@@ -121,7 +125,7 @@ def brain(bp: BP3D, axes: np.ndarray):
     pos, tri, _ = bp.organ("brain")
     pos = pos @ axes.T / 100.0
     pos -= pos.mean(0)
-    lo, lt, _ = decimate(pos, tri, TRIS["brain"])
+    lo, lt, _ = decimate(pos, tri, TRIS["brain"], near_source=False)
     motion = np.zeros((len(lo), 4))
     motion[:, 3] = STILL
     return lo, motion, lt
@@ -160,7 +164,7 @@ def anchors(body: np.ndarray, centre: np.ndarray):
     return idx, w, centre - (w[:, None] * body[idx]).sum(0)
 
 
-def write(path, body: np.ndarray, eyes, cache: Path) -> None:
+def write(path, body: np.ndarray, eyes, cache: Path) -> dict[str, np.ndarray]:
     """u32 count; per organ: u8 name length, name, u32 nv, u32 nt, nv×3 f32 position (dm, about
     the centre), nv×4 f32 motion, nt×3 u16, u32 k, k u16 anchors, k f32 weights, 3 f32 offset."""
     bp = BP3D(cache)
@@ -181,3 +185,4 @@ def write(path, body: np.ndarray, eyes, cache: Path) -> None:
             f.write(off.astype("<f4").tobytes())
             ext = (p.max(0) - p.min(0)) * 10
             print(f"{name}: {len(p)} verts, {len(t)} tris, {np.round(ext, 1)} cm, centre {np.round(cs[name], 2)}")
+    return cs

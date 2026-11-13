@@ -48,7 +48,7 @@ class Canon:
         self.uv = uv
 
 
-def _normals(pos: np.ndarray, tri: np.ndarray) -> np.ndarray:
+def vertex_normals(pos: np.ndarray, tri: np.ndarray) -> np.ndarray:
     n = np.zeros_like(pos)
     fn = np.cross(pos[tri[:, 1]] - pos[tri[:, 0]], pos[tri[:, 2]] - pos[tri[:, 0]])
     for k in range(3):
@@ -97,7 +97,7 @@ def face_uv(pos: np.ndarray, tri: np.ndarray, eyes: tuple[np.ndarray, np.ndarray
     fit = fit_2d(pos, eyes, canon)
     mid = (eyes[0] + eyes[1]) / 2
     chin = fit[CHIN, 1]
-    n = _normals(pos, tri)
+    n = vertex_normals(pos, tri)
     near = (pos[:, 1] > chin - 0.2 * (mid[1] - chin)) & (pos[:, 2] > mid[2] - 0.6)
     uv = np.full((len(pos), 2), NO_UV)
     ft = canon.tri

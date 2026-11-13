@@ -27,6 +27,7 @@ internal const val ZOOM_IN_LIMIT = 0.15f
 internal class TwinRenderer(
     private val body: TwinBody,
     private val organs: Map<String, TwinOrgan>,
+    private val systems: List<TwinSystem>,
 ) : GLSurfaceView.Renderer {
     @Volatile var colors = TwinColors(floatArrayOf(0f, 0f, 0f), floatArrayOf(0f, 1f, 1f), floatArrayOf(1f, 0f, 1f))
     /** Gesture goals; the camera eases toward them each frame. */
@@ -65,6 +66,12 @@ internal class TwinRenderer(
     private var brainVao = 0
     private var sparkVao = 0
     private var sparkVerts = 0
+    private var systemProg = 0
+    private val systemVao = IntArray(systems.size)
+    private val systemVbo = IntArray(systems.size)
+    private val systemPos = systems.map { FloatArray(it.vertexCount * 3) }
+    private val systemBuf = systems.map { floatBuffer(it.vertexCount * 3) }
+    private var systemsDirty = true
     private val centre = FloatArray(3)
 
     private val proj = FloatArray(16)
@@ -127,6 +134,9 @@ internal class TwinRenderer(
             glBindVertexArray(0)
             organProg = program(ORGAN_VS, ORGAN_FS)
             sparkProg = program(SPARK_VS, SPARK_FS)
+            systemProg = program(SYSTEM_VS, SYSTEM_FS)
+            systems.forEachIndexed { i, s -> systemVao[i] = systemVao(s, i) }
+            systemsDirty = true
             heartVao = heart?.let(::organVao) ?: 0
             brainVao = brain?.let(::organVao) ?: 0
             sparkVao = brain?.let(::sparkVao) ?: 0
@@ -225,7 +235,10 @@ internal class TwinRenderer(
         glEnable(GL_BLEND)
         glBlendFunc(GL_ONE, GL_ONE)
         glDepthMask(false)
-        if (reveal > maxY) drawOrgans(t, c, inside, ex, ey, ez)
+        if (reveal > maxY) {
+            drawOrgans(t, c, inside, ex, ey, ez)
+            drawSystems(t, c, inside, ex, ey, ez)
+        }
         glEnable(GL_DEPTH_TEST)
 
         glEnable(GL_BLEND)
@@ -284,6 +297,56 @@ internal class TwinRenderer(
         glUniform1f(loc(sparkProg, "uGain"), inside)
         glBindVertexArray(sparkVao)
         glDrawArrays(GL_LINES, 0, sparkVerts)
+    }
+
+    /** Vessels always; the cord and nerves only as [inside] brings the brain in. */
+    private fun drawSystems(t: Float, c: TwinColors, inside: Float, ex: Float, ey: Float, ez: Float) {
+        if (systems.isEmpty()) return
+        if (systemsDirty) {
+            systemsDirty = false
+            systems.forEachIndexed { i, s ->
+                s.positions(blended, systemPos[i])
+                systemBuf[i].clear()
+                systemBuf[i].put(systemPos[i]).flip()
+                glBindBuffer(GL_ARRAY_BUFFER, systemVbo[i])
+                glBufferSubData(GL_ARRAY_BUFFER, 0, systemPos[i].size * 4, systemBuf[i])
+            }
+        }
+        val phase = (t * BPM / 60f) % 1f
+        glUseProgram(systemProg)
+        glUniformMatrix4fv(loc(systemProg, "uMvp"), 1, false, mvp, 0)
+        glUniform3f(loc(systemProg, "uEye"), ex, ey, ez)
+        glUniform1f(loc(systemProg, "uT"), t)
+        glUniform1f(loc(systemProg, "uBeat"), ((phase - SYSTOLE + 1f) % 1f) * 60f / BPM)
+        glUniform1f(loc(systemProg, "uVessels"), VESSEL_GAIN)
+        glUniform1f(loc(systemProg, "uNerves"), inside)
+        glUniform3fv(loc(systemProg, "uC1"), 1, c.primary, 0)
+        glUniform3fv(loc(systemProg, "uC2"), 1, c.secondary, 0)
+        systems.forEachIndexed { i, s ->
+            if (s.name != "vessels" && inside <= 0f) return@forEachIndexed
+            glUniform1f(loc(systemProg, "uLines"), if (s.lines) 1f else 0f)
+            glBindVertexArray(systemVao[i])
+            glDrawElements(if (s.lines) GL_LINES else GL_TRIANGLES, s.indices.size, GL_UNSIGNED_SHORT, 0)
+        }
+    }
+
+    /** Positions stream per morph change; class, distance and indices are static. */
+    private fun systemVao(s: TwinSystem, i: Int): Int {
+        val vao = genVao()
+        glBindVertexArray(vao)
+        systemVbo[i] = genBuffer()
+        glBindBuffer(GL_ARRAY_BUFFER, systemVbo[i])
+        glBufferData(GL_ARRAY_BUFFER, s.vertexCount * 12, null, GL_DYNAMIC_DRAW)
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(0, 3, GL_FLOAT, false, 0, 0)
+        attribute(1, 2, floatBuffer(s.attrs.size).apply { put(s.attrs).flip() })
+        val ebo = genBuffer()
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo)
+        val idx = ByteBuffer.allocateDirect(s.indices.size * 2).order(ByteOrder.nativeOrder()).asShortBuffer()
+        idx.put(s.indices).flip()
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, s.indices.size * 2, idx, GL_STATIC_DRAW)
+        glBindVertexArray(0)
+        return vao
     }
 
     /** Expanded triangles with barycentrics, for the wire edges. */
@@ -388,6 +451,7 @@ internal class TwinRenderer(
         if (!dirty) return
         dirty = false
         body.blend(current, blended)
+        systemsDirty = true
         var lo = Float.MAX_VALUE
         var hi = -Float.MAX_VALUE
         val idx = body.indices
@@ -432,6 +496,10 @@ internal class TwinRenderer(
         const val MORPH_RATE = 3f
         const val PARTICLES = 220
         const val BPM = 60f
+
+        /** Share of the beat at which ventricular systole starts and the arterial pulse leaves. */
+        const val SYSTOLE = 0.15f
+        const val VESSEL_GAIN = 0.55f
 
         /** Head bottom as a share of stature below the crown; the head fades above it. */
         const val HEAD_FRAC = 0.14f

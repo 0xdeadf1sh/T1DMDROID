@@ -72,5 +72,8 @@ Android SDK 36 and the NDK, JDK 21, and Rust with the `aarch64-linux-android` an
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
 
-The twin's heart and brain are derived from BodyParts3D, © The Database Center for Life Science,
-licensed under [CC Attribution 4.0 International](https://creativecommons.org/licenses/by/4.0/).
+The twin's heart, brain, blood vessels and spinal cord are derived from BodyParts3D, © The Database
+Center for Life Science, licensed under [CC Attribution 4.0 International](https://creativecommons.org/licenses/by/4.0/).
+Its peripheral nerves are derived from [Z-Anatomy](https://github.com/Z-Anatomy/Models-of-human-anatomy),
+licensed under [CC Attribution-ShareAlike 4.0 International](https://creativecommons.org/licenses/by-sa/4.0/);
+`feature/twin/src/main/assets/twin_systems.bin` is shared under the same licence.

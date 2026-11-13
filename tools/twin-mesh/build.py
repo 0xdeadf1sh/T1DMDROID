@@ -14,6 +14,7 @@ from pathlib import Path
 import fast_simplification
 import numpy as np
 
+import anatomy
 import anthro
 import face
 import organs
@@ -74,6 +75,17 @@ def load_body(path: Path):
             groups.setdefault(group, []).extend([idx[0], idx[i], idx[i + 1]] for i in range(1, len(idx) - 1))
     tris = {g: np.asarray(f, np.int64) for g, f in groups.items()}
     return np.asarray(verts, np.float64), tris["body"], [tris[g] for g in EYES]
+
+
+def load_joints(path: Path) -> dict[str, list[int]]:
+    """MakeHuman's joint helpers: group name → its vertex indices."""
+    joints, group = {}, None
+    for line in path.read_text().splitlines():
+        if line.startswith("g "):
+            group = line.split(maxsplit=1)[1].strip()
+        elif line.startswith("f ") and group and group.startswith("joint-"):
+            joints.setdefault(group, set()).update(int(t.split("/")[0]) - 1 for t in line.split()[1:])
+    return {g: sorted(v) for g, v in joints.items()}
 
 
 def load_target(path: Path, n: int) -> np.ndarray:
@@ -247,7 +259,11 @@ def main() -> None:
         f.write(canon.uv.astype("<f4").tobytes())
         f.write(canon.tri.astype("<u2").tobytes())
     print(f"{len(lo_pos)} verts, {len(lo_tri)} tris, {len(deltas)} morphs -> {a.out}")
-    organs.write(a.out.with_name("twin_organs.bin"), lo_pos.astype(np.float64), centres, a.cache)
+    lo = lo_pos.astype(np.float64)
+    hubs = organs.write(a.out.with_name("twin_organs.bin"), lo, centres, a.cache)
+    joints = {g: neutral[v].mean(0) for g, v in load_joints(fetch(a.cache, "3dobjs/base.obj")).items()}
+    skin = remap[faces]
+    anatomy.write(a.out.with_name("twin_systems.bin"), pos, face.vertex_normals(pos, skin), lo, joints, a.cache, hubs)
 
 
 if __name__ == "__main__":
