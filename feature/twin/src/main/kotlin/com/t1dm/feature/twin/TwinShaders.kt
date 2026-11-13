@@ -99,7 +99,9 @@ void main() {
     vec3 c = uC1 * (0.05 + 0.13 * diff) + uC1 * rim * 0.75 + uC1 * edge * 0.5;
     // Premultiplied texels; UVs off the face clamp to the texture's transparent border.
     vec4 f = texture(uFace, vec2(vUv.x, 1.0 - vUv.y)) * uFaceOn;
-    c = c * (1.0 - f.a) + f.rgb * (0.6 + 0.4 * diff) + uC1 * rim * 0.25 * f.a;
+    float lum = dot(f.rgb, vec3(0.299, 0.587, 0.114)) / max(f.a, 1e-3);
+    vec3 tint = uC1 * (0.08 + 1.1 * lum * lum) * (0.7 + 0.3 * diff);
+    c = mix(c, tint + uC1 * edge * 0.35, f.a * 0.85);
     c += vec3(1.0) * cut * 0.7;
     o = vec4(c * flick, 1.0);
 }
