@@ -1,12 +1,14 @@
 package com.t1dm.feature.twin
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Matrix
 import android.os.SystemClock
 import android.util.Log
 import androidx.camera.core.ImageProxy
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
-import com.google.mediapipe.tasks.vision.core.ImageProcessingOptions
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarker
 import com.google.mediapipe.tasks.components.containers.Connection
@@ -17,8 +19,13 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.asin
 import kotlin.math.sqrt
 
-/** [points] x,y,z per landmark, normalized to the upright (rotated) frame of [width]×[height]. */
-internal class FaceFrame(val points: FloatArray, val width: Int, val height: Int) {
+/** [points] x,y,z per landmark, normalized to the upright frame of [width]×[height]. */
+internal class FaceFrame(
+    val points: FloatArray,
+    val width: Int,
+    val height: Int,
+    val metrics: FaceMetrics? = null,
+) {
     val count: Int get() = points.size / 3
     fun x(i: Int) = points[i * 3]
     fun y(i: Int) = points[i * 3 + 1]
@@ -69,37 +76,21 @@ internal object FaceMesh {
     private fun pairs(set: Set<Connection>): IntArray = set.flatMap { listOf(it.start(), it.end()) }.toIntArray()
 }
 
-/** Landmarks CameraX frames; the newest result lands in [latest], null when no face. */
+/** Landmarks and checks CameraX frames; the newest result lands in [latest], null when no face. */
 internal class FaceTracker(context: Context, private val latest: AtomicReference<FaceFrame?>) : Closeable {
     private var lastTs = 0L
-
-    @Volatile private var rotation = 0
+    private var lastLogTs = 0L
+    private var upright: Bitmap? = null
+    private var pixels = IntArray(0)
+    private var smoothed: FaceMetrics? = null
 
     private val landmarker: FaceLandmarker = run {
         val bytes = context.assets.open("face_landmarker.task").use { it.readBytes() }
         val model = ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder()).put(bytes).apply { rewind() }
         val options = FaceLandmarker.FaceLandmarkerOptions.builder()
             .setBaseOptions(BaseOptions.builder().setModelAssetBuffer(model).build())
-            .setRunningMode(RunningMode.LIVE_STREAM)
+            .setRunningMode(RunningMode.VIDEO)
             .setNumFaces(1)
-            .setResultListener { result, image ->
-                val face = result.faceLandmarks().firstOrNull()
-                val sideways = rotation % 180 != 0
-                val w = if (sideways) image.height else image.width
-                val h = if (sideways) image.width else image.height
-                latest.set(
-                    face?.let { lm ->
-                        val pts = FloatArray(lm.size * 3)
-                        lm.forEachIndexed { i, p ->
-                            pts[i * 3] = p.x()
-                            pts[i * 3 + 1] = p.y()
-                            pts[i * 3 + 2] = p.z()
-                        }
-                        FaceFrame(pts, w, h)
-                    },
-                )
-            }
-            .setErrorListener { e -> Log.w(TAG, "landmarker error", e) }
             .build()
         FaceLandmarker.createFromOptions(context, options)
     }
@@ -107,18 +98,58 @@ internal class FaceTracker(context: Context, private val latest: AtomicReference
     /** Analyzer thread only. Always closes [proxy]. */
     fun analyze(proxy: ImageProxy) {
         proxy.use {
-            val bitmap = it.toBitmap()
+            val frame = uprightOf(it.toBitmap(), it.imageInfo.rotationDegrees)
             val ts = maxOf(SystemClock.uptimeMillis(), lastTs + 1)
             lastTs = ts
-            rotation = it.imageInfo.rotationDegrees
-            val opts = ImageProcessingOptions.builder().setRotationDegrees(rotation).build()
-            landmarker.detectAsync(BitmapImageBuilder(bitmap).build(), opts, ts)
+            val result = runCatching { landmarker.detectForVideo(BitmapImageBuilder(frame).build(), ts) }
+                .onFailure { e -> Log.w(TAG, "landmarker error", e) }
+                .getOrNull()
+            val lm = result?.faceLandmarks()?.firstOrNull()
+            if (lm == null) {
+                smoothed = null
+                latest.set(null)
+                return
+            }
+            val pts = FloatArray(lm.size * 3)
+            lm.forEachIndexed { i, p ->
+                pts[i * 3] = p.x()
+                pts[i * 3 + 1] = p.y()
+                pts[i * 3 + 2] = p.z()
+            }
+            val w = frame.width
+            val h = frame.height
+            if (pixels.size != w * h) pixels = IntArray(w * h)
+            frame.getPixels(pixels, 0, w, 0, 0, w, h)
+            val now = FaceQuality(pixels, w, h, FaceFrame(pts, w, h)).measure()
+            val m = smoothed?.blend(now, SMOOTHING) ?: now
+            smoothed = m
+            if (ts - lastLogTs > 1_000) {
+                lastLogTs = ts
+                Log.d(TAG, "quality $m → ${m.issue()}")
+            }
+            latest.set(FaceFrame(pts, w, h, m))
         }
+    }
+
+    /** [src] rotated upright into one reused bitmap, so landmarks and pixels share axes. */
+    private fun uprightOf(src: Bitmap, degrees: Int): Bitmap {
+        val sideways = degrees % 180 != 0
+        val w = if (sideways) src.height else src.width
+        val h = if (sideways) src.width else src.height
+        val dst = upright?.takeIf { it.width == w && it.height == h }
+            ?: Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also { upright = it }
+        val m = Matrix().apply {
+            postRotate(degrees.toFloat(), src.width / 2f, src.height / 2f)
+            postTranslate((w - src.width) / 2f, (h - src.height) / 2f)
+        }
+        Canvas(dst).drawBitmap(src, m, null)
+        return dst
     }
 
     override fun close() = landmarker.close()
 
     private companion object {
         const val TAG = "FaceTracker"
+        const val SMOOTHING = 0.3f
     }
 }

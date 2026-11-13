@@ -106,7 +106,8 @@ fun TwinScanScreen(onCaptured: () -> Unit, modifier: Modifier = Modifier) {
                 if (phase == ScanPhase.SEARCH) {
                     val f = latest.get()
                     val steady = f != null && f.widthFraction() > MIN_FACE_WIDTH &&
-                        abs(f.yawDeg) < MAX_TILT_DEG && abs(f.pitchDeg) < MAX_TILT_DEG
+                        abs(f.yawDeg) < MAX_TILT_DEG && abs(f.pitchDeg) < MAX_TILT_DEG &&
+                        f.metrics != null && f.metrics.issue() == null
                     lock.floatValue = (lock.floatValue + if (steady) dt / LOCK_S else -dt).coerceIn(0f, 1f)
                     if (lock.floatValue >= 1f && f != null) {
                         frozen = f
@@ -283,9 +284,12 @@ private fun DrawScope.drawSearch(s: HudStyle, m: TextMeasurer, f: FaceFrame?, lo
         drawLine(s.line.copy(alpha = 0.6f), Offset(box.left, y), Offset(box.right, y), 1.5.dp.toPx())
     }
 
+    val issue = f?.metrics?.issue()
     val status = when {
         f == null -> "Align face"
         f.widthFraction() <= MIN_FACE_WIDTH -> "Move closer"
+        f.metrics == null -> "Hold still"
+        issue != null -> issue.prompt
         abs(f.yawDeg) >= MAX_TILT_DEG || abs(f.pitchDeg) >= MAX_TILT_DEG -> "Look straight"
         else -> "Hold still"
     }
@@ -293,12 +297,22 @@ private fun DrawScope.drawSearch(s: HudStyle, m: TextMeasurer, f: FaceFrame?, lo
     drawText(m.measure("FACE SCAN", s.small), topLeft = Offset(pad, pad))
     drawText(m.measure(status, s.big), topLeft = Offset(pad, pad + 16.dp.toPx()))
     if (f != null) {
-        val read = "YAW %+03.0f°\nPITCH %+03.0f°\nPTS %d".format(Locale.ROOT, f.yawDeg, f.pitchDeg, f.count)
+        val q = f.metrics
+        val read = "YAW %+03.0f°\nPITCH %+03.0f°\nPTS %d".format(Locale.ROOT, f.yawDeg, f.pitchDeg, f.count) +
+            if (q != null) "\nLUM %3.0f\nSHARP %3.0f".format(Locale.ROOT, q.luma, q.sharpness) else ""
         val l = m.measure(read, s.mono)
         drawText(l, topLeft = Offset(size.width - pad - l.size.width, pad))
     }
     val barW = size.width - pad * 2
     val barY = size.height - pad - 4.dp.toPx()
+    val checks = listOf(
+        "FACE" to (f != null),
+        "LIGHT" to (f?.metrics != null && issue?.group != FaceIssue.Group.LIGHT),
+        "CLEAR VIEW" to (f?.metrics != null && issue?.group != FaceIssue.Group.VIEW && issue?.group != FaceIssue.Group.LIGHT),
+        "FOCUS" to (f?.metrics != null && issue == null),
+    )
+    val list = m.measure(checks.joinToString("\n") { (name, ok) -> (if (ok) "✓ " else "· ") + name }, s.mono)
+    drawText(list, topLeft = Offset(pad, barY - 10.dp.toPx() - list.size.height))
     drawLine(s.line.copy(alpha = 0.2f), Offset(pad, barY), Offset(pad + barW, barY), 3.dp.toPx())
     drawLine(s.line, Offset(pad, barY), Offset(pad + barW * lock, barY), 3.dp.toPx())
 }
