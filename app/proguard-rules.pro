@@ -37,6 +37,10 @@
 -keep class com.google.protobuf.** { *; }
 -dontwarn com.google.mediapipe.**
 -dontwarn com.google.protobuf.**
+# Flogger finds its caller by walking the stack for its own class names; renamed, Graph's static
+# init throws "no caller found on the stack" and the landmarker never loads.
+-keep class com.google.common.flogger.** { *; }
+-dontwarn com.google.common.flogger.**
 
 # ── osmdroid (the exercise track's map). Tile sources, overlays and its configuration are resolved
 #    by NAME through reflection and a preferences file, so a shrunk or renamed class fails only in the
