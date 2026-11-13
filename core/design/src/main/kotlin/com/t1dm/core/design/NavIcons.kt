@@ -55,10 +55,11 @@ private fun glyph(name: String, style: IconStyle, body: PathBuilder.() -> Unit):
     }.build()
 }
 
-private fun twin(s: IconStyle) = glyph("twin", s) { // a head over shoulders
-    moveTo(12f, 3f); arcTo(4f, 4f, 0f, true, true, 11.99f, 3f); close()
-    moveTo(4f, 21f); curveTo(4f, 15f, 8f, 13f, 12f, 13f)
-    curveTo(16f, 13f, 20f, 15f, 20f, 21f); close()
+private fun twin(s: IconStyle) = glyph("twin", s) { // an eye
+    // Pupil wound opposite the almond, so NonZero fill knocks it out as a hole.
+    moveTo(2f, 12f); curveTo(6f, 5f, 18f, 5f, 22f, 12f)
+    curveTo(18f, 19f, 6f, 19f, 2f, 12f); close()
+    moveTo(12f, 8.5f); arcTo(3.5f, 3.5f, 0f, true, false, 12.01f, 8.5f); close()
 }
 
 private fun dashboard(s: IconStyle) = glyph("bg", s) { // a droplet
