@@ -16,15 +16,15 @@ import numpy as np
 
 import anatomy
 import anthro
-import face
 import organs
+import rig
 from measure import Ruler
 
 RAW = "https://raw.githubusercontent.com/makehumancommunity/makehuman/master/makehuman/data"
 ETHNIC = ("african", "asian", "caucasian")
 GENDERS = ("female", "male")
 TRIS = 3600
-# Without the eyeballs the sockets are holes, and the face texture would show the backdrop.
+# Without the eyeballs the sockets are holes that show the backdrop.
 EYES = ("helper-r-eye", "helper-l-eye")
 FIT = Path(__file__).with_name("anthro_fit.json")
 
@@ -234,36 +234,36 @@ def main() -> None:
     remap[used] = np.arange(len(used))
     pos = neutral[used]
     tri = remap[shown]
-    canon = face.Canon(a.cache)
     centres = tuple(neutral[np.unique(e)].mean(0) for e in eyes)
-    uv = face.face_uv(pos, tri, centres, canon)
     lo_pos, lo_tri = fast_simplification.simplify(
         pos.astype(np.float32), tri.astype(np.int32), target_reduction=1 - TRIS / len(tri)
     )
     nearest = np.argmin(((lo_pos[:, None, :] - pos[None, :, :]) ** 2).sum(-1), axis=1)
     assert len(lo_pos) < 65536, "indices are u16"
-    lo_uv = uv[nearest]
-    on_face = (lo_uv[lo_tri][..., 0] != face.NO_UV).all(-1).sum()
-    print(f"{on_face} triangles carry the face")
+    skeleton = rig.Rig(fetch(a.cache, "rigs/default.mhskel"), fetch(a.cache, "rigs/default_weights.mhw"))
+    bone_idx, bone_w = skeleton.skin(len(verts))
 
     with a.out.open("wb") as f:
-        f.write(b"TWN2")
-        f.write(struct.pack("<III", len(lo_pos), len(lo_tri), len(deltas)))
+        f.write(b"TWN3")
+        f.write(struct.pack("<IIII", len(lo_pos), len(lo_tri), len(deltas), len(rig.KEPT)))
         f.write(lo_pos.astype("<f4").tobytes())
         f.write(lo_tri.astype("<u2").tobytes())
         for name, d in deltas.items():
             f.write(struct.pack("<B", len(name)) + name.encode())
             f.write(d[used][nearest].astype("<f4").tobytes())
-        f.write(lo_uv.astype("<f4").tobytes())
-        f.write(struct.pack("<II", len(canon.uv), len(canon.tri)))
-        f.write(canon.uv.astype("<f4").tobytes())
-        f.write(canon.tri.astype("<u2").tobytes())
-    print(f"{len(lo_pos)} verts, {len(lo_tri)} tris, {len(deltas)} morphs -> {a.out}")
+        for name, parent in zip(rig.KEPT, skeleton.parents()):
+            f.write(struct.pack("<B", len(name)) + name.encode() + struct.pack("<b", parent))
+            f.write(skeleton.pivot(name, neutral).astype("<f4").tobytes())
+            for d in deltas.values():
+                f.write(skeleton.pivot(name, d).astype("<f4").tobytes())
+        f.write(bone_idx[used][nearest].tobytes())
+        f.write(bone_w[used][nearest].astype("<f4").tobytes())
+    print(f"{len(lo_pos)} verts, {len(lo_tri)} tris, {len(deltas)} morphs, {len(rig.KEPT)} bones -> {a.out}")
     lo = lo_pos.astype(np.float64)
     hubs = organs.write(a.out.with_name("twin_organs.bin"), lo, centres, a.cache)
     joints = {g: neutral[v].mean(0) for g, v in load_joints(fetch(a.cache, "3dobjs/base.obj")).items()}
     skin = remap[faces]
-    anatomy.write(a.out.with_name("twin_systems.bin"), pos, face.vertex_normals(pos, skin), lo, joints, a.cache, hubs)
+    anatomy.write(a.out.with_name("twin_systems.bin"), pos, anatomy.vertex_normals(pos, skin), lo, joints, a.cache, hubs)
 
 
 if __name__ == "__main__":

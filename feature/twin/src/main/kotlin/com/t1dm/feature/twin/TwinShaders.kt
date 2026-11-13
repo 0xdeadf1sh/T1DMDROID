@@ -56,32 +56,14 @@ void main() {
 }
 """
 
-/** Idle pose over the morphed body; shared by all body-space shaders so organs follow it. */
-private const val IDLE_GLSL = """
-uniform vec3 uIdle; // breath 0..1, hip shift dm (+x), head turn rad
-uniform vec3 uFrame; // floor y, head bottom y, stature; dm
-vec3 idle(vec3 p) {
-    float h = (p.y - uFrame.x) / uFrame.z;
-    float chest = smoothstep(0.6, 0.68, h) * (1.0 - smoothstep(0.76, 0.82, h))
-        * (1.0 - smoothstep(1.1, 1.7, abs(p.x)));
-    p.z *= 1.0 + uIdle.x * 0.07 * chest;
-    p.y += uIdle.x * 0.04 * smoothstep(0.68, 0.8, h);
-    float a = uIdle.z * smoothstep(uFrame.y - 0.3, uFrame.y + 0.2, p.y);
-    p.xz = mat2(cos(a), -sin(a), sin(a), cos(a)) * p.xz;
-    p.x += uIdle.y * exp(-pow((h - 0.5) / 0.3, 2.0));
-    return p;
-}
-"""
-
 internal const val BODY_VS = """#version 300 es
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aBary;
 uniform mat4 uMvp;
 out vec3 vW;
 out vec3 vB;
-$IDLE_GLSL
 void main() {
-    vW = idle(aPos);
+    vW = aPos;
     vB = aBary;
     gl_Position = uMvp * vec4(vW, 1.0);
 }
@@ -128,16 +110,16 @@ layout(location = 1) in vec3 aBary;
 layout(location = 2) in vec4 aMotion;
 uniform mat4 uMvp;
 uniform vec3 uCentre;
+uniform mat3 uRot;
 uniform float uScale;
 uniform float uAtria;
 uniform float uVentricles;
 out vec3 vW;
 out vec3 vB;
-$IDLE_GLSL
 void main() {
     // Each chamber squeezes toward its own centre: atria first, then the ventricles.
     float squeeze = aMotion.w < 0.5 ? uAtria * 0.14 : (aMotion.w < 1.5 ? uVentricles * 0.12 : 0.0);
-    vW = idle(uCentre + mix(aPos, aMotion.xyz, squeeze) * uScale);
+    vW = uCentre + uRot * (mix(aPos, aMotion.xyz, squeeze) * uScale);
     vB = aBary;
     gl_Position = uMvp * vec4(vW, 1.0);
 }
@@ -169,9 +151,8 @@ uniform mat4 uMvp;
 out vec3 vW;
 out float vD;
 out float vC;
-$IDLE_GLSL
 void main() {
-    vW = idle(aPos);
+    vW = aPos;
     vD = aAttr.x;
     vC = aAttr.y;
     gl_Position = uMvp * vec4(vW, 1.0);
@@ -223,12 +204,12 @@ layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec4 aDist;
 uniform mat4 uMvp;
 uniform vec3 uCentre;
+uniform mat3 uRot;
 uniform float uScale;
 out vec4 vDist;
-$IDLE_GLSL
 void main() {
     vDist = aDist;
-    gl_Position = uMvp * vec4(idle(uCentre + aPos * uScale), 1.0);
+    gl_Position = uMvp * vec4(uCentre + uRot * (aPos * uScale), 1.0);
 }
 """
 

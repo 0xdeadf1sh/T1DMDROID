@@ -9,8 +9,32 @@ class TwinBody(
     val indices: ShortArray,
     val morphNames: List<String>,
     val morphs: List<FloatArray>,
+    val boneNames: List<String>,
+    /** -1 for the root; a parent always precedes its children. */
+    val boneParents: IntArray,
+    /** Rest pivot xyz per bone, and its per-morph delta in [morphNames] order. */
+    val bonePivots: FloatArray,
+    val bonePivotMorphs: List<FloatArray>,
+    /** Four bone indices and four weights (summing to 1) per vertex. */
+    val skinBones: ByteArray,
+    val skinWeights: FloatArray,
 ) {
     val vertexCount: Int get() = neutral.size / 3
+    val boneCount: Int get() = boneNames.size
+
+    /** Bone pivots for [weights]; writes xyz per bone into [out]. */
+    fun pivots(weights: FloatArray, out: FloatArray = FloatArray(bonePivots.size)): FloatArray {
+        bonePivots.copyInto(out)
+        for (m in bonePivotMorphs.indices) {
+            val w = weights[m]
+            if (w == 0f) continue
+            val d = bonePivotMorphs[m]
+            for (i in out.indices) out[i] += w * d[i]
+        }
+        return out
+    }
+
+    fun boneIndex(name: String): Int = boneNames.indexOf(name)
 
     /** [weights] in [morphNames] order; writes into [out], sized like [neutral]. */
     fun blend(weights: FloatArray, out: FloatArray = FloatArray(neutral.size)): FloatArray {
@@ -42,25 +66,36 @@ class TwinBody(
         fun parse(bytes: ByteArray): TwinBody {
             val b = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
             val magic = ByteArray(4).also { b.get(it) }
-            require(magic.contentEquals("TWN2".toByteArray())) { "not a twin body" }
+            require(magic.contentEquals("TWN3".toByteArray())) { "not a twin body" }
             val nv = b.int
             val nt = b.int
             val nm = b.int
+            val nb = b.int
             val neutral = b.floats(nv * 3)
             val indices = b.shorts(nt * 3)
             val names = ArrayList<String>(nm)
             val morphs = ArrayList<FloatArray>(nm)
             repeat(nm) {
-                names += String(ByteArray(b.get().toInt() and 0xFF).also { b.get(it) })
+                names += b.name()
                 morphs += b.floats(nv * 3)
             }
-            b.position(b.position() + nv * 2 * 4)
-            val ncv = b.int
-            val nct = b.int
-            b.position(b.position() + ncv * 2 * 4 + nct * 3 * 2)
+            val boneNames = ArrayList<String>(nb)
+            val parents = IntArray(nb)
+            val pivots = FloatArray(nb * 3)
+            val pivotMorphs = List(nm) { FloatArray(nb * 3) }
+            for (i in 0 until nb) {
+                boneNames += b.name()
+                parents[i] = b.get().toInt()
+                for (k in 0 until 3) pivots[i * 3 + k] = b.float
+                for (m in 0 until nm) for (k in 0 until 3) pivotMorphs[m][i * 3 + k] = b.float
+            }
+            val skinBones = ByteArray(nv * 4).also { b.get(it) }
+            val skinWeights = b.floats(nv * 4)
             require(!b.hasRemaining()) { "trailing bytes in twin body" }
-            return TwinBody(neutral, indices, names, morphs)
+            return TwinBody(neutral, indices, names, morphs, boneNames, parents, pivots, pivotMorphs, skinBones, skinWeights)
         }
+
+        private fun ByteBuffer.name(): String = String(ByteArray(get().toInt() and 0xFF).also { get(it) })
 
         private fun ByteBuffer.floats(n: Int): FloatArray =
             FloatArray(n).also { asFloatBuffer().get(it); position(position() + n * 4) }

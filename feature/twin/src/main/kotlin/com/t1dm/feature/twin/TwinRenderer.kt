@@ -45,6 +45,14 @@ internal class TwinRenderer(
     private val tris = body.indices.size / 3
     private val current = FloatArray(body.morphNames.size)
     private val blended = FloatArray(body.neutral.size)
+    private val posed = FloatArray(body.neutral.size)
+    private val pivots = FloatArray(body.boneCount * 3)
+    private val skin = TwinSkin(body)
+    private val idle = TwinIdle(body)
+    private val chestBone = body.boneIndex("spine03")
+    private val headBone = body.boneIndex("head")
+    private val restCentre = FloatArray(3)
+    private val organRot = FloatArray(9)
     private val expanded = FloatArray(tris * 9)
     private val posBuf: FloatBuffer = floatBuffer(tris * 9)
     private var minY = 0f
@@ -90,11 +98,6 @@ internal class TwinRenderer(
     private val shifted = FloatArray(16)
     private val shiftedProj = FloatArray(16)
     private var revealStart = 0f
-    private val idle = FloatArray(3)
-    private var swayGoal = 0f
-    private var lookGoal = 0f
-    private var nextIdleS = 0f
-    private val rng = java.util.Random()
 
     fun setTarget(weights: FloatArray, assemble: Boolean) {
         target = weights.copyOf()
@@ -174,7 +177,8 @@ internal class TwinRenderer(
         val bodyH = maxY - minY
         val z = zoom
         val toFace = ((1f - z) / (1f - MIN_ZOOM)).coerceIn(0f, 1f)
-        stepIdle(t, dt, still, idleNow, toFace)
+        idle.step(t, dt, still, idleNow, toFace)
+        poseBody()
         // A fixed frame, not the body's own height, so a height change reads as one.
         val mid = minY + FRAME_H / 2f
         val cy = mid + (maxY - bodyH * EYE_FROM_TOP - mid) * toFace
@@ -214,7 +218,6 @@ internal class TwinRenderer(
         glDisable(GL_BLEND)
         glUseProgram(bodyProg)
         glUniformMatrix4fv(loc(bodyProg, "uMvp"), 1, false, mvp, 0)
-        idleUniforms(bodyProg, headY, bodyH)
         glUniform3f(loc(bodyProg, "uEye"), ex, ey, ez)
         glUniform1f(loc(bodyProg, "uT"), t)
         glUniform1f(loc(bodyProg, "uReveal"), reveal)
@@ -231,8 +234,8 @@ internal class TwinRenderer(
         glBlendFunc(GL_ONE, GL_ONE)
         glDepthMask(false)
         if (reveal > maxY) {
-            drawOrgans(t, c, inside, ex, ey, ez, headY, bodyH)
-            drawSystems(t, c, inside, ex, ey, ez, headY, bodyH)
+            drawOrgans(t, c, inside, ex, ey, ez)
+            drawSystems(t, c, inside, ex, ey, ez)
         }
         glEnable(GL_DEPTH_TEST)
 
@@ -253,20 +256,16 @@ internal class TwinRenderer(
     }
 
     /** Heart beating at [BPM] under the chest; the brain and its sparks as [inside] rises. */
-    private fun drawOrgans(
-        t: Float, c: TwinColors, inside: Float, ex: Float, ey: Float, ez: Float, headY: Float, bodyH: Float,
-    ) {
+    private fun drawOrgans(t: Float, c: TwinColors, inside: Float, ex: Float, ey: Float, ez: Float) {
         glUseProgram(organProg)
         glUniformMatrix4fv(loc(organProg, "uMvp"), 1, false, mvp, 0)
-        idleUniforms(organProg, headY, bodyH)
         glUniform3f(loc(organProg, "uEye"), ex, ey, ez)
         heart?.let { h ->
             // One cycle per beat: atrial kick, then ventricular systole (≈0.15–0.5 of the cycle).
             val phase = (t * BPM / 60f) % 1f
             val atria = exp(-((phase - 0.06f) / 0.045f).let { it * it })
             val ventricles = smoothstep(0.14f, 0.24f, phase) * (1f - smoothstep(0.36f, 0.5f, phase))
-            h.centre(blended, centre)
-            glUniform3fv(loc(organProg, "uCentre"), 1, centre, 0)
+            organFrame(organProg, h, chestBone)
             glUniform1f(loc(organProg, "uScale"), 1f)
             glUniform1f(loc(organProg, "uAtria"), atria)
             glUniform1f(loc(organProg, "uVentricles"), ventricles)
@@ -277,8 +276,7 @@ internal class TwinRenderer(
         }
         val b = brain ?: return
         if (inside <= 0f) return
-        b.centre(blended, centre)
-        glUniform3fv(loc(organProg, "uCentre"), 1, centre, 0)
+        organFrame(organProg, b, headBone)
         glUniform1f(loc(organProg, "uScale"), 1f)
         glUniform1f(loc(organProg, "uAtria"), 0f)
         glUniform1f(loc(organProg, "uVentricles"), 0f)
@@ -288,8 +286,8 @@ internal class TwinRenderer(
         glDrawArrays(GL_TRIANGLES, 0, b.tris.size)
         glUseProgram(sparkProg)
         glUniformMatrix4fv(loc(sparkProg, "uMvp"), 1, false, mvp, 0)
-        idleUniforms(sparkProg, headY, bodyH)
         glUniform3fv(loc(sparkProg, "uCentre"), 1, centre, 0)
+        glUniformMatrix3fv(loc(sparkProg, "uRot"), 1, false, organRot, 0)
         glUniform1f(loc(sparkProg, "uScale"), 1f)
         glUniform1f(loc(sparkProg, "uT"), t)
         glUniform3fv(loc(sparkProg, "uColor"), 1, c.secondary, 0)
@@ -299,14 +297,13 @@ internal class TwinRenderer(
     }
 
     /** Vessels always; the cord and nerves only as [inside] brings the brain in. */
-    private fun drawSystems(
-        t: Float, c: TwinColors, inside: Float, ex: Float, ey: Float, ez: Float, headY: Float, bodyH: Float,
-    ) {
+    private fun drawSystems(t: Float, c: TwinColors, inside: Float, ex: Float, ey: Float, ez: Float) {
         if (systems.isEmpty()) return
         if (systemsDirty) {
             systemsDirty = false
             systems.forEachIndexed { i, s ->
-                s.positions(blended, systemPos[i])
+                if (s.name != "vessels" && inside <= 0f) return@forEachIndexed
+                s.positions(posed, systemPos[i])
                 systemBuf[i].clear()
                 systemBuf[i].put(systemPos[i]).flip()
                 glBindBuffer(GL_ARRAY_BUFFER, systemVbo[i])
@@ -316,7 +313,6 @@ internal class TwinRenderer(
         val phase = (t * BPM / 60f) % 1f
         glUseProgram(systemProg)
         glUniformMatrix4fv(loc(systemProg, "uMvp"), 1, false, mvp, 0)
-        idleUniforms(systemProg, headY, bodyH)
         glUniform3f(loc(systemProg, "uEye"), ex, ey, ez)
         glUniform1f(loc(systemProg, "uT"), t)
         glUniform1f(loc(systemProg, "uBeat"), ((phase - SYSTOLE + 1f) % 1f) * 60f / BPM)
@@ -398,37 +394,31 @@ internal class TwinRenderer(
         glVertexAttribPointer(index, size, GL_FLOAT, false, 0, 0)
     }
 
-    /** Breath always; once idle, a random hip shift or head turn every 3-7 s. */
-    private fun stepIdle(t: Float, dt: Float, still: Boolean, idleNow: Boolean, toFace: Float) {
-        if (still) {
-            idle.fill(0f)
-            return
+    /** Skins the morphed body into the idle pose and streams it; the vessels follow it. */
+    private fun poseBody() {
+        skin.pose(pivots, idle.rot, idle.shift)
+        skin.apply(blended, posed)
+        val idx = body.indices
+        for (n in idx.indices) {
+            val v = (idx[n].toInt() and 0xFFFF) * 3
+            expanded[n * 3] = posed[v]
+            expanded[n * 3 + 1] = posed[v + 1]
+            expanded[n * 3 + 2] = posed[v + 2]
         }
-        if (!idleNow) {
-            swayGoal = 0f
-            lookGoal = 0f
-            nextIdleS = t + 1f
-        } else if (t >= nextIdleS) {
-            val side = if (rng.nextBoolean()) 1f else -1f
-            when (rng.nextInt(3)) {
-                0 -> swayGoal = side * SWAY_DM
-                1 -> lookGoal = side * LOOK_RAD * (0.5f + 0.5f * rng.nextFloat())
-                else -> {
-                    swayGoal = 0f
-                    lookGoal = 0f
-                }
-            }
-            nextIdleS = t + 3f + rng.nextFloat() * 4f
-        }
-        val a = 1f - exp(-dt * IDLE_RATE)
-        idle[0] = 0.5f - 0.5f * cos(t * 2f * Math.PI.toFloat() / BREATH_S)
-        idle[1] += (swayGoal - idle[1]) * a
-        idle[2] += (lookGoal * (1f - toFace) - idle[2]) * a
+        posBuf.clear()
+        posBuf.put(expanded).flip()
+        glBindBuffer(GL_ARRAY_BUFFER, posVbo)
+        glBufferSubData(GL_ARRAY_BUFFER, 0, expanded.size * 4, posBuf)
+        systemsDirty = true
     }
 
-    private fun idleUniforms(prog: Int, headY: Float, bodyH: Float) {
-        glUniform3fv(loc(prog, "uIdle"), 1, idle, 0)
-        glUniform3f(loc(prog, "uFrame"), minY, headY, bodyH)
+    /** An organ rides [bone]: its anchored centre and its turn go to the organ shader. */
+    private fun organFrame(prog: Int, organ: TwinOrgan, bone: Int) {
+        organ.centre(blended, restCentre)
+        skin.transform(bone, restCentre, 0, centre, 0)
+        skin.rotationColumnMajor(bone, organRot)
+        glUniform3fv(loc(prog, "uCentre"), 1, centre, 0)
+        glUniformMatrix3fv(loc(prog, "uRot"), 1, false, organRot, 0)
     }
 
     private fun smoothstep(a: Float, b: Float, x: Float): Float {
@@ -436,7 +426,7 @@ internal class TwinRenderer(
         return k * k * (3f - 2f * k)
     }
 
-    /** Eases [current] toward [target]; re-blends and re-uploads only while it moves. */
+    /** Eases [current] toward [target]; re-blends only while it moves. */
     private fun stepMorph(dt: Float) {
         val goal = target
         val a = 1f - exp(-dt * MORPH_RATE)
@@ -452,25 +442,16 @@ internal class TwinRenderer(
         if (!dirty) return
         dirty = false
         body.blend(current, blended)
-        systemsDirty = true
+        body.pivots(current, pivots)
         var lo = Float.MAX_VALUE
         var hi = -Float.MAX_VALUE
-        val idx = body.indices
-        for (n in idx.indices) {
-            val v = (idx[n].toInt() and 0xFFFF) * 3
-            val y = blended[v + 1]
-            expanded[n * 3] = blended[v]
-            expanded[n * 3 + 1] = y
-            expanded[n * 3 + 2] = blended[v + 2]
+        for (i in 1 until blended.size step 3) {
+            val y = blended[i]
             if (y < lo) lo = y
             if (y > hi) hi = y
         }
         minY = lo
         maxY = hi
-        posBuf.clear()
-        posBuf.put(expanded).flip()
-        glBindBuffer(GL_ARRAY_BUFFER, posVbo)
-        glBufferSubData(GL_ARRAY_BUFFER, 0, expanded.size * 4, posBuf)
     }
 
     private val uniformCache = HashMap<Long, Int>()
@@ -509,10 +490,6 @@ internal class TwinRenderer(
         const val BRAIN_START_ZOOM = 0.27f
         const val BRAIN_FULL_ZOOM = 0.18f
         const val IDLE_NS = 2_500_000_000L
-        const val BREATH_S = 4.5f
-        const val SWAY_DM = 0.25f
-        const val LOOK_RAD = 0.45f
-        const val IDLE_RATE = 1.2f
         val BARY = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
 
         fun floatBuffer(n: Int): FloatBuffer =

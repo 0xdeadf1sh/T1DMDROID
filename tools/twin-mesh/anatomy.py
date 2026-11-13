@@ -109,6 +109,14 @@ class Skeleton:
         return out
 
 
+def vertex_normals(pos: np.ndarray, tri: np.ndarray) -> np.ndarray:
+    n = np.zeros_like(pos)
+    fn = np.cross(pos[tri[:, 1]] - pos[tri[:, 0]], pos[tri[:, 2]] - pos[tri[:, 0]])
+    for k in range(3):
+        np.add.at(n, tri[:, k], fn)
+    return n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
+
+
 def _unit(v):
     return v / np.linalg.norm(v)
 

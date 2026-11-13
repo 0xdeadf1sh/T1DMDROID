@@ -28,6 +28,55 @@ class TwinBodyTest {
         assertTrue(body.indices.all { (it.toInt() and 0xFFFF) < body.vertexCount })
     }
 
+    @Test fun `every vertex is skinned by weights summing to one, on bones that exist`() {
+        for (v in 0 until body.vertexCount) {
+            val sum = (0 until 4).sumOf { body.skinWeights[v * 4 + it].toDouble() }
+            assertEquals("vertex $v", 1.0, sum, 1e-4)
+            for (i in 0 until 4) assertTrue((body.skinBones[v * 4 + i].toInt() and 0xFF) < body.boneCount)
+        }
+        assertTrue(body.boneParents.withIndex().all { (i, p) -> p < i })
+    }
+
+    @Test fun `left bones sit on the body's left, at +x`() {
+        val p = body.pivots(FloatArray(body.morphNames.size))
+        for (name in listOf("clavicle", "upperarm01", "upperleg01", "foot")) {
+            val l = body.boneIndex("$name.L")
+            val r = body.boneIndex("$name.R")
+            assertTrue("$name: L x ${p[l * 3]}, R x ${p[r * 3]}", p[l * 3] > 0f && p[r * 3] < 0f)
+        }
+        assertTrue(p[body.boneIndex("head") * 3 + 1] > p[body.boneIndex("spine01") * 3 + 1])
+    }
+
+    @Test fun `the rest pose skins to the body unchanged`() {
+        val rest = body.blend(FloatArray(body.morphNames.size))
+        val skin = TwinSkin(body)
+        skin.pose(body.pivots(FloatArray(body.morphNames.size)), FloatArray(body.boneCount * 3), FloatArray(3))
+        val out = FloatArray(rest.size)
+        skin.apply(rest, out)
+        assertArrayEquals(rest, out, 1e-4f)
+    }
+
+    @Test fun `a head turn moves the head and leaves the feet`() {
+        val w = FloatArray(body.morphNames.size)
+        val rest = body.blend(w)
+        val rot = FloatArray(body.boneCount * 3).also { it[body.boneIndex("neck01") * 3 + 1] = 0.5f }
+        val skin = TwinSkin(body)
+        skin.pose(body.pivots(w), rot, FloatArray(3))
+        val out = FloatArray(rest.size)
+        skin.apply(rest, out)
+        val headY = body.pivots(w)[body.boneIndex("head") * 3 + 1]
+        val nose = (0 until body.vertexCount).filter { rest[it * 3 + 1] > headY }.maxBy { rest[it * 3 + 2] } * 3
+        val sole = (0 until body.vertexCount).minBy { rest[it * 3 + 1] } * 3
+        assertTrue("nose moved ${out[nose] - rest[nose]} dm", kotlin.math.abs(out[nose] - rest[nose]) > 0.2f)
+        assertEquals(rest[sole], out[sole], 1e-5f)
+    }
+
+    @Test fun `every idle clip names bones the asset has`() {
+        val idle = TwinIdle(body)
+        idle.step(t = 1f, dt = 0.016f, still = false, idleNow = true, toFace = 0f)
+        assertTrue(idle.rot.any { it != 0f })
+    }
+
     @Test fun `zero weights blend to the neutral body`() {
         assertArrayEquals(body.neutral, body.blend(FloatArray(body.morphNames.size)), 0f)
     }
