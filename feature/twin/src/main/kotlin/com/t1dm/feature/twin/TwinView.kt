@@ -107,11 +107,18 @@ private fun Color.rgb() = floatArrayOf(red, green, blue)
 internal fun loadBody(context: Context): TwinBody =
     cachedBody ?: TwinBody.parse(context.assets.open("twin_body.bin").use { it.readBytes() }).also { cachedBody = it }
 
+@Volatile private var cachedOrgans: Map<String, TwinOrgan>? = null
+
+/** Empty if the asset is missing or bad: the twin still draws, without organs. */
+private fun loadOrgans(context: Context): Map<String, TwinOrgan> = cachedOrgans ?: runCatching {
+    TwinOrgan.parse(context.assets.open("twin_organs.bin").use { it.readBytes() })
+}.onFailure { Log.e("TwinView", "organs", it) }.getOrDefault(emptyMap()).also { cachedOrgans = it }
+
 /** TextureView, not SurfaceView: it composites in-window, so Compose draws over and under it. */
 @SuppressLint("ViewConstructor", "ClickableViewAccessibility")
 internal class TwinTextureView(context: Context, body: TwinBody) : TextureView(context),
     TextureView.SurfaceTextureListener {
-    val renderer = TwinRenderer(body)
+    val renderer = TwinRenderer(body, loadOrgans(context))
     var animate = true
     var onOrbit: (Float) -> Unit = {}
     var onZoom: (Float) -> Unit = {}

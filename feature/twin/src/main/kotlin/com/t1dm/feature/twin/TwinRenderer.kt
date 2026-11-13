@@ -21,7 +21,10 @@ import kotlin.math.tan
 internal class TwinColors(val bg: FloatArray, val primary: FloatArray, val secondary: FloatArray)
 
 /** GL-thread only, except the @Volatile inputs the view writes. */
-internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer {
+internal class TwinRenderer(
+    private val body: TwinBody,
+    private val organs: Map<String, TwinOrgan>,
+) : GLSurfaceView.Renderer {
     @Volatile var colors = TwinColors(floatArrayOf(0f, 0f, 0f), floatArrayOf(0f, 1f, 1f), floatArrayOf(1f, 0f, 1f))
     /** Gesture goals; the camera eases toward them each frame. */
     @Volatile var yawTarget = 0f
@@ -51,6 +54,15 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
     private var emptyVao = 0
     private var bodyVao = 0
     private var posVbo = 0
+    private var organProg = 0
+    private var sparkProg = 0
+    private val heart = organs["heart"]
+    private val brain = organs["brain"]
+    private var heartVao = 0
+    private var brainVao = 0
+    private var sparkVao = 0
+    private var sparkVerts = 0
+    private val centre = FloatArray(3)
 
     private val proj = FloatArray(16)
     private val view = FloatArray(16)
@@ -110,6 +122,11 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
             glEnableVertexAttribArray(2)
             glVertexAttribPointer(2, 2, GL_FLOAT, false, 0, 0)
             glBindVertexArray(0)
+            organProg = program(ORGAN_VS, ORGAN_FS)
+            sparkProg = program(SPARK_VS, SPARK_FS)
+            heartVao = heart?.let(::organVao) ?: 0
+            brainVao = brain?.let(::organVao) ?: 0
+            sparkVao = brain?.let(::sparkVao) ?: 0
             faceTex = 0
             faceDirty = true
             dirty = true
@@ -195,8 +212,18 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
         glUniform1f(loc(bodyProg, "uReveal"), reveal)
         glUniform3fv(loc(bodyProg, "uC1"), 1, c.primary, 0)
         glUniform3fv(loc(bodyProg, "uC2"), 1, c.secondary, 0)
+        val inside = smoothstep(BRAIN_FROM, BRAIN_TO, toFace)
+        glUniform1f(loc(bodyProg, "uHeadY"), maxY - bodyH * HEAD_FRAC)
+        glUniform1f(loc(bodyProg, "uHeadFade"), inside)
         glBindVertexArray(bodyVao)
         glDrawArrays(GL_TRIANGLES, 0, tris * 3)
+
+        glDisable(GL_DEPTH_TEST)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_ONE, GL_ONE)
+        glDepthMask(false)
+        if (reveal > maxY) drawOrgans(t, c, inside, ex, ey, ez)
+        glEnable(GL_DEPTH_TEST)
 
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE)
@@ -212,6 +239,92 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
         glDrawArrays(GL_POINTS, 0, PARTICLES)
         glDepthMask(true)
         glBindVertexArray(0)
+    }
+
+    /** Heart beating at [BPM] under the chest; the brain and its sparks as [inside] rises. */
+    private fun drawOrgans(t: Float, c: TwinColors, inside: Float, ex: Float, ey: Float, ez: Float) {
+        glUseProgram(organProg)
+        glUniformMatrix4fv(loc(organProg, "uMvp"), 1, false, mvp, 0)
+        glUniform3f(loc(organProg, "uEye"), ex, ey, ez)
+        heart?.let { h ->
+            val phase = (t * BPM / 60f) % 1f
+            val lub = exp(-((phase - 0.08f) / 0.05f).let { it * it })
+            val dub = exp(-((phase - 0.3f) / 0.05f).let { it * it })
+            h.centre(blended, centre)
+            glUniform3fv(loc(organProg, "uCentre"), 1, centre, 0)
+            glUniform1f(loc(organProg, "uScale"), 1f + 0.07f * lub + 0.045f * dub)
+            glUniform3fv(loc(organProg, "uColor"), 1, c.secondary, 0)
+            glUniform1f(loc(organProg, "uGain"), 0.55f + 0.9f * (lub + 0.6f * dub))
+            glBindVertexArray(heartVao)
+            glDrawArrays(GL_TRIANGLES, 0, h.tris.size)
+        }
+        val b = brain ?: return
+        if (inside <= 0f) return
+        b.centre(blended, centre)
+        glUniform3fv(loc(organProg, "uCentre"), 1, centre, 0)
+        glUniform1f(loc(organProg, "uScale"), 1f)
+        glUniform3fv(loc(organProg, "uColor"), 1, c.primary, 0)
+        glUniform1f(loc(organProg, "uGain"), 0.35f * inside)
+        glBindVertexArray(brainVao)
+        glDrawArrays(GL_TRIANGLES, 0, b.tris.size)
+        glUseProgram(sparkProg)
+        glUniformMatrix4fv(loc(sparkProg, "uMvp"), 1, false, mvp, 0)
+        glUniform3fv(loc(sparkProg, "uCentre"), 1, centre, 0)
+        glUniform1f(loc(sparkProg, "uScale"), 1f)
+        glUniform1f(loc(sparkProg, "uT"), t)
+        glUniform3fv(loc(sparkProg, "uColor"), 1, c.secondary, 0)
+        glUniform1f(loc(sparkProg, "uGain"), inside)
+        glBindVertexArray(sparkVao)
+        glDrawArrays(GL_LINES, 0, sparkVerts)
+    }
+
+    /** Expanded triangles with barycentrics, for the wire edges. */
+    private fun organVao(o: TwinOrgan): Int {
+        val vao = genVao()
+        glBindVertexArray(vao)
+        val n = o.tris.size
+        val pos = floatBuffer(n * 3)
+        val bary = floatBuffer(n * 3)
+        for (i in 0 until n) {
+            val v = (o.tris[i].toInt() and 0xFFFF) * 3
+            pos.put(o.pos, v, 3)
+            bary.put(BARY, (i % 3) * 3, 3)
+        }
+        attribute(0, 3, pos.apply { flip() })
+        attribute(1, 3, bary.apply { flip() })
+        glBindVertexArray(0)
+        return vao
+    }
+
+    /** One line per mesh edge, each end carrying its distances from the spark seeds. */
+    private fun sparkVao(o: TwinOrgan): Int {
+        val edges = o.edges()
+        val dist = o.seedDistances(edges)
+        val pos = floatBuffer(edges.size * 3)
+        val d = floatBuffer(edges.size * TwinOrgan.SEEDS)
+        for (v in edges) {
+            pos.put(o.pos, v * 3, 3)
+            d.put(dist, v * TwinOrgan.SEEDS, TwinOrgan.SEEDS)
+        }
+        val vao = genVao()
+        glBindVertexArray(vao)
+        attribute(0, 3, pos.apply { flip() })
+        attribute(1, TwinOrgan.SEEDS, d.apply { flip() })
+        glBindVertexArray(0)
+        sparkVerts = edges.size
+        return vao
+    }
+
+    private fun attribute(index: Int, size: Int, data: FloatBuffer) {
+        glBindBuffer(GL_ARRAY_BUFFER, genBuffer())
+        glBufferData(GL_ARRAY_BUFFER, data.remaining() * 4, data, GL_STATIC_DRAW)
+        glEnableVertexAttribArray(index)
+        glVertexAttribPointer(index, size, GL_FLOAT, false, 0, 0)
+    }
+
+    private fun smoothstep(a: Float, b: Float, x: Float): Float {
+        val k = ((x - a) / (b - a)).coerceIn(0f, 1f)
+        return k * k * (3f - 2f * k)
     }
 
     /** Per expanded vertex; a triangle touching any off-face vertex is off the face whole. */
@@ -307,6 +420,14 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
         const val SPIN_RAD_S = 0.3f
         const val MORPH_RATE = 3f
         const val PARTICLES = 220
+        const val BPM = 60f
+
+        /** Head bottom as a share of stature below the crown; the head fades above it. */
+        const val HEAD_FRAC = 0.14f
+
+        /** Zoom-to-face progress over which the head thins and the brain appears. */
+        const val BRAIN_FROM = 0.45f
+        const val BRAIN_TO = 0.9f
         const val IDLE_NS = 2_500_000_000L
         val BARY = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
 

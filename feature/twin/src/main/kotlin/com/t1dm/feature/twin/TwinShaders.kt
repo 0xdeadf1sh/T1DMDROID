@@ -84,7 +84,10 @@ uniform vec3 uC1;
 uniform vec3 uC2;
 uniform sampler2D uFace;
 uniform float uFaceOn;
+uniform float uHeadY;
+uniform float uHeadFade;
 out vec4 o;
+const float BAYER[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
 void main() {
     if (vW.y > uReveal) discard;
     vec3 n = normalize(cross(dFdx(vW), dFdy(vW)));
@@ -102,8 +105,80 @@ void main() {
     float lum = dot(f.rgb, vec3(0.299, 0.587, 0.114)) / max(f.a, 1e-3);
     vec3 tint = uC1 * (0.08 + 1.1 * lum * lum) * (0.7 + 0.3 * diff);
     c = mix(c, tint + uC1 * edge * 0.35, f.a * 0.85);
+    // Zoomed to the face the head thins to its wireframe: screen-door, so depth stays opaque.
+    float hf = smoothstep(uHeadY - 0.2, uHeadY + 0.3, vW.y) * uHeadFade;
+    ivec2 q = ivec2(gl_FragCoord.xy) & 3;
+    if (hf * (1.0 - edge) > (BAYER[q.y * 4 + q.x] + 0.5) / 16.0) discard;
+    c *= 1.0 - 0.55 * hf;
     c += vec3(1.0) * cut * 0.7;
     o = vec4(c * flick, 1.0);
+}
+"""
+
+internal const val ORGAN_VS = """#version 300 es
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aBary;
+uniform mat4 uMvp;
+uniform vec3 uCentre;
+uniform float uScale;
+out vec3 vW;
+out vec3 vB;
+void main() {
+    vW = uCentre + aPos * uScale;
+    vB = aBary;
+    gl_Position = uMvp * vec4(vW, 1.0);
+}
+"""
+
+/** Additive x-ray: drawn over the body with no depth test, so it shows through the skin. */
+internal const val ORGAN_FS = """#version 300 es
+precision highp float;
+in vec3 vW;
+in vec3 vB;
+uniform vec3 uEye;
+uniform vec3 uColor;
+uniform float uGain;
+out vec4 o;
+void main() {
+    vec3 n = normalize(cross(dFdx(vW), dFdy(vW)));
+    vec3 v = normalize(uEye - vW);
+    float rim = pow(1.0 - abs(dot(n, v)), 2.0);
+    float w = min(min(vB.x, vB.y), vB.z);
+    float edge = 1.0 - smoothstep(0.0, fwidth(w) * 1.2, w);
+    o = vec4(uColor * (0.05 + rim * 0.5 + edge * 0.35) * uGain, 1.0);
+}
+"""
+
+internal const val SPARK_VS = """#version 300 es
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec4 aDist;
+uniform mat4 uMvp;
+uniform vec3 uCentre;
+uniform float uScale;
+out vec4 vDist;
+void main() {
+    vDist = aDist;
+    gl_Position = uMvp * vec4(uCentre + aPos * uScale, 1.0);
+}
+"""
+
+/** Each seed fires in turn; its front runs outward along the edges and fades as it spreads. */
+internal const val SPARK_FS = """#version 300 es
+precision highp float;
+in vec4 vDist;
+uniform float uT;
+uniform vec3 uColor;
+uniform float uGain;
+out vec4 o;
+void main() {
+    float i = 0.06;
+    for (int k = 0; k < 4; k++) {
+        float age = mod(uT + float(k) * 0.37, 1.5);
+        float front = age * 1.4;
+        float d = vDist[k] - front;
+        i += exp(-d * d * 900.0) * (1.0 - age / 1.5) * 1.6;
+    }
+    o = vec4(uColor * i * uGain, 1.0);
 }
 """
 
