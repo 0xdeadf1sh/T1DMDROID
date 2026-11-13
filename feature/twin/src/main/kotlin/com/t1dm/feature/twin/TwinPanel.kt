@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -46,12 +45,7 @@ import com.t1dm.core.model.TwinScan
 import com.t1dm.core.model.TwinTrait
 import java.util.Locale
 
-internal enum class Callout(val label: String, val trait: TwinTrait) {
-    HEIGHT("HEIGHT", TwinTrait.HEIGHT),
-    AGE("AGE", TwinTrait.AGE),
-    SEX("SEX", TwinTrait.SEX),
-    WEIGHT("WEIGHT", TwinTrait.WEIGHT),
-}
+private val PANEL_TRAITS = listOf(TwinTrait.HEIGHT, TwinTrait.AGE, TwinTrait.SEX, TwinTrait.WEIGHT)
 
 internal class PanelAction(
     val action: TwinAction,
@@ -125,26 +119,17 @@ private fun TraitRows(scan: TwinScan) {
     val shownAt = remember(scan.id) { System.nanoTime() }
     SideEffect { lastScan = scan }
     val cs = MaterialTheme.colorScheme
-    val nameStyle = MaterialTheme.typography.labelSmall.copy(color = cs.onSurfaceVariant)
     val valueStyle = MaterialTheme.typography.labelLarge.copy(color = cs.primary)
 
     frame.longValue
     val t = (System.nanoTime() - shownAt) / 1e9f
-    Callout.entries.forEachIndexed { i, c ->
+    PANEL_TRAITS.forEachIndexed { i, trait ->
         val p = if (animate) ((t - 1.0f - i * 0.12f) / 0.6f).coerceIn(0f, 1f) else 1f
         val e = 1f - (1f - p) * (1f - p)
-        Row(
-            Modifier.fillMaxWidth().padding(vertical = 2.dp).alpha(e),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(c.label, style = nameStyle)
-            Spacer(Modifier.width(12.dp))
-            // The settled value sizes the slot, so the panel never resizes while a value counts up.
-            Box(contentAlignment = Alignment.CenterEnd) {
-                Text(valueText(c, scan, from, 1f), style = valueStyle, modifier = Modifier.alpha(0f))
-                Text(valueText(c, scan, from, e), style = valueStyle)
-            }
+        // The settled value sizes the slot, so the panel never resizes while a value counts up.
+        Box(Modifier.fillMaxWidth().padding(vertical = 2.dp).alpha(e), contentAlignment = Alignment.CenterEnd) {
+            Text(valueText(trait, scan, from, 1f), style = valueStyle, modifier = Modifier.alpha(0f))
+            Text(valueText(trait, scan, from, e), style = valueStyle)
         }
     }
 }
@@ -184,13 +169,10 @@ private const val PANEL_CENTRE_Y = 0.42f
 private val PANEL_MIN_TOP = 48.dp
 private val PANEL_EDGE = 12.dp
 
-private fun valueText(c: Callout, to: TwinScan, from: TwinScan?, e: Float): String {
-    fun v(t: TwinTrait): Double? {
-        val end = to[t] ?: return null
-        val start = from?.get(t) ?: end
-        return start + (end - start) * e
-    }
-    return v(c.trait)?.let { formatTrait(c.trait, it) } ?: "-"
+private fun valueText(t: TwinTrait, to: TwinScan, from: TwinScan?, e: Float): String {
+    val end = to[t] ?: return "-"
+    val start = from?.get(t) ?: end
+    return formatTrait(t, start + (end - start) * e)
 }
 
 private fun formatTrait(t: TwinTrait, v: Double): String = when (t) {
