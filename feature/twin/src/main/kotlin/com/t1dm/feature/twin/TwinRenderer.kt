@@ -167,7 +167,6 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
         glUniform3f(loc(bodyProg, "uEye"), ex, ey, ez)
         glUniform1f(loc(bodyProg, "uT"), t)
         glUniform1f(loc(bodyProg, "uReveal"), reveal)
-        glUniform1f(loc(bodyProg, "uScanY"), minY + bodyH * ((t / SCAN_S) % 1f) * 1.2f - bodyH * 0.1f)
         glUniform3fv(loc(bodyProg, "uC1"), 1, c.primary, 0)
         glUniform3fv(loc(bodyProg, "uC2"), 1, c.secondary, 0)
         glBindVertexArray(bodyVao)
@@ -242,7 +241,6 @@ internal class TwinRenderer(private val body: TwinBody) : GLSurfaceView.Renderer
         const val EYE_FROM_TOP = 0.07f
         const val FLOOR_SIZE = 120f
         const val ASSEMBLE_S = 1.8f
-        const val SCAN_S = 3.5f
         const val SPIN_RAD_S = 0.3f
         const val MORPH_RATE = 3f
         const val PARTICLES = 220

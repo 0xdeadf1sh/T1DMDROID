@@ -76,7 +76,6 @@ in vec3 vB;
 uniform vec3 uEye;
 uniform float uT;
 uniform float uReveal;
-uniform float uScanY;
 uniform vec3 uC1;
 uniform vec3 uC2;
 out vec4 o;
@@ -89,11 +88,10 @@ void main() {
     float diff = 0.3 + 0.7 * max(dot(n, normalize(vec3(0.4, 0.8, 0.5))), 0.0);
     float w = min(min(vB.x, vB.y), vB.z);
     float edge = 1.0 - smoothstep(0.0, fwidth(w) * 1.2, w);
-    float band = exp(-pow((vW.y - uScanY) * 1.5, 2.0));
     float flick = 0.94 + 0.06 * sin(uT * 37.0 + vW.y * 2.0);
     float cut = exp(-pow((uReveal - vW.y) * 3.0, 2.0));
     vec3 c = uC1 * (0.05 + 0.13 * diff) + uC1 * rim * 0.75 + uC1 * edge * 0.5
-        + uC2 * band * 0.35 + vec3(1.0) * cut * 0.7;
+        + vec3(1.0) * cut * 0.7;
     o = vec4(c * flick, 1.0);
 }
 """
