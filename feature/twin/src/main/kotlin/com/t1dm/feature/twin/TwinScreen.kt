@@ -48,6 +48,7 @@ fun TwinScreen(
     val draft = remember { mutableStateMapOf<String, Double>() }
     var editing by remember { mutableStateOf(false) }
     var tutorial by remember(showTutorial) { mutableStateOf(showTutorial) }
+    val tut = remember { TutorialState() }
     // A draft yields only once the stored edit matches it, so the body never snaps back mid-write.
     LaunchedEffect(overrides) {
         draft.keys.toList().forEach { k -> if (overrides[k] == draft[k]) draft.remove(k) }
@@ -56,8 +57,13 @@ fun TwinScreen(
 
     Box(modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
-            Box(Modifier.fillMaxWidth().weight(1f)) {
-                TwinView(effective, Modifier.fillMaxSize())
+            Box(Modifier.fillMaxWidth().weight(1f).tutorialTarget(tut, TutorialTarget.BODY)) {
+                TwinView(
+                    effective,
+                    Modifier.fillMaxSize(),
+                    onOrbit = { tut.orbitRad += it },
+                    onZoom = { tut.zoomLog += it },
+                )
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -85,12 +91,16 @@ fun TwinScreen(
                     effective = effective,
                     edited = overrides.keys + draft.keys,
                     onDrag = { t, v -> draft[t.key] = v },
-                    onCommit = { t -> draft[t.key]?.let { onOverride(t.key, it) } },
+                    onCommit = { t ->
+                        draft[t.key]?.let { onOverride(t.key, it) }
+                        tut.slides++
+                    },
                     onReset = {
                         draft.clear()
                         onResetOverrides()
                     },
                     onDone = { editing = false },
+                    modifier = Modifier.tutorialTarget(tut, TutorialTarget.PANEL),
                 )
             } else {
                 Row(
@@ -99,14 +109,21 @@ fun TwinScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Button(onClick = { haptics.perform(HapticEvent.Tap); onScan() }) { Text("Scan face") }
-                    TextButton(onClick = { editing = true }, enabled = latest != null) { Text("Edit") }
+                    TextButton(
+                        onClick = { editing = true },
+                        enabled = latest != null,
+                        modifier = Modifier.tutorialTarget(tut, TutorialTarget.EDIT),
+                    ) { Text("Edit") }
                     TextButton(onClick = onTrends, enabled = scanCount > 0) { Text("Trends") }
-                    TextButton(onClick = { haptics.perform(HapticEvent.Tap); onMockScan() }) { Text("Mock") }
+                    TextButton(
+                        onClick = { haptics.perform(HapticEvent.Tap); onMockScan() },
+                        modifier = Modifier.tutorialTarget(tut, TutorialTarget.MOCK),
+                    ) { Text("Mock") }
                 }
             }
         }
         if (tutorial) {
-            TwinTutorial(onDone = {
+            TwinTutorial(tut, hasScan = latest != null, editing = editing, onDone = {
                 tutorial = false
                 onTutorialDone()
             })

@@ -30,10 +30,17 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.t1dm.core.design.LocalAnimationsEnabled
 import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.model.TwinScan
+import kotlin.math.abs
+import kotlin.math.ln
 
 /** The 3D twin; a new [scan] replays the build-up and eases the body to its new shape. */
 @Composable
-fun TwinView(scan: TwinScan?, modifier: Modifier = Modifier) {
+fun TwinView(
+    scan: TwinScan?,
+    modifier: Modifier = Modifier,
+    onOrbit: (rad: Float) -> Unit = {},
+    onZoom: (absLogScale: Float) -> Unit = {},
+) {
     val context = LocalContext.current
     val body = remember { loadBody(context) }
     val palette = LocalT1dmSemantics.current
@@ -43,6 +50,8 @@ fun TwinView(scan: TwinScan?, modifier: Modifier = Modifier) {
     view.renderer.colors = TwinColors(palette.background.rgb(), cs.primary.rgb(), cs.secondary.rgb())
     view.animate = animate
     view.renderer.animate = animate
+    view.onOrbit = onOrbit
+    view.onZoom = onZoom
 
     LaunchedEffect(scan?.id) {
         view.renderer.setTarget(TwinMorphs.weights(scan, body), assemble = true)
@@ -87,6 +96,8 @@ internal class TwinTextureView(context: Context, body: TwinBody) : TextureView(c
     TextureView.SurfaceTextureListener {
     val renderer = TwinRenderer(body)
     var animate = true
+    var onOrbit: (Float) -> Unit = {}
+    var onZoom: (Float) -> Unit = {}
     private var gl: GlThread? = null
     private var running = false
     private var lastFrameNs = 0L
@@ -109,6 +120,7 @@ internal class TwinTextureView(context: Context, body: TwinBody) : TextureView(c
     private val scale = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScale(d: ScaleGestureDetector): Boolean {
             renderer.zoomTarget = (renderer.zoomTarget / d.scaleFactor).coerceIn(0.3f, 2.2f)
+            onZoom(abs(ln(d.scaleFactor)))
             return true
         }
     })
@@ -164,7 +176,9 @@ internal class TwinTextureView(context: Context, body: TwinBody) : TextureView(c
             MotionEvent.ACTION_MOVE -> if (!scale.isInProgress && e.pointerCount == 1) {
                 val i = e.findPointerIndex(activeId)
                 if (i >= 0) {
-                    renderer.yawTarget -= (e.getX(i) - lastX) / width * 4f
+                    val dYaw = (e.getX(i) - lastX) / width * 4f
+                    renderer.yawTarget -= dYaw
+                    onOrbit(abs(dYaw))
                     renderer.pitchTarget = (renderer.pitchTarget + (e.getY(i) - lastY) / height * 2f)
                         .coerceIn(-0.2f, 0.9f)
                     lastX = e.getX(i)
