@@ -46,6 +46,18 @@ class SelectionPersistTest {
         assertEquals("b", store.id)
     }
 
+    @Test
+    fun `only the selected model is loaded, and selecting moves it`() = runTest {
+        val controller = controller(MemorySelection("a"))
+        controller.refreshModels()
+
+        assertEquals(listOf("a" to true, "b" to false), controller.state.value.running.map { it.modelId to it.loaded })
+
+        controller.selectModel("b")
+
+        assertEquals(listOf("a" to false, "b" to true), controller.state.value.running.map { it.modelId to it.loaded })
+    }
+
     private fun controller(store: SelectionStore, restored: List<ModelPrediction>? = null): InferenceController {
         val dir = tmp.newFolder("models")
         seedModel(dir, "a")

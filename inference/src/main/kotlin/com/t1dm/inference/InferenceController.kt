@@ -35,6 +35,7 @@ import com.t1dm.inference.backend.GraphOutput
 import com.t1dm.inference.backend.InferenceBackend
 import com.t1dm.inference.backend.LoadedModel
 import com.t1dm.inference.backend.StubBackend
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.StateFlow
@@ -56,8 +57,6 @@ class InferenceController(
     private val history: BgHistoryProvider,
     private val predictionStore: PredictionStore,
     private val freshnessThresholdMs: Long = InferenceControllerDefaults.FRESHNESS_MS,
-    /** Read FRESH each discovery; coerced to ≥1. */
-    private val maxRunningProvider: suspend () -> Int = { DEFAULT_MAX_RUNNING },
     /** Reconstructed carb/insulin context channels (SPEC §3.3); null ⇒ `normalize(0)` baseline. */
     private val contextChannels: ContextChannelSource? = null,
     /** The future zone, as against [contextChannels]'s past (SPEC §3.3). Null ⇒ normalize(0). */
@@ -108,7 +107,10 @@ class InferenceController(
         val real: Boolean,
     )
 
+    /** The selected model alone, or empty while a zoo model is selected. */
     private val loaded = LinkedHashMap<String, Entry>()
+    /** An unselected model loaded for one on-demand run; no cycle ever runs it. */
+    private var scratch: Entry? = null
     /** Every DISCOVERED model, pre-load; ModelStore admits only XNNPACK, one bundle/id. */
     private val installed = LinkedHashMap<String, ModelBundle>()
     /** Written under [cycleMutex] on inference; read unlocked in [runFromHistory]'s preamble. */
@@ -160,7 +162,7 @@ class InferenceController(
         }
     }
 
-    /** Loads models to [maxRunningProvider]'s cap, falls back to [StubBackend] on load failure. */
+    /** Loads the selected model alone, falls back to [StubBackend] on load failure. */
     suspend fun refreshModels() = cycleMutex.withLock { refreshModelsLocked() }
 
     /** Call only holding [cycleMutex] (not reentrant); unlocked callers use [refreshModels]. */
@@ -174,6 +176,7 @@ class InferenceController(
         val replaced = noteReplacedArtifacts(discovered)
 
         // Refresh is rare, so a full close/reload beats diffing and cannot leave a stale handle.
+        releaseScratchLocked()
         loaded.values.forEach { runCatching { it.backend.close(it.handle) } }
         loaded.clear()
         // Parity is proved per graph; a reloaded one owes it again.
@@ -181,16 +184,10 @@ class InferenceController(
         installed.clear()
         for (b in discovered) installed[b.id] = b
 
-        val cap = runCatching { maxRunningProvider() }.getOrNull()?.coerceAtLeast(1) ?: DEFAULT_MAX_RUNNING
-        val runningIds = installed.keys.take(cap).toList()
         // Until the zoo has reported, a zoo selection restored from the store is kept, not dropped.
-        selectedId = selectedId?.takeIf { it in runningIds || it in zooIds || !zooKnown } ?: runningIds.firstOrNull()
+        selectedId = selectedId?.takeIf { it in installed || it in zooIds || !zooKnown } ?: installed.keys.firstOrNull()
+        loadSelectedLocked()
 
-        for (id in runningIds) loaded[id] = loadModel(id)
-
-        val truncated = if (installed.size > cap)
-            "running $cap of ${installed.size} installed models (cap in Settings -> Forecast & models)"
-        else null
         val note = when {
             discovered.isEmpty() && store.refused.isNotEmpty() ->
                 "${store.refused.size} model(s) on device are built for another compute backend " +
@@ -202,7 +199,7 @@ class InferenceController(
             }
             discovered.isEmpty() ->
                 "no model - import a model zip"
-            else -> listOfNotNull(noPteNote(), truncated).joinToString(" | ").ifEmpty { null }
+            else -> noPteNote()
         }
         // runFromHistory returns at descAny == null before its own clear; nothing else drops these.
         val noModel = installed.isEmpty()
@@ -217,6 +214,7 @@ class InferenceController(
             } else {
                 _state.value.predictions
                     .filterNot { it.modelId in replaced }
+                    .filter { it.modelId in loaded || it.modelId !in installed }
                     .map { it.copy(selected = it.modelId == selectedId) }
                     .sortedByDescending { it.selected }
             },
@@ -278,6 +276,36 @@ class InferenceController(
         }
         val handle = stub.load(bundle.descriptor, bundle.pte)
         return Entry(bundle, stub, handle, BackendId.STUB, real = false)
+    }
+
+    /** Caller holds [cycleMutex] on `inference`. Leaves [loaded] holding the selection alone. */
+    private fun loadSelectedLocked() {
+        val id = selectedId?.takeIf { it in installed }
+        for ((k, e) in loaded) if (k != id) runCatching { e.backend.close(e.handle) }
+        loaded.keys.retainAll(setOfNotNull(id))
+        if (id != null && id !in loaded) {
+            if (scratch?.bundle?.id == id) releaseScratchLocked()
+            loaded[id] = loadModel(id)
+        }
+    }
+
+    /** Caller holds [cycleMutex]. */
+    private fun releaseScratchLocked() {
+        val e = scratch ?: return
+        scratch = null
+        runCatching { e.backend.close(e.handle) }
+        heads.evict(e.bundle.id)
+    }
+
+    /** Caller holds [cycleMutex]. Never loads. */
+    private fun entryOrNullLocked(id: String): Entry? = loaded[id] ?: scratch?.takeIf { it.bundle.id == id }
+
+    /** Caller holds [cycleMutex]. An unselected model replaces whatever [scratch] held. */
+    private suspend fun entryLocked(id: String): Entry? {
+        entryOrNullLocked(id)?.let { return it }
+        if (id !in installed) return null
+        releaseScratchLocked()
+        return withContext(dispatchers.inference) { loadModel(id) }.also { scratch = it }
     }
 
     /** Null unless the selected model has no working .pte. */
@@ -417,7 +445,7 @@ class InferenceController(
     )
 
     fun headState(modelId: String): HeadCache.State? =
-        loaded[modelId]?.bundle?.let { heads.stateOf(it) }
+        installed[modelId]?.let { heads.stateOf(it) }
 
     /** [spans] are context-relative patch indices; a disagreeing head refuses the unadapted fan. */
     suspend fun runMasked(
@@ -430,7 +458,7 @@ class InferenceController(
         lora: LoraWeights?,
         synthetic: Boolean,
     ): MaskedRun = cycleMutex.withLock {
-        val entry = loaded[modelId] ?: error("model $modelId is not loaded")
+        val entry = entryLocked(modelId) ?: error("model $modelId is not installed")
         if (!entry.real) error("model $modelId has no working .pte")
         val desc = entry.bundle.descriptor
         val gi = buildGraphInput(desc, series.mgdl, channels, future, spans, smoothingWindow(), withForecast)
@@ -505,8 +533,22 @@ class InferenceController(
         inputAt: suspend (origin: O, desc: ModelDescriptor) -> BacktestInput?,
         onProgress: (done: Int, total: Int) -> Unit,
     ): BacktestRun {
-        val entry = cycleMutex.withLock { loaded[modelId] }
+        val entry = cycleMutex.withLock { entryLocked(modelId) }
             ?: return BacktestRun(emptyList(), false, null, BacktestRefusal.NOT_LOADED)
+        try {
+            return backtestOn(entry, modelId, origins, inputAt, onProgress)
+        } finally {
+            withContext(NonCancellable) { cycleMutex.withLock { if (scratch === entry) releaseScratchLocked() } }
+        }
+    }
+
+    private suspend fun <O> backtestOn(
+        entry: Entry,
+        modelId: String,
+        origins: List<O>,
+        inputAt: suspend (origin: O, desc: ModelDescriptor) -> BacktestInput?,
+        onProgress: (done: Int, total: Int) -> Unit,
+    ): BacktestRun {
         if (!entry.real) return BacktestRun(emptyList(), false, null, BacktestRefusal.NO_ARTIFACT)
         val desc = entry.bundle.descriptor
         // Read once: a per-origin read would deserialize the adapter thousands of times.
@@ -528,7 +570,7 @@ class InferenceController(
                 window,
             )
             val headRaw = cycleMutex.withLock {
-                if (loaded[modelId] !== entry) return BacktestRun(out, lora != null, BacktestStop.MODEL_CHANGED)
+                if (entryOrNullLocked(modelId) !== entry) return BacktestRun(out, lora != null, BacktestStop.MODEL_CHANGED)
                 val graph = withContext(dispatchers.inference) { entry.backend.run(entry.handle, GraphIo.tensors(gi)) }
                 verifiedHeadRaw(entry, gi, graph, lora)
             }
@@ -602,7 +644,7 @@ class InferenceController(
         onWindow: ((done: Int, total: Int) -> Unit)? = null,
     ): LoraWindows {
         // Captured under the lock, re-checked pre-forward: a refresh can close it mid-replay.
-        val entry = cycleMutex.withLock { loaded[modelId] } ?: error("model $modelId is not loaded")
+        val entry = cycleMutex.withLock { entryLocked(modelId) } ?: error("model $modelId is not installed")
         val desc = entry.bundle.descriptor
         val predSteps = predSteps(desc)
         val shape = loraSpanShape(kind, desc.minContextPatches, desc.patchSize, predSteps, desc.maskSpanMax)
@@ -690,7 +732,7 @@ class InferenceController(
             val spanTarget = g.target.copyOfRange(spanFrom, spanFrom + shape.spanLen)
             // ONE forward per lock: holding it across many windows starves the live forecast.
             val steps = cycleMutex.withLock {
-                if (loaded[modelId] !== entry) return LoraWindows(out, nAtEvent)
+                if (entryOrNullLocked(modelId) !== entry) return LoraWindows(out, nAtEvent)
                 val run = withContext(dispatchers.inference) { entry.backend.run(entry.handle, GraphIo.tensors(gi)) }
                 stepStates(entry.bundle, gi, run, needed = true)
                     .also { heads.verify(entry.bundle, it, run.headRaw, gi.mSlots) }
@@ -718,7 +760,7 @@ class InferenceController(
                     withForecast = true,
                 )
                 val runPert = cycleMutex.withLock {
-                    if (loaded[modelId] !== entry) return LoraWindows(out, nAtEvent)
+                    if (entryOrNullLocked(modelId) !== entry) return LoraWindows(out, nAtEvent)
                     withContext(dispatchers.inference) {
                         entry.backend.run(entry.handle, GraphIo.tensors(giPert))
                     }
@@ -758,14 +800,14 @@ class InferenceController(
         opts: LoraTrainOpts,
         progress: LoraProgressSink? = null,
     ): LoraTrainResult {
-        val entry = cycleMutex.withLock { loaded[modelId] } ?: error("model $modelId is not loaded")
-        val state = heads.stateOf(entry.bundle)
+        val bundle = cycleMutex.withLock { installed[modelId] } ?: error("model $modelId is not installed")
+        val state = heads.stateOf(bundle)
         if (state !is HeadCache.State.Ready) {
             error("model $modelId takes no adapter: ${(state as? HeadCache.State.Unusable)?.why ?: "no head file"}")
         }
         // Deliberately OUTSIDE cycleMutex: minutes of CPU, no backend handle touched.
         return withContext(dispatchers.default) {
-            native.loraTrain(state.head, entry.bundle.descriptor, samples, config, opts, progress)
+            native.loraTrain(state.head, bundle.descriptor, samples, config, opts, progress)
         }
     }
 
@@ -775,8 +817,8 @@ class InferenceController(
         weights: LoraWeights,
         samples: List<LoraSample>,
     ): LoraGuardReport {
-        val entry = cycleMutex.withLock { loaded[modelId] } ?: error("model $modelId is not loaded")
-        val state = heads.stateOf(entry.bundle)
+        val bundle = cycleMutex.withLock { installed[modelId] } ?: error("model $modelId is not installed")
+        val state = heads.stateOf(bundle)
         if (state !is HeadCache.State.Ready) {
             error("model $modelId takes no adapter: ${(state as? HeadCache.State.Unusable)?.why ?: "no head file"}")
         }
@@ -784,7 +826,7 @@ class InferenceController(
         return withContext(dispatchers.default) {
             native.loraGuard(
                 state.head,
-                entry.bundle.descriptor,
+                bundle.descriptor,
                 samples,
                 weights,
                 native.loraGuardOptsFit(),
@@ -792,15 +834,16 @@ class InferenceController(
         }
     }
 
-    fun descriptorOf(modelId: String): ModelDescriptor? = loaded[modelId]?.bundle?.descriptor
+    fun descriptorOf(modelId: String): ModelDescriptor? = installed[modelId]?.descriptor
 
     /** The zoo's models and forecasts; a selected one joins [InferenceState.predictions]. */
     suspend fun onZoo(ids: Set<String>, preds: List<ModelPrediction>) {
         val persist = cycleMutex.withLock {
             zooIds = ids
             zooKnown = true
-            if (selectedId != null && selectedId !in loaded.keys && selectedId !in ids) {
-                selectedId = loaded.keys.firstOrNull()
+            if (selectedId != null && selectedId !in installed && selectedId !in ids) {
+                selectedId = installed.keys.firstOrNull()
+                withContext(dispatchers.inference) { loadSelectedLocked() }
             }
             zooSelected = preds.firstOrNull { it.modelId == selectedId }?.copy(selected = true)
             val sel = zooSelectedNow()
@@ -821,13 +864,13 @@ class InferenceController(
         }
     }
 
-    /** No-op unless [id] runs or is a zoo model; governs displayed forecast, belief, authority. */
+    /** No-op unless [id] is installed or a zoo model; the one model that runs from then on. */
     suspend fun selectModel(id: String) {
         // Write/re-flag race refreshModelsLocked; release BEFORE refreshModels() (non-reentrant).
         cycleMutex.withLock {
-            if (id !in loaded.keys && id !in zooIds) return
+            if (id !in installed && id !in zooIds) return
             selectedId = id
-            val hasTime = loaded[id]?.bundle?.descriptor?.time != null
+            val hasTime = installed[id]?.descriptor?.time != null
             val sel = _state.value.predictions.firstOrNull { it.modelId == id }
             _state.value = _state.value.copy(
                 running = runningModels(),
@@ -890,7 +933,10 @@ class InferenceController(
             val desc = (selEntry ?: loaded.values.firstOrNull())?.bundle?.descriptor
             Triple(desc, selEntry?.real ?: false, selEntry?.bundle?.descriptor?.time != null)
         }
-        if (descAny == null) { refreshModels(); return }
+        if (descAny == null) {
+            if (!cycleMutex.withLock { zooHoldsSelection() }) refreshModels()
+            return
+        }
         // Before warmup gate so the banner is over-temp, not warmup; copy preserves circadianTime.
         overTempNote(nowMs)?.let { note ->
             _state.value = _state.value.copy(
@@ -1320,8 +1366,9 @@ class InferenceController(
             runCatching { smoothingWindowProvider() }.getOrNull() ?: InferenceControllerDefaults.SAVGOL_WINDOW,
         )
 
-    private fun runningModels(): List<RunningModel> = loaded.map { (id, e) ->
-        RunningModel(id, e.effectiveBackend, id == selectedId)
+    private fun runningModels(): List<RunningModel> = installed.keys.map { id ->
+        val e = loaded[id]
+        RunningModel(id, e?.effectiveBackend ?: BackendId.EXECUTORCH_XNNPACK_FP32, id == selectedId, loaded = e != null)
     }
 
     private fun recordLatency(id: String, ms: Double) {
@@ -1335,7 +1382,7 @@ class InferenceController(
         cumulative[id] = CumulativeTelemetry(cur.predictions + 1, cur.totalInferenceMs + ms)
     }
 
-    private fun metasSnapshot(): List<ModelMeta> = loaded.values.map { it.bundle.meta }
+    private fun metasSnapshot(): List<ModelMeta> = installed.values.map { it.meta }
 
     private fun telemetrySnapshot(): List<ModelTelemetry> = cumulative.map { (id, c) ->
         ModelTelemetry(id, c.predictions, c.totalInferenceMs)
@@ -1354,11 +1401,13 @@ class InferenceController(
 
     /** Its sole caller [runCycle] already holds [cycleMutex], so this takes the lock-free path. */
     private suspend fun refreshOrNote() {
-        if (loaded.isEmpty()) refreshModelsLocked()
+        if (loaded.isEmpty() && !zooHoldsSelection()) refreshModelsLocked()
     }
 
+    /** A zoo selection leaves [loaded] empty by design; rediscovering then would run every tick. */
+    private fun zooHoldsSelection(): Boolean = selectedId.let { it != null && it !in installed && it in zooIds }
+
     companion object {
-        const val DEFAULT_MAX_RUNNING = 5
         const val TAG = "CycleRunner"
         const val GRID_MS = 300_000L
         const val MS_PER_HOUR = 3_600_000.0

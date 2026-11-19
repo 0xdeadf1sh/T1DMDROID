@@ -30,7 +30,7 @@ class ArtifactReplaceTest {
         controller.refreshModels()
 
         assertEquals(listOf("a"), fired)
-        assertEquals(listOf("b"), controller.state.value.predictions.map { it.modelId })
+        assertTrue(controller.state.value.predictions.none { it.modelId == "a" })
     }
 
     @Test

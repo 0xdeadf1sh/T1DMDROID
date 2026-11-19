@@ -819,8 +819,6 @@ class AppContainer(context: Context) {
                 val ev = curveEngine.rapidEvent(units, 0L, resolveRapidPreset(null))
                 ProbeDose(DoubleArray(steps) { i -> ev.values.getOrElse(i) { 0.0 } }, checkNotNull(ev.point))
             },
-            // Read fresh each discovery, so a Settings edit takes on the next refresh.
-            maxRunningProvider = { maxRunningModels() },
             // Re-read fresh for every discovered id.
             telemetryStore = KvTelemetryStore(repository),
             selectionStore = KvSelectionStore(repository),
@@ -858,7 +856,9 @@ class AppContainer(context: Context) {
     val inferenceState: StateFlow<InferenceState> get() = inferenceController.state
 
     val zooController: ZooController by lazy {
-        ZooController(nativeCore, dispatchers, modelsDir) { d, pte -> ExecuTorchZooRunner(d, pte) }
+        ZooController(nativeCore, dispatchers, modelsDir, { inferenceController.state.value.selectedModelId }) { d, pte ->
+            ExecuTorchZooRunner(d, pte)
+        }
     }
 
     private fun zooDoses(builder: ChannelBuilder) = RawDoseSource { g, n ->
@@ -867,7 +867,11 @@ class AppContainer(context: Context) {
 
     /** SPEC/zoo.md §5: a selected zoo model drives display and alarms, never a dose. */
     suspend fun runZoo(nowMs: Long) {
-        val steps = zooController.historySteps().takeIf { it > 0 } ?: return
+        val steps = zooController.historySteps().takeIf { it > 0 } ?: run {
+            zooController.idle()
+            publishZoo()
+            return
+        }
         val series = RoomBgHistoryProvider(repository, registry).fitBgSeries(steps, 1) ?: return
         val input = ZooInput(nowMs, series.anchorTsMs, series.sourceId, series.mgdl, zooDoses(channelBuilder))
         zooController.runLive(input, nowMs, InferenceControllerDefaults.FRESHNESS_MS)
@@ -887,10 +891,10 @@ class AppContainer(context: Context) {
         runCatching { runZoo(nowMs) }
     }
 
-    /** A zoo selection takes effect at once; its forecast arrives with the next zoo run. */
+    /** Either side's selection takes effect at once; the zoo run loads or closes its runner. */
     suspend fun selectModel(id: String) {
         inferenceController.selectModel(id)
-        if (zooController.descriptorOf(id) != null) runCatching { runZoo(System.currentTimeMillis()) }
+        runCatching { runZoo(System.currentTimeMillis()) }
     }
 
     /** Serialised with the FGS cycles by the controller's own mutex; never bypasses a §3.6 gate. */
@@ -1478,14 +1482,6 @@ class AppContainer(context: Context) {
         val clamped = hours.coerceIn(InferenceControllerDefaults.MIN_WARMUP_HOURS, WARMUP_HOURS_MAX)
         repository.putKv(KV_WARMUP_HOURS, clamped.toString(), System.currentTimeMillis())
     }
-
-    // Running-set cap: every running model forecasts; the selected one draws the BG panel.
-
-    val maxModelsSetting: Flow<Int> get() = settingsStore.inferenceMaxModels
-
-    suspend fun setMaxModels(n: Int) = settingsStore.setInferenceMaxModels(n)
-
-    suspend fun maxRunningModels(): Int = settingsStore.currentInferenceMaxModels()
 
     // INFERENCE.md §7.1: one window shared by forecast cycle, calculator rolls, dashboard overlay.
 

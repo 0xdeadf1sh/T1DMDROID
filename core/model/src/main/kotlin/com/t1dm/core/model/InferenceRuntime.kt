@@ -20,6 +20,7 @@ data class RunningModel(
     val modelId: String,
     val backend: BackendId,
     val selected: Boolean,
+    val loaded: Boolean,
 )
 
 /** [diskBytes]=stat'd size, null under StubBackend. [reference]=held-out REFERENCE only. */

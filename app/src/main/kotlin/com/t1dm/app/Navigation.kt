@@ -2105,7 +2105,6 @@ private fun T1dmNavHost(
             val scope = rememberCoroutineScope()
             val ss = container.settingsStore
             val hours by container.warmupHoursSetting.collectAsState(24)
-            val count by container.maxModelsSetting.collectAsState(5)
             val mode by ss.forecastMode.collectAsState(SettingsStore.FORECAST_MODE_ADAPTIVE)
             val period by ss.forecastPeriodMin.collectAsState(SettingsStore.DEFAULT_FORECAST_PERIOD_MIN)
             val logDebounce by ss.logReforecastDebounceS
@@ -2116,8 +2115,6 @@ private fun T1dmNavHost(
             ForecastSettingsScreen(
                 warmupHoursValue = hours,
                 onSetWarmupHours = { h -> scope.launch { container.setWarmupHours(h) } },
-                modelCount = count,
-                onSetModelCount = { n -> scope.launch { container.setMaxModels(n) } },
                 adaptive = mode == SettingsStore.FORECAST_MODE_ADAPTIVE,
                 periodMinutes = period,
                 logDebounceSeconds = logDebounce,

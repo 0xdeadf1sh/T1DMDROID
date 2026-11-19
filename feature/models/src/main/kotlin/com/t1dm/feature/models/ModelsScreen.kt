@@ -72,7 +72,7 @@ fun ModelsScreen(
         ) {
             item {
                 Text(
-                    "${state.running.size} loaded | tap a row for detail",
+                    "${state.running.size + zooModels.size} installed | selected one runs",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 state.note?.let {
@@ -101,7 +101,7 @@ fun ModelsScreen(
             if (state.running.isEmpty() && zooModels.isEmpty()) {
                 item {
                     Text(
-                        "No models loaded",
+                        "No models installed",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
@@ -176,7 +176,7 @@ private fun ModelRow(
                 fontFamily = LocalT1dmFonts.current.mono,
                 modifier = Modifier.weight(1f).padding(start = 8.dp),
             )
-            Text(statusLabel(prediction), style = MaterialTheme.typography.labelMedium, color = statusColor(prediction))
+            StatusText(prediction, model.selected)
             IconButton(
                 onClick = { haptics.perform(HapticEvent.Tap); onRequestDelete(model.modelId) },
                 modifier = Modifier.size(40.dp),
@@ -235,7 +235,7 @@ private fun ZooRow(
                 fontFamily = LocalT1dmFonts.current.mono,
                 modifier = Modifier.weight(1f).padding(start = 8.dp),
             )
-            Text(statusLabel(prediction), style = MaterialTheme.typography.labelMedium, color = statusColor(prediction))
+            StatusText(prediction, selected)
             IconButton(
                 onClick = { haptics.perform(HapticEvent.Tap); onRequestDelete(id) },
                 modifier = Modifier.size(40.dp),
@@ -352,6 +352,16 @@ private fun statusColor(p: ModelPrediction?) = when {
     p == null -> MaterialTheme.colorScheme.onSurfaceVariant
     p.stale || p.status != ForecastStatus.OK -> MaterialTheme.colorScheme.error
     else -> MaterialTheme.colorScheme.tertiary
+}
+
+@Composable
+private fun StatusText(p: ModelPrediction?, selected: Boolean) {
+    val shown = p.takeIf { selected }
+    Text(
+        if (selected) statusLabel(shown) else "off",
+        style = MaterialTheme.typography.labelMedium,
+        color = statusColor(shown),
+    )
 }
 
 private fun statusLabel(p: ModelPrediction?): String = when {

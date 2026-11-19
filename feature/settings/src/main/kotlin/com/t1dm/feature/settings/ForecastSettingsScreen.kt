@@ -20,8 +20,6 @@ import com.t1dm.core.design.rememberT1dmHaptics
 fun ForecastSettingsScreen(
     warmupHoursValue: Int,
     onSetWarmupHours: (Int) -> Unit,
-    modelCount: Int,
-    onSetModelCount: (Int) -> Unit,
     adaptive: Boolean,
     periodMinutes: Int,
     logDebounceSeconds: Int,
@@ -36,8 +34,6 @@ fun ForecastSettingsScreen(
     onSetWarnMarginC: (Double) -> Unit,
     warmupMinHours: Int = 8,
     warmupMaxHours: Int = 72,
-    minModelCount: Int = 1,
-    maxModelCount: Int = 8,
 ) {
     SettingsScaffold(SettingsScreenKey.FORECAST) {
         SettingsSectionHeader("Warmup")
@@ -55,9 +51,6 @@ fun ForecastSettingsScreen(
             IntStepper(forecastCadencePeriod, periodMinutes, "min", step = 1, min = 1, max = 60) { onSetPeriodMinutes(it) }
         }
         IntStepper(logReforecastDebounce, logDebounceSeconds, "s", step = 1, min = 0, max = 60) { onSetLogDebounceSeconds(it) }
-
-        SettingsSectionHeader("Models run at once")
-        ModelCountSection(modelCount, minModelCount, maxModelCount, onSetModelCount)
 
         SettingsSectionHeader("Thermal gate")
         SettingsNote("Pauses forecasting when hot; active even in Death mode")
@@ -107,46 +100,6 @@ private fun WarmupSection(hours: Int, minHours: Int, maxHours: Int, onChange: (I
     SettingsNote("Min $minHours h (the model's context floor) | max $maxHours h")
 }
 
-/** Every running model pushes under its own id; Models screen picks the dashboard's model. */
-@Composable
-private fun ModelCountSection(count: Int, minCount: Int, maxCount: Int, onChange: (Int) -> Unit) {
-    val haptics = rememberT1dmHaptics()
-    SettingsNote("Models run per cycle")
-    SettingsAnchor(modelCountRunning) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedButton(
-                onClick = {
-                    haptics.perform(HapticEvent.SegmentTick)
-                    onChange((count - 1).coerceAtLeast(minCount))
-                },
-                enabled = count > minCount,
-            ) { Text("-1") }
-
-            Text(
-                text = count.toString(),
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.weight(1f),
-            )
-
-            Button(
-                onClick = {
-                    haptics.perform(HapticEvent.SegmentTick)
-                    onChange((count + 1).coerceAtMost(maxCount))
-                },
-                enabled = count < maxCount,
-            ) { Text("+1") }
-        }
-    }
-    SettingsNote("1-8 | more models, more CPU")
-}
-
 private val warmupHours = SettingsKnob(
     id = "warmup.hours",
     screen = SettingsScreenKey.FORECAST,
@@ -156,18 +109,6 @@ private val warmupHours = SettingsKnob(
     synonyms = listOf(
         "warmup", "warm up", "warm-up", "history", "context", "hours", "before forecasting",
         "startup", "settle", "min context", "no forecast", "waiting", "first run", "delay",
-    ),
-)
-
-private val modelCountRunning = SettingsKnob(
-    id = "model_count.running",
-    screen = SettingsScreenKey.FORECAST,
-    section = "Models run at once",
-    label = "Models run at once",
-    subtitle = "How many discovered models forecast each cycle - all are pushed, the selected one is drawn",
-    synonyms = listOf(
-        "models", "how many", "running", "count", "concurrent", "at once", "cap", "limit",
-        "ensemble", "cpu", "battery",
     ),
 )
 
@@ -238,7 +179,6 @@ private val thermalWarnWithin = SettingsKnob(
 
 internal val settingsForecastKnobs = listOf(
     warmupHours,
-    modelCountRunning,
     forecastCadenceMode,
     forecastCadencePeriod,
     logReforecastDebounce,

@@ -5,6 +5,7 @@ import com.t1dm.core.common.T1dmDispatchers
 import com.t1dm.core.model.BackendId
 import com.t1dm.core.model.ForecastStatus
 import com.t1dm.core.model.ModelPrediction
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -100,12 +101,18 @@ class ZooController(
     private val native: NativeCore,
     private val dispatchers: T1dmDispatchers,
     private val modelsDir: File,
+    /** The app-wide selection; only a zoo id here gets a live runner. */
+    private val selectedId: () -> String?,
     private val loader: (ZooDescriptor, File) -> ZooRunner,
 ) {
     private class Loaded(val desc: ZooDescriptor, val runner: ZooRunner)
 
     private val mutex = Mutex()
-    private val loaded = LinkedHashMap<String, Loaded>()
+    private val descs = LinkedHashMap<String, ZooDescriptor>()
+    /** The selected zoo model alone. */
+    private var live: Loaded? = null
+    /** An unselected model loaded for one backtest. */
+    private var scratch: Loaded? = null
     private val _models = MutableStateFlow<List<ZooDescriptor>>(emptyList())
     val models: StateFlow<List<ZooDescriptor>> = _models.asStateFlow()
 
@@ -114,10 +121,12 @@ class ZooController(
 
     fun descriptorOf(id: String): ZooDescriptor? = _models.value.firstOrNull { it.id == id }
 
+    /** Parses every descriptor; loads none until [runLive] or [backtest] needs one. */
     suspend fun refresh() = mutex.withLock {
         withContext(dispatchers.inference) {
-            loaded.values.forEach { runCatching { it.runner.close() } }
-            loaded.clear()
+            close(live); live = null
+            close(scratch); scratch = null
+            descs.clear()
             val files = modelsDir.listFiles { f -> f.isFile && f.name.endsWith(".descriptor.json") }.orEmpty()
             for (f in files.sortedBy { it.name }) {
                 val obj = runCatching { JSONObject(f.readText()) }.getOrNull() ?: continue
@@ -125,21 +134,45 @@ class ZooController(
                 val d = runCatching { ZooDescriptor.parse(obj) }
                     .onFailure { Timber.tag(TAG).w("zoo descriptor %s refused: %s", f.name, it.message) }
                     .getOrNull() ?: continue
-                runCatching { loader(d, File(modelsDir, d.artifact)) }
-                    .onSuccess { loaded[d.id] = Loaded(d, it) }
-                    .onFailure { Timber.tag(TAG).w(it, "zoo model %s failed to load", d.id) }
+                if (File(modelsDir, d.artifact).isFile) descs[d.id] = d
+                else Timber.tag(TAG).w("zoo model %s: %s missing", d.id, d.artifact)
             }
-            _models.value = loaded.values.map { it.desc }
-            _predictions.value = _predictions.value.filter { it.modelId in loaded }
+            _models.value = descs.values.toList()
+            _predictions.value = _predictions.value.filter { it.modelId in descs }
         }
     }
 
-    /** History steps a forecast reads: the context plus room for the gap fill to bracket. */
-    fun historySteps(): Int = _models.value.maxOfOrNull { it.ctxSteps + it.interpMaxSteps } ?: 0
+    /** History steps the selected model reads: context plus room for the gap fill to bracket. */
+    fun historySteps(): Int = selectedId()?.let(::descriptorOf)?.let { it.ctxSteps + it.interpMaxSteps } ?: 0
 
+    /** Forecasts with the selected zoo model alone; any other selection closes the live runner. */
     suspend fun runLive(input: ZooInput, nowMs: Long, freshnessMs: Long) {
-        _predictions.value = _models.value.mapNotNull { forecast(it.id, input) }
+        val id = selectedId()?.takeIf { descriptorOf(it) != null }
+        mutex.withLock {
+            if (live?.desc?.id != id) withContext(dispatchers.inference) { close(live); live = null }
+        }
+        _predictions.value = listOfNotNull(id?.let { forecast(it, input) })
             .map { it.copy(stale = nowMs - it.anchorTsMs > freshnessMs) }
+    }
+
+    /** No zoo model selected: closes the live runner and drops its forecast. */
+    suspend fun idle() {
+        mutex.withLock { withContext(dispatchers.inference) { close(live); live = null } }
+        _predictions.value = emptyList()
+    }
+
+    private fun close(l: Loaded?) { l?.let { runCatching { it.runner.close() } } }
+
+    /** Caller holds [mutex] on `inference`. The selection goes live; others replace [scratch]. */
+    private fun runnerLocked(id: String): ZooRunner? {
+        live?.takeIf { it.desc.id == id }?.let { return it.runner }
+        scratch?.takeIf { it.desc.id == id }?.let { return it.runner }
+        val d = descs[id] ?: return null
+        val l = runCatching { Loaded(d, loader(d, File(modelsDir, d.artifact))) }
+            .onFailure { Timber.tag(TAG).w(it, "zoo model %s failed to load", id) }
+            .getOrNull() ?: return null
+        if (id == selectedId()) { close(live); live = l } else { close(scratch); scratch = l }
+        return l.runner
     }
 
     /** Null when the model is gone, the end reading is unmeasured, or the forward threw. */
@@ -153,8 +186,8 @@ class ZooController(
         val carb = zoned(raw.carbG)
         val t0 = System.nanoTime()
         val median = mutex.withLock {
-            val runner = loaded[modelId]?.runner ?: return null
             withContext(dispatchers.inference) {
+                val runner = runnerLocked(modelId) ?: return@withContext null
                 runCatching { runner.run(window, ins, carb) }
                     .onFailure { Timber.tag(TAG).w(it, "zoo %s forward failed", modelId) }
                     .getOrNull()
@@ -187,9 +220,17 @@ class ZooController(
         onProgress: (done: Int, total: Int) -> Unit,
     ): List<ModelPrediction> {
         val out = ArrayList<ModelPrediction>()
-        origins.forEachIndexed { i, o ->
-            inputAt(o)?.let { forecast(modelId, it) }?.let { out += it }
-            onProgress(i + 1, origins.size)
+        try {
+            origins.forEachIndexed { i, o ->
+                inputAt(o)?.let { forecast(modelId, it) }?.let { out += it }
+                onProgress(i + 1, origins.size)
+            }
+        } finally {
+            withContext(NonCancellable) {
+                mutex.withLock {
+                    if (scratch?.desc?.id == modelId) withContext(dispatchers.inference) { close(scratch); scratch = null }
+                }
+            }
         }
         return out
     }

@@ -196,17 +196,6 @@ class SettingsStore(
     suspend fun setInferenceMaxTempC(c: Double) = put(K_INF_MAX_TEMP_C, c.coerceAtLeast(0.0).toString())
     suspend fun setThermalWarnMarginC(c: Double) = put(K_INF_WARN_MARGIN_C, c.coerceAtLeast(0.0).toString())
 
-    // Models run per cycle; each pushes tagged by model_id, only SELECTED feeds dashboard/dosing.
-
-    val inferenceMaxModels: Flow<Int> = repository.observeKv(K_INF_MAX_MODELS)
-        .map { it?.toIntOrNull()?.coerceIn(INF_MAX_MODELS_MIN, INF_MAX_MODELS_MAX) ?: DEFAULT_MAX_MODELS }
-
-    suspend fun currentInferenceMaxModels(): Int =
-        repository.getKv(K_INF_MAX_MODELS)?.toIntOrNull()?.coerceIn(INF_MAX_MODELS_MIN, INF_MAX_MODELS_MAX) ?: DEFAULT_MAX_MODELS
-
-    suspend fun setInferenceMaxModels(n: Int) =
-        put(K_INF_MAX_MODELS, n.coerceIn(INF_MAX_MODELS_MIN, INF_MAX_MODELS_MAX).toString())
-
     // INFERENCE.md §7.1: window must be odd, snapped to a detent; Rust guard rejects else.
 
     val savgolWindow: Flow<Int> = repository.observeKv(K_INF_SAVGOL_WINDOW)
@@ -558,7 +547,6 @@ class SettingsStore(
             K_INF_THERMAL_ON,
             K_INF_MAX_TEMP_C,
             K_INF_WARN_MARGIN_C,
-            K_INF_MAX_MODELS,
             K_INF_SAVGOL_WINDOW,
             K_DEATH_DKA_H,
             K_DEATH_COMA_H,
@@ -594,11 +582,6 @@ class SettingsStore(
         const val DEFAULT_THERMAL_ON = true
         const val DEFAULT_MAX_TEMP_C = 45.0
         const val DEFAULT_WARN_MARGIN_C = 3.0
-
-        const val K_INF_MAX_MODELS = "inference.max_models"
-        const val DEFAULT_MAX_MODELS = 5
-        const val INF_MAX_MODELS_MIN = 1
-        const val INF_MAX_MODELS_MAX = 8
 
         const val K_INF_SAVGOL_WINDOW = "inference.savgol_window"
         const val DEFAULT_SAVGOL_WINDOW = InferenceControllerDefaults.SAVGOL_WINDOW
