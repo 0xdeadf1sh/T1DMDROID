@@ -52,6 +52,37 @@ class ZooSelectionTest {
         assertEquals("zoo-x", controller.state.value.selectedModelId)
     }
 
+    @Test
+    fun `switching back shows the last fresh forecast before the next run`() = runTest {
+        val controller = controller()
+        controller.refreshModels()
+        controller.onZoo(setOf("zoo-x"), emptyList())
+        controller.selectModel("zoo-x", FIXTURE_NOW)
+        controller.onZoo(setOf("zoo-x"), listOf(prediction("zoo-x")))
+        controller.selectModel("a", FIXTURE_NOW)
+        controller.onZoo(setOf("zoo-x"), emptyList())
+
+        controller.selectModel("zoo-x", FIXTURE_NOW + 60_000L)
+
+        assertEquals("zoo-x", controller.state.value.selectedPrediction?.modelId)
+    }
+
+    @Test
+    fun `a forecast older than the freshness limit is not shown on a switch back`() = runTest {
+        val controller = controller()
+        controller.refreshModels()
+        controller.onZoo(setOf("zoo-x"), emptyList())
+        controller.selectModel("zoo-x", FIXTURE_NOW)
+        controller.onZoo(setOf("zoo-x"), listOf(prediction("zoo-x")))
+        controller.selectModel("a", FIXTURE_NOW)
+        controller.onZoo(setOf("zoo-x"), emptyList())
+
+        controller.selectModel("zoo-x", FIXTURE_NOW + InferenceControllerDefaults.FRESHNESS_MS + 1)
+
+        assertEquals("zoo-x", controller.state.value.selectedModelId)
+        assertNull(controller.state.value.selectedPrediction)
+    }
+
     private fun controller(stored: String? = null): InferenceController {
         val dir = tmp.newFolder("models")
         seedModel(dir, "a")

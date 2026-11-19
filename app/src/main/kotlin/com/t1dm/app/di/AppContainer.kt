@@ -895,6 +895,11 @@ class AppContainer(context: Context) {
     suspend fun selectModel(id: String) {
         inferenceController.selectModel(id)
         runCatching { runZoo(System.currentTimeMillis()) }
+        if (inferenceController.descriptorOf(id) != null) {
+            appScope.launch {
+                runCatching { inferenceController.runFromHistory(InferenceCause.MANUAL, System.currentTimeMillis()) }
+            }
+        }
     }
 
     /** Serialised with the FGS cycles by the controller's own mutex; never bypasses a §3.6 gate. */

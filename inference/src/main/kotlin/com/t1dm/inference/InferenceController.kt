@@ -123,6 +123,8 @@ class InferenceController(
     private var zooSelected: ModelPrediction? = null
 
     private fun zooSelectedNow(): ModelPrediction? = zooSelected?.takeIf { it.modelId == selectedId }
+    /** Last forecast per model, installed or zoo; shown on a switch back until a new run lands. */
+    private val lastPred = HashMap<String, ModelPrediction>()
     private val latencySamples = HashMap<String, ArrayDeque<Double>>()
     /** Durable via [telemetryStore]; loaded once, then in-memory. */
     private val cumulative = HashMap<String, CumulativeTelemetry>()
@@ -174,6 +176,7 @@ class InferenceController(
         }
         val discovered = store.discover()
         val replaced = noteReplacedArtifacts(discovered)
+        replaced.forEach(lastPred::remove)
 
         // Refresh is rare, so a full close/reload beats diffing and cannot leave a stale handle.
         releaseScratchLocked()
@@ -847,6 +850,7 @@ class InferenceController(
             }
             zooSelected = preds.firstOrNull { it.modelId == selectedId }?.copy(selected = true)
             val sel = zooSelectedNow()
+            sel?.let { lastPred[it.modelId] = it }
             _state.value = _state.value.copy(
                 running = runningModels(),
                 predictions = listOfNotNull(sel) + _state.value.predictions
@@ -865,16 +869,22 @@ class InferenceController(
     }
 
     /** No-op unless [id] is installed or a zoo model; the one model that runs from then on. */
-    suspend fun selectModel(id: String) {
+    suspend fun selectModel(id: String, nowMs: Long = System.currentTimeMillis()) {
         // Write/re-flag race refreshModelsLocked; release BEFORE refreshModels() (non-reentrant).
         cycleMutex.withLock {
             if (id !in installed && id !in zooIds) return
             selectedId = id
             val hasTime = installed[id]?.descriptor?.time != null
-            val sel = _state.value.predictions.firstOrNull { it.modelId == id }
+            val shown = _state.value.predictions
+            val source = shown.firstOrNull { it.selected }?.sourceId
+            val cached = lastPred[id]?.takeIf { p ->
+                shown.none { it.modelId == id } && nowMs - p.anchorTsMs <= freshnessThresholdMs &&
+                    (source == null || p.sourceId == source)
+            }
+            val sel = shown.firstOrNull { it.modelId == id } ?: cached
             _state.value = _state.value.copy(
                 running = runningModels(),
-                predictions = _state.value.predictions
+                predictions = (listOfNotNull(cached) + shown)
                     .map { it.copy(selected = it.modelId == id) }
                     .sortedByDescending { it.selected },
                 // No time head clears the belief rather than freezing the prior model's.
@@ -897,7 +907,7 @@ class InferenceController(
     suspend fun deleteModel(id: String): Boolean = cycleMutex.withLock {
         heads.evict(id)
         val removed = withContext(dispatchers.inference) { runCatching { store.delete(id) }.getOrDefault(false) }
-        cumulative.remove(id); latencySamples.remove(id)
+        cumulative.remove(id); latencySamples.remove(id); lastPred.remove(id)
         runCatching { telemetryStore?.save(HashMap(cumulative)) }
         refreshModelsLocked() // already under cycleMutex; refreshModels would self-deadlock
         _state.value = _state.value.copy(predictions = _state.value.predictions.filterNot { it.modelId == id })
@@ -1105,6 +1115,7 @@ class InferenceController(
         }
 
         preds.sortByDescending { it.selected }
+        preds.forEach { lastPred[it.modelId] = it }
         val published = listOfNotNull(zooSelectedNow()) + preds
 
         val durationMs = ((System.nanoTime() - t0) / 1_000_000.0).toLong()
