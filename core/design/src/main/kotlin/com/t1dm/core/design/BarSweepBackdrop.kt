@@ -125,7 +125,7 @@ float4 effect(float2 lp, float2 sz) {
 }
 """
 
-/** A B-DNA helix turning about the bar's axis, depth-sorted: 10 pairs a turn, 3 s a turn. */
+/** A B-DNA helix turning about the bar's axis, depth-sorted: 10 pairs a turn, 6 s a turn. */
 private const val UMBRELLA_EFFECT = """
 float4 comp(float4 bot, float4 top) {
     float o = top.a + bot.a * (1.0 - top.a);
@@ -151,14 +151,14 @@ float4 strand(float2 lp, float cy, float amp, float ang, float ph, float xc, flo
 }
 
 float4 effect(float2 lp, float2 sz) {
-    float sp = 22.0;
+    float sp = 40.0;
     float cy = sz.y * 0.5;
     float amp = sz.y * 0.34;
     float step36 = 0.6283185;
     float rb = clamp(sz.y * 0.07, 2.5, 5.0);
     float i = floor(lp.x / sp);
     float xc = (i + 0.5) * sp;
-    float th = t * 2.0943951;
+    float th = t * 1.0471976;
     float ph = i * step36 + th;
     float ang = (lp.x / sp - 0.5) * step36 + th;
 
