@@ -78,8 +78,8 @@ private enum class Step(val text: String, val target: TutorialTarget?, val hint:
     ORBIT("Drag the twin to turn it", TutorialTarget.BODY, Hint.SWIPE),
     ZOOM("Pinch to zoom on the face", TutorialTarget.BODY, Hint.PINCH),
     SAMPLE("Tap Mock for a sample twin", TutorialTarget.MOCK, Hint.TAP),
-    OPEN_EDIT("Tap Edit", TutorialTarget.EDIT, Hint.TAP),
-    SLIDE("Pick a trait, drag the slider | the twin reshapes", TutorialTarget.PANEL, Hint.SWIPE),
+    OPEN_EDIT("Tap a trait", TutorialTarget.EDIT, Hint.TAP),
+    SLIDE("Drag the slider | the twin reshapes", TutorialTarget.PANEL, Hint.SWIPE),
     FINISH("Scan reads a new twin | Trends charts each scan", null, Hint.NONE),
 }
 

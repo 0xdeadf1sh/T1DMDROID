@@ -26,8 +26,6 @@ import com.t1dm.core.model.TwinScan
 import com.t1dm.core.model.TwinTrait
 import java.util.Locale
 
-private val BAR_TRAITS = listOf(TwinTrait.HEIGHT, TwinTrait.AGE, TwinTrait.SEX, TwinTrait.WEIGHT)
-
 internal class PanelAction(
     val label: String,
     val onClick: () -> Unit,
@@ -35,20 +33,22 @@ internal class PanelAction(
     val target: TutorialTarget? = null,
 )
 
-/** Traits, above the body; a tap opens the editor on that trait. */
+/** Editable traits, above the body; a tap opens the editor on that trait, a second closes it. */
 @Composable
 internal fun TwinTraitBar(
     scan: TwinScan,
     selected: TwinTrait?,
+    edited: Set<String>,
     onPick: (TwinTrait) -> Unit,
     enabled: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
     ChipRow(modifier) {
-        BAR_TRAITS.forEach { t ->
+        EDITABLE.forEach { t ->
             val on = t == selected
-            Chip(formatTrait(t, scan[t]), if (on) cs.secondary else cs.primary, { onPick(t) }, enabled, selected = on)
+            val label = formatTrait(t, scan[t]) + if (t.key in edited) " *" else ""
+            Chip(label, if (on) cs.secondary else cs.primary, { onPick(t) }, enabled, selected = on)
         }
     }
 }
@@ -112,5 +112,6 @@ private fun Chip(
 private fun formatTrait(t: TwinTrait, v: Double?): String = when {
     v == null -> "-"
     t == TwinTrait.SEX -> "%.2f P(male)".format(Locale.ROOT, v)
+    t == TwinTrait.MUSCLE -> "%.2f muscle".format(Locale.ROOT, v)
     else -> "%.1f %s".format(Locale.ROOT, v, t.unit)
 }

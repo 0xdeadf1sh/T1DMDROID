@@ -64,12 +64,14 @@ fun TwinScreen(
                 TwinTraitBar(
                     effective,
                     selected = trait.takeIf { editing },
+                    edited = edited,
                     onPick = {
                         haptics.perform(HapticEvent.Tap)
                         editing = !(editing && trait == it)
                         trait = it
                     },
                     enabled = latest != null,
+                    modifier = Modifier.tutorialTarget(tut, TutorialTarget.EDIT),
                 )
             }
             Box(Modifier.fillMaxWidth().weight(1f).tutorialTarget(tut, TutorialTarget.BODY)) {
@@ -105,7 +107,6 @@ fun TwinScreen(
                     selected = trait,
                     value = effective[trait] ?: trait.mid(),
                     edited = edited,
-                    onSelect = { haptics.perform(HapticEvent.Tap); trait = it },
                     onDrag = { draft[trait.key] = it },
                     onCommit = {
                         draft[trait.key]?.let { onOverride(trait.key, it) }
@@ -115,14 +116,12 @@ fun TwinScreen(
                         draft.clear()
                         onResetOverrides()
                     },
-                    onDone = { editing = false },
                     modifier = Modifier.tutorialTarget(tut, TutorialTarget.PANEL),
                 )
             } else {
                 TwinToolbar(
                     listOf(
                         PanelAction("Scan", { haptics.perform(HapticEvent.Tap); onScan() }),
-                        PanelAction("Edit", { editing = true }, latest != null, TutorialTarget.EDIT),
                         PanelAction("Trends", onTrends, scanCount > 0),
                         PanelAction("Mock", { haptics.perform(HapticEvent.Tap); onMockScan() }, target = TutorialTarget.MOCK),
                         PanelAction("Help", { tutorial = true }),
