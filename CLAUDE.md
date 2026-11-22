@@ -62,6 +62,8 @@ mirroring it if it is one of these:
 - `README.md` — `main` keeps the CAUTION block, builds the `public` flavor, and
   does not link `docs/CGM.md`.
 - `docs/CGM.md` — tracked on `private`; on `main`, listed in `.gitignore`.
+- The launcher icon — `private` overlays a padlock (`ic_launcher_fg_locked`) to
+  tell it apart from `main` when both are installed.
 - The expiry seam, and every file that wires it.
 
 ## Build both branches, every time
