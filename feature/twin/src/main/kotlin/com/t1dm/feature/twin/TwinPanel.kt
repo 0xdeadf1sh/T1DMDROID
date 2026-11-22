@@ -1,5 +1,6 @@
 package com.t1dm.feature.twin
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -38,6 +39,7 @@ internal class PanelAction(
 @Composable
 internal fun TwinTraitBar(
     scan: TwinScan,
+    selected: TwinTrait?,
     onPick: (TwinTrait) -> Unit,
     enabled: Boolean,
     modifier: Modifier = Modifier,
@@ -45,7 +47,8 @@ internal fun TwinTraitBar(
     val cs = MaterialTheme.colorScheme
     ChipRow(modifier) {
         BAR_TRAITS.forEach { t ->
-            Chip(formatTrait(t, scan[t]), cs.primary, { onPick(t) }, enabled)
+            val on = t == selected
+            Chip(formatTrait(t, scan[t]), if (on) cs.secondary else cs.primary, { onPick(t) }, enabled, selected = on)
         }
     }
 }
@@ -87,13 +90,16 @@ private fun Chip(
     onClick: () -> Unit,
     enabled: Boolean,
     modifier: Modifier = Modifier,
+    selected: Boolean = false,
 ) {
+    val cs = MaterialTheme.colorScheme
     val shape = RoundedCornerShape(4.dp)
     Box(
         modifier
             .heightIn(min = 40.dp)
             .clip(shape)
-            .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f), shape)
+            .then(if (selected) Modifier.background(cs.secondary.copy(alpha = 0.18f)) else Modifier)
+            .border(1.dp, if (selected) cs.secondary else cs.primary.copy(alpha = 0.55f), shape)
             .clickable(enabled = enabled, onClick = onClick)
             .alpha(if (enabled) 1f else 0.38f)
             .padding(horizontal = 16.dp),

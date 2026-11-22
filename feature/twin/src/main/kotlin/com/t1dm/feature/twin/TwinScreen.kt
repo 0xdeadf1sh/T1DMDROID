@@ -63,6 +63,7 @@ fun TwinScreen(
             if (effective != null) {
                 TwinTraitBar(
                     effective,
+                    selected = trait.takeIf { editing },
                     onPick = {
                         haptics.perform(HapticEvent.Tap)
                         trait = it
