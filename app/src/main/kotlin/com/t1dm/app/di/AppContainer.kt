@@ -2074,13 +2074,15 @@ class AppContainer(context: Context) {
             emitAll(
                 combine(cgmPanel, sensorPlacements) { panel, placed ->
                     median.retain(panel.sensors.mapTo(HashSet()) { it.id })
-                    panel.sensors.map { row ->
+                    val labels = com.t1dm.feature.twin.TwinLabels.of(panel.sensors.map { it.shortName to it.ordinal })
+                    panel.sensors.mapIndexed { i, row ->
                         com.t1dm.feature.twin.TwinSensor(
                             id = row.id,
                             placement = placed[row.id],
                             rssiDbm = median.feed(row.id, row.rssiDbm),
                             lastReadingMs = row.readingTsMs,
                             focus = row.authoritative,
+                            label = labels[i],
                         )
                     }
                 },

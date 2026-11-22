@@ -1,7 +1,12 @@
 package com.t1dm.feature.twin
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Typeface
 import android.opengl.GLES30.*
 import android.opengl.GLSurfaceView
+import android.opengl.GLUtils
 import android.opengl.Matrix
 import android.util.Log
 import java.nio.ByteBuffer
@@ -19,7 +24,17 @@ import kotlin.math.tan
 internal class TwinColors(val bg: FloatArray, val primary: FloatArray, val secondary: FloatArray)
 
 /** One placed sensor for the GL thread; [glow] below 0 draws it stale: grey, no halo. */
-internal class SensorDraw(val tri: Int, val u: Float, val v: Float, val glow: Float, val focus: Boolean)
+internal class SensorDraw(
+    val tri: Int,
+    val u: Float,
+    val v: Float,
+    val glow: Float,
+    val focus: Boolean,
+    val label: String,
+)
+
+/** A rasterised label: GL texture id, and width over height. */
+private class LabelTex(val id: Int, val aspect: Float)
 
 /** Closest pinch zoom, past the face framing at 0.3, so there is room left for the brain. */
 internal const val ZOOM_IN_LIMIT = 0.15f
@@ -43,6 +58,9 @@ internal class TwinRenderer(
     /** False: morphs and the build-up jump to their end state, and the scene holds still. */
     @Volatile var animate = true
     @Volatile var sensors: List<SensorDraw> = emptyList()
+
+    /** The app's mono face; a change re-rasterises every label. */
+    @Volatile var labelTypeface: Typeface? = null
 
     /** Called on the GL thread with the skin under a [requestPick]; misses are dropped. */
     @Volatile var onPick: ((SkinHit) -> Unit)? = null
@@ -117,6 +135,12 @@ internal class TwinRenderer(
     private val sensorCentre = FloatArray(3)
     private val sensorRot = FloatArray(9)
     private var eased = FloatArray(0)
+    private var lineProg = 0
+    private var labelProg = 0
+    private val labels = HashMap<String, LabelTex>()
+    private var labelFace: Typeface? = null
+    private val boxCentre = FloatArray(3)
+    private val lineEnd = FloatArray(3)
 
     fun setTarget(weights: FloatArray, assemble: Boolean) {
         target = weights.copyOf()
@@ -163,6 +187,10 @@ internal class TwinRenderer(
             sparkVao = brain?.let(::sparkVao) ?: 0
             haloProg = program(HALO_VS, HALO_FS)
             puckVao = puckVao()
+            lineProg = program(LINE_VS, LINE_FS)
+            labelProg = program(LABEL_VS, LABEL_FS)
+            // A new context: the old texture ids name nothing.
+            labels.clear()
             dirty = true
         }.onFailure { Log.e(TAG, "twin GL setup failed", it) }.isSuccess
     }
@@ -385,20 +413,88 @@ internal class TwinRenderer(
             glUniform1f(loc(organProg, "uGain"), if (stale) 0.6f else (0.6f + 1.4f * g) * pulse)
             glBindVertexArray(puckVao)
             glDrawArrays(GL_TRIANGLES, 0, puck.size / 3)
-            if (stale) return@forEachIndexed
             for (k in 0 until 3) sensorCentre[k] = anchor[k] + anchor[3 + k] * PUCK_HALF_H * 2f
-            glUseProgram(haloProg)
-            glUniformMatrix4fv(loc(haloProg, "uMvp"), 1, false, mvp, 0)
-            glUniform3fv(loc(haloProg, "uCentre"), 1, sensorCentre, 0)
-            glUniform3f(loc(haloProg, "uRight"), view[0], view[4], view[8])
-            glUniform3f(loc(haloProg, "uUp"), view[1], view[5], view[9])
-            glUniform1f(loc(haloProg, "uSize"), HALO_DM * (0.6f + 0.8f * g))
-            glUniform1f(loc(haloProg, "uT"), t)
-            glUniform1f(loc(haloProg, "uGlow"), g * pulse)
-            glUniform3fv(loc(haloProg, "uColor"), 1, c.secondary, 0)
-            glBindVertexArray(emptyVao)
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
+            if (!stale) {
+                glUseProgram(haloProg)
+                glUniformMatrix4fv(loc(haloProg, "uMvp"), 1, false, mvp, 0)
+                glUniform3fv(loc(haloProg, "uCentre"), 1, sensorCentre, 0)
+                glUniform3f(loc(haloProg, "uRight"), view[0], view[4], view[8])
+                glUniform3f(loc(haloProg, "uUp"), view[1], view[5], view[9])
+                glUniform1f(loc(haloProg, "uSize"), HALO_DM * (0.6f + 0.8f * g))
+                glUniform1f(loc(haloProg, "uT"), t)
+                glUniform1f(loc(haloProg, "uGlow"), g * pulse)
+                glUniform3fv(loc(haloProg, "uColor"), 1, c.secondary, 0)
+                glBindVertexArray(emptyVao)
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
+            }
+            drawLabel(s.label, if (stale) STALE_RGB else c.primary, if (stale) 0.6f else 1f)
         }
+    }
+
+    /** A camera-facing box out along the skin normal, tied to the puck by a line. */
+    private fun drawLabel(text: String, color: FloatArray, gain: Float) {
+        if (text.isEmpty()) return
+        val tex = label(text) ?: return
+        val hh = LABEL_H_DM / 2f
+        val hw = hh * tex.aspect
+        for (k in 0 until 3) {
+            boxCentre[k] = anchor[k] + anchor[3 + k] * LABEL_LEAD_DM + (if (k == 1) LABEL_RISE_DM else 0f)
+        }
+        lineEnd[0] = boxCentre[0] - view[1] * hh
+        lineEnd[1] = boxCentre[1] - view[5] * hh
+        lineEnd[2] = boxCentre[2] - view[9] * hh
+        glUseProgram(lineProg)
+        glUniformMatrix4fv(loc(lineProg, "uMvp"), 1, false, mvp, 0)
+        glUniform3fv(loc(lineProg, "uA"), 1, sensorCentre, 0)
+        glUniform3fv(loc(lineProg, "uB"), 1, lineEnd, 0)
+        glUniform3fv(loc(lineProg, "uColor"), 1, color, 0)
+        glUniform1f(loc(lineProg, "uGain"), 0.7f * gain)
+        glBindVertexArray(emptyVao)
+        glDrawArrays(GL_LINES, 0, 2)
+        glUseProgram(labelProg)
+        glUniformMatrix4fv(loc(labelProg, "uMvp"), 1, false, mvp, 0)
+        glUniform3fv(loc(labelProg, "uCentre"), 1, boxCentre, 0)
+        glUniform3f(loc(labelProg, "uRight"), view[0], view[4], view[8])
+        glUniform3f(loc(labelProg, "uUp"), view[1], view[5], view[9])
+        glUniform2f(loc(labelProg, "uHalf"), hw, hh)
+        glUniform3fv(loc(labelProg, "uColor"), 1, color, 0)
+        glUniform1f(loc(labelProg, "uGain"), gain)
+        glActiveTexture(GL_TEXTURE0)
+        glBindTexture(GL_TEXTURE_2D, tex.id)
+        glUniform1i(loc(labelProg, "uText"), 0)
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
+        glBindTexture(GL_TEXTURE_2D, 0)
+    }
+
+    /** Rasterised once per text and face: white glyphs on clear, tinted in the shader. */
+    private fun label(text: String): LabelTex? {
+        val face = labelTypeface
+        if (face !== labelFace) {
+            labels.values.forEach { glDeleteTextures(1, intArrayOf(it.id), 0) }
+            labels.clear()
+            labelFace = face
+        }
+        labels[text]?.let { return it }
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.WHITE
+            textSize = LABEL_TEXT_PX
+            typeface = face ?: Typeface.MONOSPACE
+        }
+        val fm = paint.fontMetrics
+        val w = (paint.measureText(text) + LABEL_PAD_PX * 2f).toInt().coerceAtLeast(1)
+        val h = (fm.descent - fm.ascent + LABEL_PAD_PX).toInt().coerceAtLeast(1)
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        Canvas(bmp).drawText(text, LABEL_PAD_PX, LABEL_PAD_PX / 2f - fm.ascent, paint)
+        val id = IntArray(1).also { glGenTextures(1, it, 0) }[0]
+        glBindTexture(GL_TEXTURE_2D, id)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+        GLUtils.texImage2D(GL_TEXTURE_2D, 0, bmp, 0)
+        glBindTexture(GL_TEXTURE_2D, 0)
+        bmp.recycle()
+        return LabelTex(id, w.toFloat() / h).also { labels[text] = it }
     }
 
     /** Unprojects the NDC point through the frame's [mvp] and casts it at the posed skin. */
@@ -611,6 +707,13 @@ internal class TwinRenderer(
         const val GLOW_RATE = 2f
         const val PULSE_RAD_S = 3f
         val STALE_RGB = floatArrayOf(0.45f, 0.45f, 0.45f)
+
+        /** Box height, and its offset out along the skin normal and up, in decimetres. */
+        const val LABEL_H_DM = 0.45f
+        const val LABEL_LEAD_DM = 1.6f
+        const val LABEL_RISE_DM = 0.6f
+        const val LABEL_TEXT_PX = 64f
+        const val LABEL_PAD_PX = 24f
 
         /** Expanded triangles of a disc about z: both caps and the rim. */
         fun puckMesh(): FloatArray {

@@ -10,7 +10,19 @@ data class TwinSensor(
     val rssiDbm: Int?,
     val lastReadingMs: Long?,
     val focus: Boolean,
+    /** Shown in the box floating beside the puck. */
+    val label: String = "",
 )
+
+object TwinLabels {
+    /** The model per sensor; ` #ordinal` is added only where a model repeats. */
+    fun of(models: List<Pair<String, Int?>>): List<String> {
+        val counts = models.groupingBy { it.first }.eachCount()
+        return models.map { (model, ordinal) ->
+            if ((counts[model] ?: 0) > 1 && ordinal != null) "$model #$ordinal" else model
+        }
+    }
+}
 
 object TwinSignal {
     const val FLOOR_DBM = -100

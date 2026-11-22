@@ -36,6 +36,11 @@ class TwinSignalTest {
         assertEquals(-90, m.feed("a", -90))
     }
 
+    @Test fun `a label gains its ordinal only where the model repeats`() {
+        val labels = TwinLabels.of(listOf("AiDEX X" to 0, "Libre 3" to 1, "AiDEX X" to 2, "AiDEX X" to null))
+        assertEquals(listOf("AiDEX X #0", "Libre 3", "AiDEX X #2", "AiDEX X"), labels)
+    }
+
     @Test fun `a dropped link forgets its history, and links do not mix`() {
         val m = RssiMedian()
         m.feed("a", -90)

@@ -26,11 +26,14 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFontFamilyResolver
+import androidx.compose.ui.text.font.resolveAsTypeface
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.t1dm.core.design.LocalAnimationsEnabled
+import com.t1dm.core.design.LocalT1dmFonts
 import com.t1dm.core.design.LocalT1dmSemantics
 import com.t1dm.core.model.SensorPlacement
 import com.t1dm.core.model.TwinScan
@@ -63,6 +66,8 @@ fun TwinView(
     view.renderer.animate = animate
     view.onOrbit = onOrbit
     view.onZoom = onZoom
+    val face by LocalFontFamilyResolver.current.resolveAsTypeface(LocalT1dmFonts.current.mono)
+    view.renderer.labelTypeface = face
     val place by rememberUpdatedState(onPlace)
     val placing = onPlace != null
     LaunchedEffect(placing) {
@@ -82,7 +87,7 @@ fun TwinView(
             view.renderer.sensors = placed.map { s ->
                 val p = s.placement!!
                 val glow = TwinSignal.glowAt(s.rssiDbm, s.lastReadingMs, now, staleAfterMs)
-                SensorDraw(p.tri, p.u, p.v, glow ?: -1f, s.focus)
+                SensorDraw(p.tri, p.u, p.v, glow ?: -1f, s.focus, s.label)
             }
             view.kick()
             delay(GLOW_TICK_MS)

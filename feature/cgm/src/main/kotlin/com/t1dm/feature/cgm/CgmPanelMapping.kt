@@ -79,6 +79,8 @@ fun cgmPanelState(
             authoritative = authoritative,
             status = l.status,
             rssiDbm = l.rssiDbm,
+            shortName = d.shortName,
+            ordinal = d.ordinal.takeIf { it >= 0 },
             readingTsMs = l.readingTsMs,
             sensorAgeMin = l.sensorAgeMin,
             // All three must be known; a countdown from an assumed start or wear isn't justifiable.

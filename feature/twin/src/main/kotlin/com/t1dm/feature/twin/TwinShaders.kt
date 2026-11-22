@@ -267,6 +267,54 @@ void main() {
 }
 """
 
+internal const val LINE_VS = """#version 300 es
+uniform mat4 uMvp;
+uniform vec3 uA;
+uniform vec3 uB;
+void main() {
+    gl_Position = uMvp * vec4(gl_VertexID == 0 ? uA : uB, 1.0);
+}
+"""
+
+internal const val LINE_FS = """#version 300 es
+precision mediump float;
+uniform vec3 uColor;
+uniform float uGain;
+out vec4 o;
+void main() {
+    o = vec4(uColor * uGain, 1.0);
+}
+"""
+
+internal const val LABEL_VS = """#version 300 es
+uniform mat4 uMvp;
+uniform vec3 uCentre;
+uniform vec3 uRight;
+uniform vec3 uUp;
+uniform vec2 uHalf;
+out vec2 vQ;
+void main() {
+    vQ = vec2(gl_VertexID & 1, (gl_VertexID >> 1) & 1) * 2.0 - 1.0;
+    gl_Position = uMvp * vec4(uCentre + uRight * vQ.x * uHalf.x + uUp * vQ.y * uHalf.y, 1.0);
+}
+"""
+
+/** A faint fill, a pixel-thin frame, and the label's alpha from [uText]. */
+internal const val LABEL_FS = """#version 300 es
+precision highp float;
+in vec2 vQ;
+uniform sampler2D uText;
+uniform vec3 uColor;
+uniform float uGain;
+out vec4 o;
+void main() {
+    vec2 d = (1.0 - abs(vQ)) / fwidth(vQ);
+    float frame = 1.0 - smoothstep(0.0, 1.5, min(d.x, d.y));
+    float text = texture(uText, vec2(vQ.x * 0.5 + 0.5, 0.5 - vQ.y * 0.5)).a;
+    o = vec4(uColor * (0.08 + frame * 0.8 + text * 1.1) * uGain, 1.0);
+}
+"""
+
 internal const val PARTICLE_VS = """#version 300 es
 uniform mat4 uMvp;
 uniform float uT;
