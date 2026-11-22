@@ -125,24 +125,28 @@ float4 effect(float2 lp, float2 sz) {
 }
 """
 
-/** A double helix repeating along the strip, scrolling sideways, rungs between the strands. */
+/** A stretched double helix repeating along the strip; its pitch breathes, rungs pulse in turn. */
 private const val UMBRELLA_EFFECT = """
 float4 effect(float2 lp, float2 sz) {
-    float lam = 120.0;
-    float u = lp.x / lam * 6.2831853 - t * 2.0943951;
-    float amp = sz.y * 0.34;
+    float lam = 260.0;
+    float w = 2.0943951;
+    float pitch = 1.0 + 0.25 * sin(t * w * 0.5);
+    float u = (lp.x - sz.x * 0.5) / lam * 6.2831853 * pitch;
+    float amp = sz.y * 0.40 * (0.8 + 0.2 * sin(lp.x / lam * 3.1415927 - t * w));
     float cy = sz.y * 0.5;
     float s = sin(u);
-    float slope = amp * cos(u) * 6.2831853 / lam;
+    float slope = amp * cos(u) * 6.2831853 * pitch / lam;
     float norm = 1.0 / sqrt(1.0 + slope * slope);
     float d1 = abs(lp.y - (cy + amp * s)) * norm;
     float d2 = abs(lp.y - (cy - amp * s)) * norm;
     float depth = cos(u);
     float a1 = (1.0 - smoothstep(0.0, 1.8, d1)) * (0.65 + 0.35 * depth);
     float a2 = (1.0 - smoothstep(0.0, 1.8, d2)) * (0.65 - 0.35 * depth);
-    float r = fract(u / 6.2831853 * 8.0) - 0.5;
+    float ri = u / 6.2831853 * 8.0;
+    float r = fract(ri) - 0.5;
+    float pulse = max(0.0, sin(floor(ri) * 0.7 - t * w));
     float inside = step(abs(lp.y - cy), amp * abs(s));
-    float rung = (1.0 - smoothstep(0.0, 1.2, abs(r) * lam / 8.0)) * inside * 0.45;
+    float rung = (1.0 - smoothstep(0.0, 1.2, abs(r) * lam / 8.0 / pitch)) * inside * (0.25 + 0.6 * pulse * pulse);
     float3 col = (float3(c1.rgb) * a1 + float3(ink.rgb) * a2 + float3(ink.rgb) * rung) / max(a1 + a2 + rung, 0.001);
     return float4(col, clamp(a1 + a2 + rung, 0.0, 1.0) * 0.4);
 }
