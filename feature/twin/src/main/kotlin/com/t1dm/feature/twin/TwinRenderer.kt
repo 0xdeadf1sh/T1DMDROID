@@ -474,7 +474,7 @@ internal class TwinRenderer(
         const val EYE_FROM_TOP = 0.07f
         const val FLOOR_SIZE = 120f
         const val ASSEMBLE_S = 1.8f
-        const val SPIN_RAD_S = 0.3f
+        const val SPIN_RAD_S = 0.075f
         const val MORPH_RATE = 3f
         const val PARTICLES = 220
         const val BPM = 60f
