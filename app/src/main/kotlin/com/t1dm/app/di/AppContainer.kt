@@ -207,6 +207,7 @@ import com.t1dm.sync.nightscout.NightscoutConfigStore
 import com.t1dm.sync.nightscout.NightscoutEnqueuer
 import com.t1dm.sync.nightscout.OkHttpNightscoutClient
 import kotlinx.coroutines.flow.update
+import com.t1dm.feature.cgm.listed
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -3291,6 +3292,13 @@ class AppContainer(context: Context) {
                 unidentifiedRssiDbm = unidentified.bestRssiDbm,
             )
         }.stateIn(appScope, SharingStarted.WhileSubscribed(5_000), com.t1dm.feature.cgm.CgmPanelState())
+    }
+
+    /** The CGM panel lists at least one sensor; null until the registry has hydrated. */
+    val hasCgm: StateFlow<Boolean?> by lazy {
+        combine(registry.hydrated, registry.sources, registry.authoritative) { hydrated, sources, auth ->
+            if (!hydrated) null else sources.any { it.listed(auth?.value) }
+        }.stateIn(appScope, SharingStarted.Eagerly, null)
     }
 
     /** Authoritative sensor changed: drop the forecast fit to the outgoing sensor's history. */

@@ -59,6 +59,11 @@ class ConnectedCgmRegistry(
     /** [activeIds] trimmed by the radio budget; the excess is dropped silently. */
     val admittedIds: StateFlow<Set<CgmSourceId>> = _admittedIds.asStateFlow()
 
+    private val _hydrated = MutableStateFlow(false)
+
+    /** Stored sources have loaded; until then an empty [sources] means nothing. */
+    val hydrated: StateFlow<Boolean> = _hydrated.asStateFlow()
+
     private val liveSources = MutableStateFlow<Map<CgmSourceId, ConnectedCgmSession>>(emptyMap())
 
     /** Not flatMapLatest over liveSources; that would resubscribe and drop an in-flight reading. */
@@ -310,6 +315,7 @@ class ConnectedCgmRegistry(
         repository.authoritativeSourceId()?.let { _authoritative.value = it }
         // Before the first supervision pass; an unset set reads as "everything held back".
         _admittedIds.value = admitted(_activeIds.value).toSet()
+        _hydrated.value = true
     }
 
     /** A session's own statement, landing first, wins over storage. */

@@ -39,6 +39,9 @@ data class CgmSensorLive(
     val supportsFrameCrypto: Boolean = false,
 )
 
+/** Whether the CGM panel shows a row for this source. */
+fun CgmSourceDescriptor.listed(authoritativeId: String?): Boolean = !hidden || id.value == authoritativeId
+
 /** Pure. authoritativeId null pre-adoption; admittedIds = radio budget's active set. */
 fun cgmPanelState(
     sources: List<CgmSourceDescriptor>,
@@ -61,7 +64,7 @@ fun cgmPanelState(
     sensors = sources.mapNotNull { d ->
         val id = d.id.value
         val authoritative = id == authoritativeId
-        if (d.hidden && !authoritative) return@mapNotNull null
+        if (!d.listed(authoritativeId)) return@mapNotNull null
         val l = live[id] ?: ABSENT
         val active = authoritative || id in activeIds
         // Warmup=established, resets start+recost. Faulted=RUNNING, skip needless reconnect.

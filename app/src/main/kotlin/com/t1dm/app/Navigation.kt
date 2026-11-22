@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -48,7 +49,10 @@ import androidx.compose.runtime.mutableLongStateOf
 import com.t1dm.core.model.LoggedEntry
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -109,6 +113,7 @@ import com.t1dm.core.model.InsulinPresetSpec
 import com.t1dm.core.model.BezierCurve
 import com.t1dm.core.model.DkaTimeline
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -251,12 +256,13 @@ internal val destinations = listOf(
 @Composable
 fun T1dmApp(container: AppContainer, openRoute: String? = null, onRouteOpened: () -> Unit = {}) {
     val navController = rememberNavController()
-    LaunchedEffect(openRoute) {
-        if (openRoute == null) return@LaunchedEffect
+    val startRoute = rememberStartRoute(container)
+    LaunchedEffect(openRoute, startRoute) {
+        if (openRoute == null || startRoute == null) return@LaunchedEffect
         navController.navigate(openRoute) {
             launchSingleTop = true
             restoreState = true
-            popUpTo("twin") { saveState = true }
+            popUpTo(navController.graph.findStartDestination().id) { saveState = true }
         }
         onRouteOpened()
     }
@@ -268,7 +274,6 @@ fun T1dmApp(container: AppContainer, openRoute: String? = null, onRouteOpened: (
     val snackbars = remember { SnackbarHostState() }
     val receiptScope = rememberCoroutineScope()
     val haptics = LocalT1dmHaptics.current
-    VolumeKeyShortcuts(navController, container, haptics)
     // Hoisted: the hub is in the `bottomBar` slot, the arc draws over the content. See NavWheel.kt.
     val wheel = rememberNavWheelState(destinations.size)
     // Never read here: every field is unwrapped in a draw lambda.
@@ -281,10 +286,18 @@ fun T1dmApp(container: AppContainer, openRoute: String? = null, onRouteOpened: (
             navController.navigate(destinations[index].route) {
                 launchSingleTop = true
                 restoreState = true
-                popUpTo("twin") { saveState = true }
+                popUpTo(navController.graph.findStartDestination().id) { saveState = true }
             }
         }
     }
+    if (startRoute == null) {
+        Box(Modifier.fillMaxSize().background(LocalT1dmSemantics.current.background)) {
+            ThemeBackdrop(bgAlphaPct, backdropBars)
+        }
+        return
+    }
+    VolumeKeyShortcuts(navController, container, haptics)
+    OpenBgOnFirstCgm(navController, container, startRoute)
     Box(Modifier.fillMaxSize().background(LocalT1dmSemantics.current.background)) {
         ThemeBackdrop(bgAlphaPct, backdropBars)
         Scaffold(
@@ -314,6 +327,7 @@ fun T1dmApp(container: AppContainer, openRoute: String? = null, onRouteOpened: (
                 T1dmNavHost(
                     navController,
                     container,
+                    startRoute,
                     onNotice = { message ->
                         receiptScope.launch {
                             snackbars.currentSnackbarData?.dismiss()
@@ -327,6 +341,37 @@ fun T1dmApp(container: AppContainer, openRoute: String? = null, onRouteOpened: (
         }
         // Outside the Scaffold on purpose: the arc must paint over the content.
         NavWheelArc(wheel, wheelMotion, destinations, onWheelSelect)
+    }
+}
+
+/** BG with a CGM listed, else Twin. Null while the registry hydrates; a stall yields Twin. */
+@Composable
+private fun rememberStartRoute(container: AppContainer): String? {
+    var route by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        if (route != null) return@LaunchedEffect
+        val hasCgm = withTimeoutOrNull(HYDRATE_WAIT_MS) { container.hasCgm.filterNotNull().first() }
+        route = if (hasCgm == true) "dashboard" else "twin"
+    }
+    return route
+}
+
+private const val HYDRATE_WAIT_MS = 2_000L
+
+@Composable
+private fun OpenBgOnFirstCgm(navController: NavHostController, container: AppContainer, startRoute: String) {
+    var listed by rememberSaveable { mutableStateOf(startRoute == "dashboard") }
+    LaunchedEffect(navController) {
+        container.hasCgm.filterNotNull().collect { hasCgm ->
+            if (hasCgm && !listed) {
+                navController.navigate("dashboard") {
+                    launchSingleTop = true
+                    restoreState = true
+                    popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                }
+            }
+            listed = hasCgm
+        }
     }
 }
 
@@ -699,6 +744,7 @@ private fun T1dmBottomBar(
     val viewedReading by container.viewedReading.collectAsState(null)
     val viewedLinkRssi by container.viewedLinkRssi.collectAsState(null)
     val direction by container.viewedDirection.collectAsState(null)
+    val hasCgm by container.hasCgm.collectAsState()
 
     // reading stays authoritative: what the alarm engine, statistics, dose calc and wire read.
     val shown = if (viewingOther) viewedReading else reading
@@ -727,77 +773,85 @@ private fun T1dmBottomBar(
             // 28sp, not displaySmall's 36: a signed risk value plus the icon overruns 132dp.
             val bgStyle = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold)
             val bgText = BgFormat.valueSignAligned(shown?.bgMgdl, unit)
-            Column(
-                Modifier
-                    // Equal to the sensor panel, or the puck between them leaves the centre.
-                    .weight(1f)
-                    .hapticClickable(HapticEvent.SegmentTick) {
-                        container.setUnitSpace(UnitSpace.entries[(unit.ordinal + 1) % UnitSpace.entries.size])
+            if (hasCgm == true) {
+                Column(
+                    Modifier
+                        // Equal to the sensor panel, or the puck between them leaves the centre.
+                        .weight(1f)
+                        .hapticClickable(HapticEvent.SegmentTick) {
+                            container.setUnitSpace(UnitSpace.entries[(unit.ordinal + 1) % UnitSpace.entries.size])
+                        }
+                        // Clearance from the puck.
+                        .padding(end = 12.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = bgText,
+                            style = bgStyle,
+                            // Order matters: STALE wins over the off-the-believed-sensor tint.
+                            color = when {
+                                stale -> cs.error
+                                viewingOther -> cs.tertiary
+                                else -> Color.Unspecified
+                            },
+                            maxLines = 1,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = BgFormat.arrow(shownDirection?.trend),
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = if (viewingOther) cs.tertiary else Color.Unspecified,
+                            maxLines = 1,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.width(TREND_COL_W),
+                        )
                     }
-                    // Clearance from the puck.
-                    .padding(end = 12.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = bgText,
-                        style = bgStyle,
-                        // Order matters: STALE wins over the off-the-believed-sensor tint.
-                        color = when {
-                            stale -> cs.error
-                            viewingOther -> cs.tertiary
-                            else -> Color.Unspecified
-                        },
-                        maxLines = 1,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        text = BgFormat.arrow(shownDirection?.trend),
-                        style = MaterialTheme.typography.headlineSmall,
-                        color = if (viewingOther) cs.tertiary else Color.Unspecified,
-                        maxLines = 1,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.width(TREND_COL_W),
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = BgFormat.unitLabel(unit) + (shown?.let { readingSuffix(it) } ?: ""),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = when {
+                                stale -> cs.error
+                                viewingOther -> cs.tertiary
+                                else -> cs.onSurfaceVariant
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            // Under the first digit: this line is narrower than the value's.
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(start = leadGlyphWidth(bgText, bgStyle)),
+                        )
+                        Text(
+                            text = shownDirection?.let { if (it.reported) "R" else "S" } ?: "",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = cs.onSurfaceVariant,
+                            maxLines = 1,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.width(TREND_COL_W),
+                        )
+                    }
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = BgFormat.unitLabel(unit) + (shown?.let { readingSuffix(it) } ?: ""),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = when {
-                            stale -> cs.error
-                            viewingOther -> cs.tertiary
-                            else -> cs.onSurfaceVariant
-                        },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        // Under the first digit: this line is narrower than the value's.
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(start = leadGlyphWidth(bgText, bgStyle)),
-                    )
-                    Text(
-                        text = shownDirection?.let { if (it.reported) "R" else "S" } ?: "",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = cs.onSurfaceVariant,
-                        maxLines = 1,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.width(TREND_COL_W),
-                    )
-                }
+            } else {
+                Spacer(Modifier.weight(1f))
             }
             NavWheelPuck(wheel, motion, destinations, current, onWheelSelect)
-            SensorPanel(
-                Modifier.weight(1f),
-                sourceLabel = sourceLabel,
-                sourceSerial = sourceSerial,
-                // Held link first; stored RSSI is the ADVERTISEMENT fallback, only while fresh.
-                rssi = viewedLinkRssi ?: viewedReading?.rssi?.takeUnless { stale },
-                status = sourceStatus,
-                ageMs = ageMs,
-                stale = stale,
-                viewingOther = viewingOther,
-                onCycle = container::cycleViewedSource,
-            )
+            if (hasCgm == true) {
+                SensorPanel(
+                    Modifier.weight(1f),
+                    sourceLabel = sourceLabel,
+                    sourceSerial = sourceSerial,
+                    // Held link first; stored RSSI is the ADVERTISEMENT fallback, only while fresh.
+                    rssi = viewedLinkRssi ?: viewedReading?.rssi?.takeUnless { stale },
+                    status = sourceStatus,
+                    ageMs = ageMs,
+                    stale = stale,
+                    viewingOther = viewingOther,
+                    onCycle = container::cycleViewedSource,
+                )
+            } else {
+                Spacer(Modifier.weight(1f))
+            }
         }
     }
 }
@@ -952,7 +1006,7 @@ private fun VolumeKeyShortcuts(
             navController.navigate(if (up) "meals" else "insulin") {
                 launchSingleTop = true
                 restoreState = true
-                popUpTo("twin") { saveState = true }
+                popUpTo(navController.graph.findStartDestination().id) { saveState = true }
             }
             true
         }
@@ -972,6 +1026,7 @@ private tailrec fun Context.findMainActivity(): MainActivity? = when (this) {
 private fun T1dmNavHost(
     navController: NavHostController,
     container: AppContainer,
+    startRoute: String,
     onNotice: (String) -> Unit,
     onLogged: (LogHandle) -> Unit,
 ) {
@@ -982,7 +1037,7 @@ private fun T1dmNavHost(
     CompositionLocalProvider(LocalSettingsFocus provides settingsFocus) {
     NavHost(
         navController = navController,
-        startDestination = "twin",
+        startDestination = startRoute,
         enterTransition = { navEnter(animationsOn) },
         exitTransition = { navExit(animationsOn) },
         popEnterTransition = { navEnter(animationsOn) },
