@@ -524,12 +524,8 @@ class AppContainer(context: Context) {
     var themeIdSnapshot: String = com.t1dm.core.design.ThemeIds.POLYPHEMUS
         private set
 
-    @Volatile
-    var customThemeJsonSnapshot: String? = null
-        private set
-
     val notificationAccentArgb: Int
-        get() = com.t1dm.app.notify.NotificationIcons.accentArgb(themeIdSnapshot, customThemeJsonSnapshot)
+        get() = com.t1dm.app.notify.NotificationIcons.accentArgb(themeIdSnapshot)
 
     // DEATH: total-silence override, read synchronously by the FGS alarm; never exported.
     @Volatile
@@ -1506,7 +1502,6 @@ class AppContainer(context: Context) {
         // Bridge flag is read on the CGM hot path from a plain field; must be published at startup.
         appScope.launch { refreshNightscoutEnabled() }
         appScope.launch { settingsStore.themeId.collect { themeIdSnapshot = it } }
-        appScope.launch { settingsStore.customThemeJson.collect { customThemeJsonSnapshot = it } }
         appScope.launch { settingsStore.deathMode.collect { deathModeSnapshot = it } }
         appScope.launch { settingsStore.snoozeMin.collect { snoozeMinSnapshot = it } }
         appScope.launch { settingsStore.forecastMode.collect { forecastModeSnapshot = it } }
@@ -3132,10 +3127,7 @@ class AppContainer(context: Context) {
 
     /** SPEC/watch.md §5.7: the theme, thresholds and graph frame the phone itself draws with. */
     private suspend fun watchDisplay(): WatchDisplay {
-        val p = com.t1dm.core.design.resolvePalette(
-            settingsStore.currentThemeId(),
-            settingsStore.currentCustomThemeJson(),
-        )
+        val p = com.t1dm.core.design.resolvePalette(settingsStore.currentThemeId())
         val t = alarmConfig.thresholds
         val range = graphSettings.currentRange()
         return WatchDisplay(
@@ -3172,11 +3164,10 @@ class AppContainer(context: Context) {
         scope.launch(dispatchers.default) {
             combine(
                 settingsStore.themeId,
-                settingsStore.customThemeJson,
                 alarmConfigFlow,
                 graphSettings.range,
                 graphSettings.windowHours,
-            ) { a, b, c, d, e -> listOf(a, b, c, d, e) }
+            ) { a, b, c, d -> listOf(a, b, c, d) }
                 .distinctUntilChanged()
                 .drop(1)
                 .collect { runCatching { watchHub.pushDisplay(System.currentTimeMillis()) } }

@@ -42,7 +42,6 @@ internal data class WidgetSnapshot(
     val lossMin: Int,
     /** Carried so `provideGlance` can seed the palette holders itself. */
     val themeId: String,
-    val customThemeJson: String?,
 )
 
 /** Minutes. Shared so the live pull and [WidgetStateStore]'s rebuild cannot drift apart. */
@@ -78,7 +77,6 @@ internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
         val bgAlphaPct = runCatching { container.settingsStore.currentBackgroundAlphaPct() }
             .getOrDefault(com.t1dm.app.settings.SettingsStore.DEFAULT_BG_ALPHA_PCT)
         val themeId = runCatching { container.settingsStore.currentThemeId() }.getOrDefault(ThemeIds.POLYPHEMUS)
-        val customThemeJson = runCatching { container.settingsStore.currentCustomThemeJson() }.getOrNull()
         val state = container.inferenceState.value
         val onBoard = runCatching { container.iobCobNow() }.getOrNull()
         val clock = state.selectedPredictedTime
@@ -117,7 +115,6 @@ internal suspend fun currentWidgetSnapshot(context: Context): WidgetSnapshot {
             thresholds = cfg.thresholds,
             lossMin = cfg.lossMin,
             themeId = themeId,
-            customThemeJson = customThemeJson,
         )
     }
 }

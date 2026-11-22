@@ -71,7 +71,6 @@ class WidgetStateStoreTest {
         thresholds = thresholds,
         lossMin = 25,
         themeId = ThemeIds.HELLO_KITTY,
-        customThemeJson = null,
     )
 
     @Test
@@ -118,7 +117,7 @@ class WidgetStateStoreTest {
         assertTrue(cached.death)
         assertEquals(ThemeIds.HELLO_KITTY, cached.themeId)
         assertEquals(-72, cached.rssi)
-        assertEquals(ThemeIds.HELLO_KITTY to null, WidgetStateStore.themeOf(prefs))
+        assertEquals(ThemeIds.HELLO_KITTY,WidgetStateStore.themeOf(prefs))
     }
 
     /** 175 is HIGH against the persisted 170, IN_RANGE against the default 180. */
@@ -185,7 +184,7 @@ class WidgetStateStoreTest {
         )
 
         assertEquals(ThemeIds.POLYPHEMUS, WidgetStateStore.read(prefs, nowMs)!!.themeId)
-        assertEquals(ThemeIds.POLYPHEMUS, WidgetStateStore.themeOf(prefs).first)
+        assertEquals(ThemeIds.POLYPHEMUS, WidgetStateStore.themeOf(prefs))
     }
 
     @Test

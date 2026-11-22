@@ -94,9 +94,7 @@ class ContrastTest {
         }
     }
 
-    /** As parseThemeJson builds one; assembled, not parsed, org.json is a stub in JVM tests. */
     private fun imported(surface: Color, ink: Color) = TronPalette.copy(
-        id = ThemeIds.CUSTOM,
         surface = surface,
         surfaceVariant = surface,
         ink = ink,

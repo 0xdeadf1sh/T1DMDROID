@@ -4,7 +4,6 @@ import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.graphics.Color
-import org.json.JSONObject
 
 /** Semantic roles; chrome maps via toColorScheme, bands via LocalT1dmSemantics. */
 data class T1dmPalette(
@@ -63,7 +62,6 @@ object ThemeIds {
     const val HELLO_KITTY = "hello_kitty"
     const val EINK = "eink"
     const val MATRIX = "matrix"
-    const val CUSTOM = "custom"
 }
 
 /** Dark only; magenta-on-cyan keeps it apart from Tron's cyan-on-amber. */
@@ -202,72 +200,9 @@ val BundledPalettes: List<T1dmPalette> = listOf(
 
 fun paletteForId(id: String?): T1dmPalette = BundledPalettes.firstOrNull { it.id == id } ?: PolyphemusPalette
 
-fun isKnownThemeId(id: String?): Boolean = id == ThemeIds.CUSTOM || BundledPalettes.any { it.id == id }
+fun isKnownThemeId(id: String?): Boolean = BundledPalettes.any { it.id == id }
 
 /** Retired theme ids survive in kv rows/exports/aliases; caller can notice and rewrite it. */
 fun normalizeThemeId(id: String?): String = if (isKnownThemeId(id)) id!! else ThemeIds.POLYPHEMUS
 
-/** The one place a custom theme decodes, so Activity, FGS notification and widget agree. */
-fun resolvePalette(themeId: String?, customThemeJson: String?): T1dmPalette =
-    if (themeId == ThemeIds.CUSTOM && !customThemeJson.isNullOrBlank()) {
-        runCatching { parseThemeJson(customThemeJson) }.getOrDefault(PolyphemusPalette)
-    } else {
-        paletteForId(themeId)
-    }
-
-/** Imported file: format="t1dm.theme" tag, name, dark, colors block of #RRGGBB strings. */
-fun parseThemeJson(text: String): T1dmPalette {
-    val root = runCatching { JSONObject(text) }
-        .getOrElse { throw IllegalArgumentException("Not a theme file - invalid JSON") }
-    if (root.optString("format") != "t1dm.theme") {
-        throw IllegalArgumentException("Wrong \"format\" tag - expected \"t1dm.theme\"")
-    }
-    val colors = root.optJSONObject("colors")
-        ?: throw IllegalArgumentException("No \"colors\" block")
-    val dark = root.optBoolean("dark", true)
-
-    fun req(role: String): Color {
-        if (!colors.has(role)) throw IllegalArgumentException("Missing required colour \"$role\"")
-        return parseHexColor(colors.getString(role), role)
-    }
-    fun opt(role: String, fallback: Color): Color =
-        if (colors.has(role)) parseHexColor(colors.getString(role), role) else fallback
-
-    val bg = req("background")
-    val surface = req("surface")
-    val primary = req("primary")
-    val secondary = req("secondary")
-    val ink = req("ink")
-    return T1dmPalette(
-        id = ThemeIds.CUSTOM,
-        displayName = root.optString("name").ifBlank { "Custom" },
-        dark = dark,
-        background = bg,
-        surface = surface,
-        surfaceVariant = opt("surfaceVariant", surface),
-        primary = primary,
-        onPrimary = opt("onPrimary", if (dark) Color.Black else Color.White),
-        secondary = secondary,
-        onSecondary = opt("onSecondary", if (dark) Color.Black else Color.White),
-        ink = ink,
-        inkMuted = opt("inkMuted", ink.copy(alpha = 0.6f)),
-        grid = opt("grid", ink.copy(alpha = 0.15f)),
-        urgentLow = req("urgentLow"),
-        low = req("low"),
-        inRange = req("inRange"),
-        high = req("high"),
-        urgentHigh = req("urgentHigh"),
-    )
-}
-
-private fun parseHexColor(raw: String, role: String): Color {
-    val s = raw.trim().removePrefix("#")
-    val hex = when (s.length) {
-        6 -> "FF$s"
-        8 -> s
-        else -> throw IllegalArgumentException("\"$role\" must be #RRGGBB or #AARRGGBB (got \"$raw\")")
-    }
-    val v = hex.toLongOrNull(16)
-        ?: throw IllegalArgumentException("\"$role\" is not a valid hex (got \"$raw\")")
-    return Color(v.toInt())
-}
+fun resolvePalette(themeId: String?): T1dmPalette = paletteForId(themeId)

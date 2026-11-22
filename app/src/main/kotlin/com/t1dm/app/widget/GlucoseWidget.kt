@@ -67,8 +67,8 @@ class GlucoseWidget : GlanceAppWidget() {
         val cached = if (live != null) null else runCatching { lastKnown(context, id) }.getOrNull()
 
         // Before composing: palette holders read at composition time; nothing known writes nothing.
-        themeOf(live, cached)?.let { (themeId, customThemeJson) ->
-            runCatching { applyWidgetPalette(resolvePalette(themeId, customThemeJson)) }
+        themeOf(live, cached)?.let { themeId ->
+            runCatching { applyWidgetPalette(resolvePalette(themeId)) }
                 .onFailure { Timber.tag(TAG).w(it, "widget palette seed failed - keeping the current palette") }
         }
 
@@ -91,8 +91,8 @@ class GlucoseWidget : GlanceAppWidget() {
     private suspend fun lastKnown(context: Context, id: GlanceId): Preferences =
         getAppWidgetState(context, PreferencesGlanceStateDefinition, id)
 
-    private fun themeOf(live: WidgetSnapshot?, cached: Preferences?): Pair<String, String?>? = when {
-        live != null -> live.themeId to live.customThemeJson
+    private fun themeOf(live: WidgetSnapshot?, cached: Preferences?): String? = when {
+        live != null -> live.themeId
         cached != null -> WidgetStateStore.themeOf(cached)
         else -> null
     }

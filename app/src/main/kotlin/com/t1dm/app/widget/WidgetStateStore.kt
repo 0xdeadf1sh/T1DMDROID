@@ -37,7 +37,6 @@ internal object WidgetStateStore {
     // Without these a cached tile paints the process defaults over the user's own choices.
     private val KEY_UNIT = stringPreferencesKey("t1dm.widget.unit")
     private val KEY_THEME = stringPreferencesKey("t1dm.widget.theme_id")
-    private val KEY_CUSTOM_THEME = stringPreferencesKey("t1dm.widget.custom_theme_json")
     private val KEY_BG_ALPHA = intPreferencesKey("t1dm.widget.bg_alpha_pct")
     private val KEY_ANIMATIONS = booleanPreferencesKey("t1dm.widget.animations")
     private val KEY_DEATH = booleanPreferencesKey("t1dm.widget.death")
@@ -71,7 +70,6 @@ internal object WidgetStateStore {
         }
         prefs[KEY_UNIT] = snap.unit.name
         prefs[KEY_THEME] = snap.themeId
-        snap.customThemeJson?.let { prefs[KEY_CUSTOM_THEME] = it } ?: prefs.remove(KEY_CUSTOM_THEME)
         prefs[KEY_BG_ALPHA] = snap.bgAlphaPct
         prefs[KEY_ANIMATIONS] = snap.animationsEnabled
         prefs[KEY_DEATH] = snap.death
@@ -121,13 +119,11 @@ internal object WidgetStateStore {
             rssi = prefs[KEY_RSSI],
             death = prefs[KEY_DEATH] ?: false,
             themeId = normalizeThemeId(prefs[KEY_THEME]),
-            customThemeJson = prefs[KEY_CUSTOM_THEME],
             nowMs = nowMs,
         )
     }
 
-    fun themeOf(prefs: Preferences): Pair<String, String?> =
-        normalizeThemeId(prefs[KEY_THEME]) to prefs[KEY_CUSTOM_THEME]
+    fun themeOf(prefs: Preferences): String = normalizeThemeId(prefs[KEY_THEME])
 
     /** The floor render: nothing known, nothing invented. */
     fun unknown(nowMs: Long): WidgetSnapshot = snapshotOf(
@@ -141,7 +137,6 @@ internal object WidgetStateStore {
         rssi = null,
         death = false,
         themeId = ThemeIds.POLYPHEMUS,
-        customThemeJson = null,
         nowMs = nowMs,
     )
 
@@ -158,7 +153,6 @@ internal object WidgetStateStore {
         rssi: Int?,
         death: Boolean,
         themeId: String,
-        customThemeJson: String?,
         nowMs: Long,
     ): WidgetSnapshot {
         // Nothing off-process knows what the model last said, so every forecast field fails closed.
@@ -193,7 +187,6 @@ internal object WidgetStateStore {
             thresholds = thresholds,
             lossMin = lossMin,
             themeId = themeId,
-            customThemeJson = customThemeJson,
         )
     }
 }

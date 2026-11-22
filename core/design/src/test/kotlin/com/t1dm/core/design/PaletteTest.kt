@@ -8,22 +8,22 @@ import org.junit.Test
 class PaletteTest {
 
     @Test fun `polyphemus is dark only`() {
-        assertSame(PolyphemusPalette, resolvePalette(ThemeIds.POLYPHEMUS, null))
+        assertSame(PolyphemusPalette, resolvePalette(ThemeIds.POLYPHEMUS))
         assertTrue(PolyphemusPalette.dark)
     }
 
     @Test fun `a fixed theme resolves to itself`() {
-        assertSame(HelloKittyPalette, resolvePalette(ThemeIds.HELLO_KITTY, null))
-        assertSame(TronPalette, resolvePalette(ThemeIds.TRON, null))
+        assertSame(HelloKittyPalette, resolvePalette(ThemeIds.HELLO_KITTY))
+        assertSame(TronPalette, resolvePalette(ThemeIds.TRON))
     }
 
     @Test fun `an unknown id falls back to polyphemus`() {
         assertEquals(ThemeIds.POLYPHEMUS, normalizeThemeId("windows_xp"))
-        assertSame(PolyphemusPalette, resolvePalette("windows_xp", null))
+        assertSame(PolyphemusPalette, resolvePalette("windows_xp"))
     }
 
-    @Test fun `a broken custom theme falls back to polyphemus`() {
-        assertSame(PolyphemusPalette, resolvePalette(ThemeIds.CUSTOM, "{not json"))
+    @Test fun `the retired custom id falls back to polyphemus`() {
+        assertEquals(ThemeIds.POLYPHEMUS, normalizeThemeId("custom"))
     }
 
     @Test fun `the picker lists polyphemus once, first`() {

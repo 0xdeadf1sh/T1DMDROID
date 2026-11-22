@@ -56,7 +56,7 @@ class CgmScanServiceTest {
             GlanceReadings.create(listOf(r)), InferenceState(), THRESHOLDS, null,
             lossMin = 20, staleMin = 15, nowMs = r.rxWallMs + ageMs, trend = null,
         )
-        return widgetPushSig(glance, r.rxWallMs, UnitSpace.MgDl, 0, null, "tron", null)
+        return widgetPushSig(glance, r.rxWallMs, UnitSpace.MgDl, 0, null, "tron")
     }
 
     private fun reading(rxWallMs: Long) = CgmReading(

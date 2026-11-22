@@ -1,7 +1,6 @@
 package com.t1dm.feature.settings
 
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -26,8 +25,6 @@ fun DisplaySettingsScreen(
     selectedThemeId: String,
     fontOptions: List<Pair<String, String>>,
     selectedFontId: String,
-    customThemeName: String?,
-    importStatus: String?,
     temperatureUnit: TempUnit,
     hapticOptions: List<Pair<String, String>>,
     selectedHaptic: String,
@@ -39,7 +36,6 @@ fun DisplaySettingsScreen(
     onSetBackgroundAlpha: (Int) -> Unit,
     onSelectTheme: (String) -> Unit,
     onSelectFont: (String) -> Unit,
-    onImportCustomTheme: () -> Unit,
     onSetTemperatureUnit: (TempUnit) -> Unit,
     onSelectHaptic: (String) -> Unit,
     onPreviewHaptic: (String) -> Unit = {},
@@ -50,24 +46,6 @@ fun DisplaySettingsScreen(
     SettingsScaffold(SettingsScreenKey.DISPLAY) {
         SettingsSectionHeader("Theme")
         ChipPicker(displayTheme, themeOptions, selectedThemeId) { onSelectTheme(it) }
-        SettingsAnchor(displayCustomTheme) {
-            if (customThemeName != null) {
-                Text(
-                    "Custom theme: $customThemeName",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-            OutlinedButton(
-                onClick = { haptics.perform(HapticEvent.Tap); onImportCustomTheme() },
-                modifier = Modifier.padding(top = 4.dp),
-            ) {
-                Text(if (customThemeName != null) "Replace custom theme (JSON)..." else "Import custom theme (JSON)...")
-            }
-            if (importStatus != null) {
-                Text(importStatus, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
 
         SettingsSectionHeader("Background")
         SettingsNote("Each theme's own motif behind the app; 0 % turns it off.")
@@ -151,15 +129,6 @@ private val displayTheme = SettingsKnob(
         "theme", "colour", "color", "colours", "colors", "palette", "skin", "appearance", "look",
         "dark", "light", "polyphemus", "night", "tron", "umbrella", "hello kitty", "accent", "style", "recolour",
     ),
-)
-
-private val displayCustomTheme = SettingsKnob(
-    id = "display.custom_theme",
-    screen = SettingsScreenKey.DISPLAY,
-    section = "Theme",
-    label = "Import custom theme (JSON)",
-    subtitle = "Load a palette from a JSON file",
-    synonyms = listOf("custom theme", "import theme", "json", "palette file", "own colours", "my colours", "load theme"),
 )
 
 private val displayBackgroundOpacity = SettingsKnob(
@@ -294,7 +263,6 @@ private val displayHaptics = SettingsKnob(
 
 internal val settingsDisplayKnobs = listOf(
     displayTheme,
-    displayCustomTheme,
     displayBackgroundOpacity,
     displayFont,
     displayGlucoseUnit,

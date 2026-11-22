@@ -80,8 +80,7 @@ class MainActivity : ComponentActivity() {
             val animations by ss.animationsEnabled.collectAsState(true)
             val death by ss.deathMode.collectAsState(false)
             val hapticsKey by ss.hapticsLevel.collectAsState(HapticStrength.DEFAULT.name)
-            val customJson by ss.customThemeJson.collectAsState(null)
-            val palette = remember(themeId, customJson) { resolvePalette(themeId, customJson) }
+            val palette = remember(themeId) { resolvePalette(themeId) }
             SideEffect {
                 WindowCompat.getInsetsController(window, window.decorView).apply {
                     isAppearanceLightStatusBars = !palette.dark

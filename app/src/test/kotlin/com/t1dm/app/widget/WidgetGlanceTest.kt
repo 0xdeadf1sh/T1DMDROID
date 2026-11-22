@@ -65,7 +65,6 @@ class WidgetGlanceTest {
         thresholds = thresholds,
         lossMin = 25,
         themeId = ThemeIds.HELLO_KITTY,
-        customThemeJson = null,
     )
 
     /** Mirrors `provideGlance`'s fallback chain. */

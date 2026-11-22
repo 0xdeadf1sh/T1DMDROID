@@ -360,15 +360,13 @@ class SettingsStore(
     val temperatureUnit: Flow<String> = repository.observeKv(K_UI_TEMP_UNIT).map { it ?: DEFAULT_TEMP_UNIT }
     suspend fun setTemperatureUnit(key: String) = put(K_UI_TEMP_UNIT, key)
 
-    // Custom-theme JSON verbatim for re-selecting custom; both read seams normalise a retired id.
+    // Both read seams normalise a retired id.
     val themeId: Flow<String> =
         repository.observeKv(K_UI_THEME).map { normalizeThemeId(it ?: DEFAULT_THEME) }
     val fontId: Flow<String> = repository.observeKv(K_UI_FONT).map { it ?: DEFAULT_FONT }
-    val customThemeJson: Flow<String?> = repository.observeKv(K_UI_CUSTOM_THEME)
 
     suspend fun currentThemeId(): String = normalizeThemeId(repository.getKv(K_UI_THEME) ?: DEFAULT_THEME)
     suspend fun currentFontId(): String = repository.getKv(K_UI_FONT) ?: DEFAULT_FONT
-    suspend fun currentCustomThemeJson(): String? = repository.getKv(K_UI_CUSTOM_THEME)
 
     /** Returns the coerced id, or null if unchanged; run once so a retired id isn't re-exported. */
     suspend fun coerceRetiredThemeId(): String? {
@@ -381,8 +379,6 @@ class SettingsStore(
 
     suspend fun setThemeId(id: String) = put(K_UI_THEME, id)
     suspend fun setFontId(id: String) = put(K_UI_FONT, id)
-    /** The caller validates via `parseThemeJson` first. */
-    suspend fun setCustomThemeJson(json: String) = put(K_UI_CUSTOM_THEME, json)
 
     // Stored as the compact `BezierCurve.encode` string.
     val carbBezier: Flow<String?> = repository.observeKv(K_CURVE_CARB_BEZIER)
@@ -752,7 +748,6 @@ class SettingsStore(
         const val DEFAULT_BG_ALPHA_PCT = 15
         private const val K_UI_THEME = "ui.theme"
         private const val K_UI_FONT = "ui.font"
-        private const val K_UI_CUSTOM_THEME = "ui.custom_theme_json"
         private const val K_UI_TEMP_UNIT = "ui.temp_unit"
         const val DEFAULT_TEMP_UNIT = "C"
         private const val K_UI_CGM_LOG_FONT_SP = "ui.cgm_log_font_sp"

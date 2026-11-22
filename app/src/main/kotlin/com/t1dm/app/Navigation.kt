@@ -206,8 +206,6 @@ import com.t1dm.feature.stats.StatsScreen
 import com.t1dm.feature.dashboard.CircadianScreen
 import com.t1dm.core.design.BundledPalettes
 import com.t1dm.core.design.T1dmFontId
-import com.t1dm.core.design.ThemeIds
-import com.t1dm.core.design.parseThemeJson
 
 private fun WatchSecurityState.toPanelDevice() = WatchPanelDevice(
     id = deviceId.orEmpty(),
@@ -1860,37 +1858,13 @@ private fun T1dmNavHost(
             val themeId by ss.themeId.collectAsState(SettingsStore.DEFAULT_THEME)
             val fontId by ss.fontId.collectAsState(SettingsStore.DEFAULT_FONT)
             val tempUnit by container.temperatureUnit.collectAsState(com.t1dm.core.model.TempUnit.CELSIUS)
-            val customJson by ss.customThemeJson.collectAsState(null)
             val bgAlphaPct by ss.backgroundAlphaPct.collectAsState(com.t1dm.app.settings.SettingsStore.DEFAULT_BG_ALPHA_PCT)
             val hapticsKey by ss.hapticsLevel.collectAsState(SettingsStore.DEFAULT_HAPTICS)
             // preview takes strength explicitly so the tap is felt before the kv round-trips.
             val haptics = LocalT1dmHaptics.current
-            var importStatus by remember { mutableStateOf<String?>(null) }
-            val customName = remember(customJson) {
-                customJson?.takeIf { it.isNotBlank() }?.let {
-                    runCatching { parseThemeJson(it).displayName }.getOrNull()
-                }
-            }
-            val themeOptions = remember {
-                BundledPalettes.distinctBy { it.id }.map { it.id to it.displayName } +
-                    (ThemeIds.CUSTOM to "Custom")
-            }
+            val themeOptions = remember { BundledPalettes.distinctBy { it.id }.map { it.id to it.displayName } }
             val fontOptions = remember { T1dmFontId.entries.map { it.storageKey to it.displayName } }
             val hapticOptions = remember { HapticStrength.entries.map { it.name to it.displayName } }
-            val importLauncher = rememberLauncherForActivityResult(
-                ActivityResultContracts.OpenDocument(),
-            ) { uri ->
-                if (uri == null) { importStatus = "Import cancelled" } else scope.launch {
-                    importStatus = runCatching {
-                        val text = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes().decodeToString() }
-                            ?: error("could not open file")
-                        val palette = parseThemeJson(text) // throws a plain-language message
-                        ss.setCustomThemeJson(text)
-                        ss.setThemeId(ThemeIds.CUSTOM)
-                        "Loaded theme \"${palette.displayName}\""
-                    }.getOrElse { it.message ?: "Import failed" }
-                }
-            }
             DisplaySettingsScreen(
                 unitSpace = statsState.unitSpace,
                 targetLow = statsState.targetRange.lowMgdl,
@@ -1903,8 +1877,6 @@ private fun T1dmNavHost(
                 selectedThemeId = themeId,
                 fontOptions = fontOptions,
                 selectedFontId = fontId,
-                customThemeName = customName,
-                importStatus = importStatus,
                 temperatureUnit = tempUnit,
                 hapticOptions = hapticOptions,
                 selectedHaptic = hapticsKey,
@@ -1916,7 +1888,6 @@ private fun T1dmNavHost(
                 onSetBackgroundAlpha = { pct -> scope.launch { ss.setBackgroundAlphaPct(pct) } },
                 onSelectTheme = { id -> scope.launch { ss.setThemeId(id) } },
                 onSelectFont = { id -> scope.launch { ss.setFontId(id) } },
-                onImportCustomTheme = { importStatus = null; importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
                 onSetTemperatureUnit = { u -> scope.launch { container.setTemperatureUnit(u) } },
                 onSelectHaptic = { n -> scope.launch { ss.setHapticsLevel(HapticStrength.forKey(n)) } },
                 onPreviewHaptic = { n -> haptics.preview(HapticStrength.forKey(n), HapticEvent.Confirm) },

@@ -85,7 +85,7 @@ private data class GlanceInputs(
     val theme: ThemeSig,
 )
 
-private data class ThemeSig(val id: String, val customJson: String?)
+private typealias ThemeSig = String
 
 /** The next epoch-aligned period boundary strictly after [nowMs]. */
 internal fun nextTimedCycleMs(nowMs: Long, periodMin: Int): Long {
@@ -323,11 +323,7 @@ class CgmScanService : LifecycleService() {
             val ticker = kotlinx.coroutines.flow.flow {
                 while (isActive) { emit(Unit); delay(NOTIF_TICK_MS) }
             }
-            val theme = combine(
-                container.settingsStore.themeId,
-                container.settingsStore.customThemeJson,
-                ::ThemeSig,
-            )
+            val theme = container.settingsStore.themeId
             combine(
                 // Pair, not newest row: a promoted reconstruction is a row like any other.
                 container.glanceReadings.onStart { emit(GlanceReadings.EMPTY to null) },
@@ -374,12 +370,12 @@ class CgmScanService : LifecycleService() {
             null
         }
         // Same signature that drove this refresh, resolved once so both surfaces repaint together.
-        val (themeId, customJson) = themeSig
-        val palette = resolvePalette(themeId, customJson)
+        val themeId = themeSig
+        val palette = resolvePalette(themeId)
         val accent = palette.primary.toArgb()
         // A widget push parcels ~2 MB: only when what it draws changed.
         val widgetSig = widgetPushSig(
-            glance, readings.lastMeasured?.rxWallMs, unit, accent, state.selectedPredictedTime, themeId, customJson,
+            glance, readings.lastMeasured?.rxWallMs, unit, accent, state.selectedPredictedTime, themeId,
         )
         val widgetChanged = widgetSig != lastWidgetPushSig
         if (widgetChanged) lastWidgetPushSig = widgetSig
@@ -892,8 +888,7 @@ internal fun widgetPushSig(
     accent: Int,
     predictedTime: PredictedTime?,
     themeId: String,
-    customJson: String?,
 ): List<Any?> = listOf(
     glance.copy(readingAgeMs = glance.readingAgeMs / 60_000L),
-    readingWallMs, unit, accent, predictedTime, themeId, customJson,
+    readingWallMs, unit, accent, predictedTime, themeId,
 )
