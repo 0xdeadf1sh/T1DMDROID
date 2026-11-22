@@ -936,7 +936,7 @@ class AppContainer(context: Context) {
             ?.let { id -> inferenceState.value.metaOf(id) } ?: inferenceState.value.metas.firstOrNull()
         val nativeOk = runCatching { nativeCore.roundtrip("about") == "rust-core echo: about" }.getOrDefault(false)
         return AboutInfo(
-            appName = "T1DM",
+            appName = "Polyphemus",
             versionName = BuildConfig.VERSION_NAME,
             versionCode = BuildConfig.VERSION_CODE,
             applicationId = appContext.packageName,
