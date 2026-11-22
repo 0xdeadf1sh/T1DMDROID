@@ -49,7 +49,6 @@ fun TwinView(
     modifier: Modifier = Modifier,
     onOrbit: (rad: Float) -> Unit = {},
     onZoom: (absLogScale: Float) -> Unit = {},
-    callouts: Boolean = true,
     sensors: List<TwinSensor> = emptyList(),
     staleAfterMs: Long = Long.MAX_VALUE,
     /** Non-null: a tap on the skin answers with a placement whose sensorId is blank. */
@@ -98,10 +97,6 @@ fun TwinView(
         view.renderer.show(TwinMorphs.weights(scan, body))
         view.kick()
     }
-    LaunchedEffect(callouts) {
-        view.renderer.shiftTarget = if (callouts) CALLOUT_BODY_SHIFT else 0f
-        view.kick()
-    }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle) {
         val observer = LifecycleEventObserver { _, e ->
@@ -120,9 +115,6 @@ fun TwinView(
     }
     AndroidView(factory = { view }, modifier = modifier)
 }
-
-/** NDC; clears the panel on the right. */
-private const val CALLOUT_BODY_SHIFT = -0.3f
 
 /** Re-judges staleness while no new reading arrives. */
 private const val GLOW_TICK_MS = 10_000L

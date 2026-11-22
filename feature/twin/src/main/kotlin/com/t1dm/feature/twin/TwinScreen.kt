@@ -1,7 +1,6 @@
 package com.t1dm.feature.twin
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,7 +19,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
 import com.t1dm.core.design.rememberT1dmHaptics
@@ -59,23 +57,29 @@ fun TwinScreen(
     val effective = effectiveScan(latest, overrides, draft)
     var trait by remember { mutableStateOf(TwinTrait.HEIGHT) }
     val edited = overrides.keys + draft.keys
-    val panelAlpha by animateFloatAsState(if (editing) 0f else 1f, label = "panel")
 
     Box(modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
+            if (effective != null) {
+                TwinTraitBar(
+                    effective,
+                    onPick = {
+                        haptics.perform(HapticEvent.Tap)
+                        trait = it
+                        editing = true
+                    },
+                    enabled = latest != null,
+                )
+            }
             Box(Modifier.fillMaxWidth().weight(1f).tutorialTarget(tut, TutorialTarget.BODY)) {
                 TwinView(
                     effective,
                     Modifier.fillMaxSize(),
                     onOrbit = { tut.orbitRad += it },
                     onZoom = { tut.zoomLog += it },
-                    callouts = !editing,
                     sensors = sensors,
                     staleAfterMs = staleAfterMs,
                 )
-                if (panelAlpha > 0f && effective != null) {
-                    TwinPanel(effective, Modifier.fillMaxSize().alpha(panelAlpha))
-                }
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,

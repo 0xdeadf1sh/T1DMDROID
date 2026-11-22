@@ -50,7 +50,6 @@ fun TwinPlaceScreen(
             TwinView(
                 effectiveScan(latest, overrides, emptyMap()),
                 Modifier.fillMaxSize(),
-                callouts = false,
                 sensors = shown,
                 staleAfterMs = staleAfterMs,
                 onPlace = {

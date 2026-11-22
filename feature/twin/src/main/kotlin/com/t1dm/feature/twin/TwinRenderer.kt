@@ -53,9 +53,6 @@ internal class TwinRenderer(
     @Volatile var zoomTarget = 1f
     @Volatile var lastTouchNs = 0L
 
-    /** Horizontal body offset goal in NDC; negative moves it left. */
-    @Volatile var shiftTarget = 0f
-
     /** False: morphs jump to their end state, and the scene holds still. */
     @Volatile var animate = true
     @Volatile var sensors: List<SensorDraw> = emptyList()
@@ -122,9 +119,6 @@ internal class TwinRenderer(
     private var yaw = 0f
     private var pitch = 0.12f
     private var zoom = 1f
-    private var shift = 0f
-    private val shifted = FloatArray(16)
-    private val shiftedProj = FloatArray(16)
     private var haloProg = 0
     private var puckVao = 0
     private val puck = puckMesh()
@@ -226,7 +220,6 @@ internal class TwinRenderer(
         yaw += (yawAuto + yawTarget - yaw) * ease
         pitch += (pitchTarget - pitch) * ease
         zoom += (zoomTarget - zoom) * ease
-        shift += (shiftTarget - shift) * ease
         val bodyH = maxY - minY
         val z = zoom
         val toFace = ((1f - z) / (1f - MIN_ZOOM)).coerceIn(0f, 1f)
@@ -240,10 +233,7 @@ internal class TwinRenderer(
         val ey = cy + sin(pitch) * dist
         val ez = cos(yaw) * cos(pitch) * dist
         Matrix.setLookAtM(view, 0, ex, ey, ez, 0f, cy, 0f, 0f, 1f, 0f)
-        Matrix.setIdentityM(shifted, 0)
-        shifted[12] = shift
-        Matrix.multiplyMM(shiftedProj, 0, shifted, 0, proj, 0)
-        Matrix.multiplyMM(mvp, 0, shiftedProj, 0, view, 0)
+        Matrix.multiplyMM(mvp, 0, proj, 0, view, 0)
         pickNdc?.let {
             pickNdc = null
             pick(it[0], it[1])
