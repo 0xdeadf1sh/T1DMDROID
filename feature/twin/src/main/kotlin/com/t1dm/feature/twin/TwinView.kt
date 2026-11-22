@@ -87,7 +87,7 @@ fun TwinView(
             view.renderer.sensors = placed.map { s ->
                 val p = s.placement!!
                 val glow = TwinSignal.glowAt(s.rssiDbm, s.lastReadingMs, now, staleAfterMs)
-                SensorDraw(p.tri, p.u, p.v, glow ?: -1f, s.focus, s.label)
+                SensorDraw(p.tri, p.u, p.v, glow ?: -1f, s.focus, s.label, s.serial)
             }
             view.kick()
             delay(GLOW_TICK_MS)

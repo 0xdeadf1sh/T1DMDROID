@@ -31,10 +31,11 @@ internal class SensorDraw(
     val glow: Float,
     val focus: Boolean,
     val label: String,
+    val serial: String?,
 )
 
-/** A rasterised label: GL texture id, and width over height. */
-private class LabelTex(val id: Int, val aspect: Float)
+/** A rasterised label: GL texture id, width over height, and its text rows. */
+private class LabelTex(val id: Int, val aspect: Float, val rows: Int)
 
 /** Closest pinch zoom, past the face framing at 0.3, so there is room left for the brain. */
 internal const val ZOOM_IN_LIMIT = 0.15f
@@ -427,15 +428,15 @@ internal class TwinRenderer(
                 glBindVertexArray(emptyVao)
                 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
             }
-            drawLabel(s.label, if (stale) STALE_RGB else c.primary, if (stale) 0.6f else 1f)
+            drawLabel(s.label, s.serial, if (stale) STALE_RGB else c.primary, if (stale) 0.6f else 1f)
         }
     }
 
     /** A camera-facing box out along the skin normal, tied to the puck by a line. */
-    private fun drawLabel(text: String, color: FloatArray, gain: Float) {
+    private fun drawLabel(text: String, sub: String?, color: FloatArray, gain: Float) {
         if (text.isEmpty()) return
-        val tex = label(text) ?: return
-        val hh = LABEL_H_DM / 2f
+        val tex = label(text, sub)
+        val hh = LABEL_ROW_DM * tex.rows / 2f
         val hw = hh * tex.aspect
         for (k in 0 until 3) {
             boxCentre[k] = anchor[k] + anchor[3 + k] * LABEL_LEAD_DM + (if (k == 1) LABEL_RISE_DM else 0f)
@@ -467,24 +468,33 @@ internal class TwinRenderer(
     }
 
     /** Rasterised once per text and face: white glyphs on clear, tinted in the shader. */
-    private fun label(text: String): LabelTex? {
+    private fun label(text: String, sub: String?): LabelTex {
         val face = labelTypeface
         if (face !== labelFace) {
             labels.values.forEach { glDeleteTextures(1, intArrayOf(it.id), 0) }
             labels.clear()
             labelFace = face
         }
-        labels[text]?.let { return it }
+        val key = if (sub == null) text else "$text\n$sub"
+        labels[key]?.let { return it }
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = android.graphics.Color.WHITE
             textSize = LABEL_TEXT_PX
             typeface = face ?: Typeface.MONOSPACE
         }
         val fm = paint.fontMetrics
-        val w = (paint.measureText(text) + LABEL_PAD_PX * 2f).toInt().coerceAtLeast(1)
-        val h = (fm.descent - fm.ascent + LABEL_PAD_PX).toInt().coerceAtLeast(1)
+        val line = fm.descent - fm.ascent
+        val rows = if (sub == null) 1 else 2
+        val textW = maxOf(paint.measureText(text), sub?.let(paint::measureText) ?: 0f)
+        val w = (textW + LABEL_PAD_PX * 2f).toInt().coerceAtLeast(1)
+        val h = (line * rows + LABEL_PAD_PX).toInt().coerceAtLeast(1)
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        Canvas(bmp).drawText(text, LABEL_PAD_PX, LABEL_PAD_PX / 2f - fm.ascent, paint)
+        val canvas = Canvas(bmp)
+        canvas.drawText(text, LABEL_PAD_PX, LABEL_PAD_PX / 2f - fm.ascent, paint)
+        if (sub != null) {
+            paint.alpha = SERIAL_ALPHA
+            canvas.drawText(sub, LABEL_PAD_PX, LABEL_PAD_PX / 2f + line - fm.ascent, paint)
+        }
         val id = IntArray(1).also { glGenTextures(1, it, 0) }[0]
         glBindTexture(GL_TEXTURE_2D, id)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
@@ -494,7 +504,7 @@ internal class TwinRenderer(
         GLUtils.texImage2D(GL_TEXTURE_2D, 0, bmp, 0)
         glBindTexture(GL_TEXTURE_2D, 0)
         bmp.recycle()
-        return LabelTex(id, w.toFloat() / h).also { labels[text] = it }
+        return LabelTex(id, w.toFloat() / h, rows).also { labels[key] = it }
     }
 
     /** Unprojects the NDC point through the frame's [mvp] and casts it at the posed skin. */
@@ -708,8 +718,9 @@ internal class TwinRenderer(
         const val PULSE_RAD_S = 3f
         val STALE_RGB = floatArrayOf(0.45f, 0.45f, 0.45f)
 
-        /** Box height, and its offset out along the skin normal and up, in decimetres. */
-        const val LABEL_H_DM = 0.45f
+        /** Box height per row, and its offset out along the skin normal and up, in decimetres. */
+        const val LABEL_ROW_DM = 0.4f
+        const val SERIAL_ALPHA = 170
         const val LABEL_LEAD_DM = 1.6f
         const val LABEL_RISE_DM = 0.6f
         const val LABEL_TEXT_PX = 64f

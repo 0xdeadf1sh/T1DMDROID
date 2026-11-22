@@ -2072,17 +2072,23 @@ class AppContainer(context: Context) {
         get() = flow {
             val median = com.t1dm.feature.twin.RssiMedian()
             emitAll(
-                combine(cgmPanel, sensorPlacements) { panel, placed ->
+                combine(
+                    cgmPanel,
+                    sensorPlacements,
+                    allSources,
+                    settingsStore.showSensorNames,
+                ) { panel, placed, sources, showNames ->
                     median.retain(panel.sensors.mapTo(HashSet()) { it.id })
-                    val labels = com.t1dm.feature.twin.TwinLabels.of(panel.sensors.map { it.shortName to it.ordinal })
-                    panel.sensors.mapIndexed { i, row ->
+                    val byId = sources.associateBy { it.id.value }
+                    panel.sensors.map { row ->
                         com.t1dm.feature.twin.TwinSensor(
                             id = row.id,
                             placement = placed[row.id],
                             rssiDbm = median.feed(row.id, row.rssiDbm),
                             lastReadingMs = row.readingTsMs,
                             focus = row.authoritative,
-                            label = labels[i],
+                            label = row.shortName,
+                            serial = byId[row.id]?.incidentalSerial(showNames),
                         )
                     }
                 },

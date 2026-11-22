@@ -478,8 +478,6 @@ data class CgmSensorRow(
     val rssiDbm: Int? = null,
     /** The model without the serial, e.g. `AiDEX X`. */
     val shortName: String = name,
-    /** Null until storage mints one. */
-    val ordinal: Int? = null,
     /** Grid instant of this sensor's newest reading. */
     val readingTsMs: Long? = null,
     /** Minutes since activation (the reading's `minFromStart`). */
