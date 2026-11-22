@@ -92,30 +92,56 @@ half4 main(float2 fc) {
 }
 """
 
-/** A light-cycle head runs the strip's two grid lines, trailing fade behind it. */
+/** Five neon light-cycle lanes; each has its own colour, speed and start delay, so they stagger. */
 private const val TRON_EFFECT = """
+float4 lane(float2 lp, float2 sz, float yf, float3 col, float speed, float delay) {
+    float s = fract(t / 6.0 * speed - delay) * 1.5;
+    float pos = s < 1.0 ? s * 2.4 - 0.7 : 9.0;
+    float d = pos * sz.x - lp.x;
+    float trail = d > 0.0 ? exp(-d / (sz.x * 0.22)) : exp(-d * d / (sz.x * sz.x * 0.0003));
+    float dy = abs(lp.y - sz.y * yf);
+    float line = 1.0 - smoothstep(0.0, 1.5, dy);
+    float glow = 1.0 - smoothstep(0.0, 6.0, dy);
+    float hot = exp(-d * d / (sz.x * sz.x * 0.0008));
+    float a = trail * (line * 0.5 + glow * 0.07);
+    return float4(mix(col, float3(1.0), hot * 0.6), a);
+}
+
+float4 over(float4 a, float4 b) {
+    float o = a.a + b.a * (1.0 - a.a);
+    return float4(o > 0.0 ? (a.rgb * a.a + b.rgb * b.a * (1.0 - a.a)) / o : float3(0.0), o);
+}
+
 float4 effect(float2 lp, float2 sz) {
-    float head = sweepPos() * sz.x;
-    float d = head - lp.x;
-    float trail = d > 0.0 ? exp(-d / (sz.x * 0.30)) : exp(-d * d / (sz.x * sz.x * 0.0004));
-    float dl = min(abs(lp.y - sz.y * 0.30), abs(lp.y - sz.y * 0.74));
-    float line = 1.0 - smoothstep(0.0, 1.6, dl);
-    float glow = 1.0 - smoothstep(0.0, 9.0, dl);
-    float hot = exp(-d * d / (sz.x * sz.x * 0.0012));
-    float a = trail * (line * 0.85 + glow * 0.14);
-    return float4(mix(float3(c1.rgb), float3(1.0), hot * 0.7), clamp(a, 0.0, 0.9));
+    float4 r = lane(lp, sz, 0.14, float3(c1.rgb), 1.0, 0.00);
+    r = over(r, lane(lp, sz, 0.32, float3(1.0, 0.45, 0.05), 2.0, 0.30));
+    r = over(r, lane(lp, sz, 0.50, float3(1.0, 0.10, 0.75), 1.0, 0.45));
+    r = over(r, lane(lp, sz, 0.68, float3(c2.rgb), 3.0, 0.15));
+    r = over(r, lane(lp, sz, 0.86, float3(1.0, 0.92, 0.15), 2.0, 0.65));
+    return r;
 }
 """
 
-/** Rings spread out from the strip's centre. */
+/** A double helix repeating along the strip, scrolling sideways, rungs between the strands. */
 private const val UMBRELLA_EFFECT = """
 float4 effect(float2 lp, float2 sz) {
-    float ph = fract(t / 6.0) * 1.5;
-    float r = distance(lp, sz * 0.5) / sz.x;
-    float d = (r - ph * 0.9) * 16.0;
-    float ring = exp(-d * d);
-    float fade = 1.0 - clamp(ph / 1.5, 0.0, 1.0);
-    return float4(mix(float3(c1.rgb), float3(ink.rgb), ring * 0.35), ring * fade * 0.75);
+    float lam = 120.0;
+    float u = lp.x / lam * 6.2831853 - t * 2.0943951;
+    float amp = sz.y * 0.34;
+    float cy = sz.y * 0.5;
+    float s = sin(u);
+    float slope = amp * cos(u) * 6.2831853 / lam;
+    float norm = 1.0 / sqrt(1.0 + slope * slope);
+    float d1 = abs(lp.y - (cy + amp * s)) * norm;
+    float d2 = abs(lp.y - (cy - amp * s)) * norm;
+    float depth = cos(u);
+    float a1 = (1.0 - smoothstep(0.0, 1.8, d1)) * (0.65 + 0.35 * depth);
+    float a2 = (1.0 - smoothstep(0.0, 1.8, d2)) * (0.65 - 0.35 * depth);
+    float r = fract(u / 6.2831853 * 8.0) - 0.5;
+    float inside = step(abs(lp.y - cy), amp * abs(s));
+    float rung = (1.0 - smoothstep(0.0, 1.2, abs(r) * lam / 8.0)) * inside * 0.45;
+    float3 col = (float3(c1.rgb) * a1 + float3(ink.rgb) * a2 + float3(ink.rgb) * rung) / max(a1 + a2 + rung, 0.001);
+    return float4(col, clamp(a1 + a2 + rung, 0.0, 1.0) * 0.4);
 }
 """
 
@@ -134,14 +160,15 @@ float4 effect(float2 lp, float2 sz) {
     float tw = max(0.0, sin(6.2831853 * (t / 2.0 + h * 5.0)));
     tw = tw * tw * tw;
     float a = live * tw * clamp(body * 0.7 + arms, 0.0, 1.0);
-    return float4(mix(float3(c1.rgb), float3(c2.rgb), hash(cid + 1.3)), a * 0.85);
+    return float4(mix(float3(c1.rgb), float3(c2.rgb), hash(cid + 1.3)), a * 0.45);
 }
 """
 
-/** Glyph columns fall at three speeds; the head is the brightest cell. */
+/** Columns of small dots fall at three speeds; the head is the brightest dot. */
 private const val MATRIX_EFFECT = """
 float4 effect(float2 lp, float2 sz) {
-    float col = floor(lp.x / 14.0);
+    float cell = 8.0;
+    float col = floor(lp.x / cell);
     float h = hash(float2(col, 1.0));
     float live = step(0.55, hash(float2(col, 2.0)));
     float k = 1.0 + floor(h * 3.0);
@@ -149,9 +176,11 @@ float4 effect(float2 lp, float2 sz) {
     float dy = head - lp.y / sz.y;
     dy = dy < 0.0 ? dy + 1.0 : dy;
     float trail = exp(-dy * 5.0) * step(dy, 0.85);
-    float cellY = floor(lp.y / 14.0);
+    float cellY = floor(lp.y / cell);
     float glyph = step(0.3, hash(float2(col * 7.0 + cellY, floor(t * 6.0))));
+    float2 f = (fract(lp / cell) - 0.5) * cell;
+    float pip = 1.0 - smoothstep(0.8, 1.5, length(f));
     float headGlow = 1.0 - smoothstep(0.0, 0.06, dy);
-    return float4(mix(float3(c1.rgb), float3(1.0), headGlow * 0.8), live * trail * glyph * 0.8);
+    return float4(mix(float3(c1.rgb), float3(1.0), headGlow * 0.8), live * trail * glyph * pip * 0.4);
 }
 """
