@@ -67,7 +67,10 @@ internal class TwinRenderer(
     @Volatile var onPick: ((SkinHit) -> Unit)? = null
     @Volatile private var pickNdc: FloatArray? = null
     @Volatile private var target = FloatArray(body.morphNames.size)
-    @Volatile private var assembleRequested = true
+    @Volatile private var assembleRequested = false
+    @Volatile private var snapRequested = false
+    private var shownScanId: Long? = null
+    private var shaped = false
 
     private val tris = body.indices.size / 3
     private val current = FloatArray(body.morphNames.size)
@@ -124,7 +127,7 @@ internal class TwinRenderer(
     private var shift = 0f
     private val shifted = FloatArray(16)
     private val shiftedProj = FloatArray(16)
-    private var revealStart = 0f
+    private var revealStart = -ASSEMBLE_S
     private var haloProg = 0
     private var puckVao = 0
     private val puck = puckMesh()
@@ -143,9 +146,16 @@ internal class TwinRenderer(
     private val boxCentre = FloatArray(3)
     private val lineEnd = FloatArray(3)
 
-    fun setTarget(weights: FloatArray, assemble: Boolean) {
+    /** The first shape snaps; a new [scanId] replays the build-up; the same one eases there. */
+    fun show(scanId: Long?, weights: FloatArray) {
         target = weights.copyOf()
-        if (assemble) assembleRequested = true
+        if (!shaped) {
+            shaped = true
+            snapRequested = true
+        } else if (scanId != shownScanId) {
+            assembleRequested = true
+        }
+        shownScanId = scanId
     }
 
     /** NDC, y up; answered through [onPick] on the next frame. */
@@ -645,6 +655,12 @@ internal class TwinRenderer(
 
     /** Eases [current] toward [target]; re-blends only while it moves. */
     private fun stepMorph(dt: Float) {
+        // The flag first: [show] publishes target before it, so a seen flag means a new target.
+        if (snapRequested) {
+            snapRequested = false
+            target.copyInto(current)
+            dirty = true
+        }
         val goal = target
         val a = 1f - exp(-dt * MORPH_RATE)
         for (i in current.indices) {

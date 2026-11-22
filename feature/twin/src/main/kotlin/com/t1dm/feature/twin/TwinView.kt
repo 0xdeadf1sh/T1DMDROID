@@ -42,7 +42,7 @@ import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.ln
 
-/** The 3D twin; a new [scan] replays the build-up and eases the body to its new shape. */
+/** The 3D twin; a new [scan] id replays the build-up, and reopening never does. */
 @Composable
 fun TwinView(
     scan: TwinScan?,
@@ -94,16 +94,12 @@ fun TwinView(
         }
     }
 
-    LaunchedEffect(scan?.id) {
-        view.renderer.setTarget(TwinMorphs.weights(scan, body), assemble = true)
+    LaunchedEffect(scan?.id, scan?.outputs) {
+        view.renderer.show(scan?.id, TwinMorphs.weights(scan, body))
         view.kick()
     }
     LaunchedEffect(callouts) {
         view.renderer.shiftTarget = if (callouts) CALLOUT_BODY_SHIFT else 0f
-        view.kick()
-    }
-    LaunchedEffect(scan?.outputs) {
-        view.renderer.setTarget(TwinMorphs.weights(scan, body), assemble = false)
         view.kick()
     }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -152,11 +148,30 @@ private fun loadSystems(context: Context): List<TwinSystem> = cachedSystems ?: r
     TwinSystem.parse(context.assets.open("twin_systems.bin").use { it.readBytes() })
 }.onFailure { Log.e("TwinView", "systems", it) }.getOrDefault(emptyList()).also { cachedSystems = it }
 
+/** One renderer outlives the views, so its shape and camera carry over; GL rebuilds per surface. */
+private object SharedTwinRenderer {
+    private var instance: TwinRenderer? = null
+    private var owner: Any? = null
+
+    /** A second live view, as in a nav cross-fade, gets its own: one renderer, one GL thread. */
+    @Synchronized
+    fun acquire(by: Any, make: () -> TwinRenderer): TwinRenderer {
+        if (owner != null) return make()
+        owner = by
+        return instance ?: make().also { instance = it }
+    }
+
+    @Synchronized
+    fun release(by: Any) {
+        if (owner === by) owner = null
+    }
+}
+
 /** TextureView, not SurfaceView: it composites in-window, so Compose draws over and under it. */
 @SuppressLint("ViewConstructor", "ClickableViewAccessibility")
 internal class TwinTextureView(context: Context, body: TwinBody) : TextureView(context),
     TextureView.SurfaceTextureListener {
-    val renderer = TwinRenderer(body, loadOrgans(context), loadSystems(context))
+    val renderer = SharedTwinRenderer.acquire(this) { TwinRenderer(body, loadOrgans(context), loadSystems(context)) }
     var animate = true
     var onOrbit: (Float) -> Unit = {}
     var onZoom: (Float) -> Unit = {}
@@ -227,7 +242,14 @@ internal class TwinTextureView(context: Context, body: TwinBody) : TextureView(c
     override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
         gl?.quitAndJoin()
         gl = null
+        SharedTwinRenderer.release(this)
         return true
+    }
+
+    // The surface, if any, is destroyed after this returns; without one, nothing else releases.
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        if (gl == null) SharedTwinRenderer.release(this)
     }
 
     override fun onSurfaceTextureUpdated(st: SurfaceTexture) = Unit
