@@ -151,7 +151,7 @@ float4 strand(float2 lp, float cy, float amp, float ang, float ph, float xc, flo
 }
 
 float4 effect(float2 lp, float2 sz) {
-    float sp = 40.0;
+    float sp = 70.0;
     float cy = sz.y * 0.5;
     float amp = sz.y * 0.34;
     float step36 = 0.6283185;
