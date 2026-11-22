@@ -22,4 +22,9 @@ class TwinRouteTest {
         assertEquals(listOf(Crumb("Twin", "twin"), Crumb("Scan", null)), crumbsFor("twin/scan", null))
         assertEquals(listOf(Crumb("Twin", "twin"), Crumb("Trends", null)), crumbsFor("twin/trends", null))
     }
+
+    @Test
+    fun `placing a sensor climbs back to CGM, where it was opened`() {
+        assertEquals(listOf(Crumb("CGM", "cgm"), Crumb("Place", null)), crumbsFor("twin/place/{sensorId}", null))
+    }
 }

@@ -70,6 +70,9 @@ fun CgmScreen(
     /** Opens the NFC provision sheet for one sighting. */
     onProvision: (String) -> Unit = {},
     onOpenLog: (String) -> Unit = {},
+    /** Sensor id to its region on the twin; absent until placed. */
+    bodySpots: Map<String, String> = emptyMap(),
+    onPlaceOnBody: (String) -> Unit = {},
 ) {
     // Outside the cards: a card recomposes on the live status and would tear its own dialog down.
     var confirming by remember { mutableStateOf<CgmConfirm?>(null) }
@@ -118,6 +121,8 @@ fun CgmScreen(
                     onRepairHistory = onRepairHistory,
                     onProvision = onProvision,
                     onOpenLog = onOpenLog,
+                    bodySpot = bodySpots[row.id],
+                    onPlaceOnBody = onPlaceOnBody,
                     onRequest = { confirming = it },
                 )
             }
@@ -227,6 +232,8 @@ private fun SensorCard(
     onRepairHistory: (String) -> Unit,
     onProvision: (String) -> Unit,
     onOpenLog: (String) -> Unit,
+    bodySpot: String?,
+    onPlaceOnBody: (String) -> Unit,
     onRequest: (CgmConfirm) -> Unit,
 ) {
     val cs = MaterialTheme.colorScheme
@@ -306,6 +313,11 @@ private fun SensorCard(
                     Text("no signal", style = MaterialTheme.typography.bodySmall, color = dim)
                 }
             }
+            Text(
+                bodySpot?.let { "$it - twin glow = signal at phone" } ?: "Twin glow = signal at phone",
+                style = MaterialTheme.typography.labelSmall,
+                color = dim,
+            )
             row.sensorAgeMin?.let { Kv("Sensor age", fullDuration(it.toLong() * 60_000L)) }
             row.expiryMs?.let {
                 val remainingMs = it - nowMs
@@ -324,6 +336,9 @@ private fun SensorCard(
                 OutlinedButton(
                     onClick = { haptics.perform(HapticEvent.Tap); onOpenLog(row.id) },
                 ) { Text("Log") }
+                OutlinedButton(
+                    onClick = { haptics.perform(HapticEvent.Tap); onPlaceOnBody(row.id) },
+                ) { Text(if (bodySpot == null) "Put on body" else "Move on body") }
                 if (!row.authoritative) {
                     Button(
                         onClick = {
@@ -461,6 +476,8 @@ data class CgmSensorRow(
     val authoritative: Boolean,
     val status: CgmSourceStatus = CgmSourceStatus.Idle,
     val rssiDbm: Int? = null,
+    /** Grid instant of this sensor's newest reading. */
+    val readingTsMs: Long? = null,
     /** Minutes since activation (the reading's `minFromStart`). */
     val sensorAgeMin: Int? = null,
     /** Reading instant + (stated wear, else family rating) - age; null if any is unknown. */

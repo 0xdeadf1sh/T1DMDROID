@@ -8,16 +8,21 @@ import android.opengl.EGLConfig
 import android.opengl.EGLContext
 import android.opengl.EGLDisplay
 import android.opengl.EGLSurface
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.Choreographer
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.TextureView
+import android.view.ViewConfiguration
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -27,8 +32,11 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.t1dm.core.design.LocalAnimationsEnabled
 import com.t1dm.core.design.LocalT1dmSemantics
+import com.t1dm.core.model.SensorPlacement
 import com.t1dm.core.model.TwinScan
+import kotlinx.coroutines.delay
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.ln
 
 /** The 3D twin; a new [scan] replays the build-up and eases the body to its new shape. */
@@ -39,6 +47,10 @@ fun TwinView(
     onOrbit: (rad: Float) -> Unit = {},
     onZoom: (absLogScale: Float) -> Unit = {},
     callouts: Boolean = true,
+    sensors: List<TwinSensor> = emptyList(),
+    staleAfterMs: Long = Long.MAX_VALUE,
+    /** Non-null: a tap on the skin answers with a placement whose sensorId is blank. */
+    onPlace: ((SensorPlacement) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val body = remember { loadBody(context) }
@@ -51,6 +63,31 @@ fun TwinView(
     view.renderer.animate = animate
     view.onOrbit = onOrbit
     view.onZoom = onZoom
+    val place by rememberUpdatedState(onPlace)
+    val placing = onPlace != null
+    LaunchedEffect(placing) {
+        val main = Handler(Looper.getMainLooper())
+        view.renderer.onPick = if (!placing) null else { hit ->
+            main.post { place?.invoke(SensorPlacement("", body.topologyHash, hit.tri, hit.u, hit.v)) }
+        }
+        view.onTap = if (!placing) null else { x, y ->
+            view.renderer.requestPick(2f * x / view.width - 1f, 1f - 2f * y / view.height)
+            view.kick()
+        }
+    }
+    LaunchedEffect(sensors, staleAfterMs) {
+        val placed = sensors.filter { s -> s.placement?.let { TwinPick.valid(it, body) } == true }
+        while (true) {
+            val now = System.currentTimeMillis()
+            view.renderer.sensors = placed.map { s ->
+                val p = s.placement!!
+                val glow = TwinSignal.glowAt(s.rssiDbm, s.lastReadingMs, now, staleAfterMs)
+                SensorDraw(p.tri, p.u, p.v, glow ?: -1f, s.focus)
+            }
+            view.kick()
+            delay(GLOW_TICK_MS)
+        }
+    }
 
     LaunchedEffect(scan?.id) {
         view.renderer.setTarget(TwinMorphs.weights(scan, body), assemble = true)
@@ -86,6 +123,9 @@ fun TwinView(
 /** NDC; clears the panel on the right. */
 private const val CALLOUT_BODY_SHIFT = -0.3f
 
+/** Re-judges staleness while no new reading arrives. */
+private const val GLOW_TICK_MS = 10_000L
+
 private fun Color.rgb() = floatArrayOf(red, green, blue)
 
 @Volatile private var cachedBody: TwinBody? = null
@@ -115,6 +155,12 @@ internal class TwinTextureView(context: Context, body: TwinBody) : TextureView(c
     var animate = true
     var onOrbit: (Float) -> Unit = {}
     var onZoom: (Float) -> Unit = {}
+    var onTap: ((x: Float, y: Float) -> Unit)? = null
+    private val slop = ViewConfiguration.get(context).scaledTouchSlop
+    private var downX = 0f
+    private var downY = 0f
+    private var downMs = 0L
+    private var multi = false
     private var gl: GlThread? = null
     private var running = false
     private var lastFrameNs = 0L
@@ -186,8 +232,13 @@ internal class TwinTextureView(context: Context, body: TwinBody) : TextureView(c
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 track(e, 0)
+                downX = e.x
+                downY = e.y
+                downMs = e.eventTime
+                multi = false
                 parent?.requestDisallowInterceptTouchEvent(true)
             }
+            MotionEvent.ACTION_POINTER_DOWN -> multi = true
             // The finger that stays down takes over; its stale delta was what snapped the view.
             MotionEvent.ACTION_POINTER_UP -> track(e, if (e.actionIndex == 0) 1 else 0)
             MotionEvent.ACTION_MOVE -> if (!scale.isInProgress && e.pointerCount == 1) {
@@ -202,7 +253,12 @@ internal class TwinTextureView(context: Context, body: TwinBody) : TextureView(c
                     lastY = e.getY(i)
                 }
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> parent?.requestDisallowInterceptTouchEvent(false)
+            MotionEvent.ACTION_UP -> {
+                parent?.requestDisallowInterceptTouchEvent(false)
+                val still = hypot(e.x - downX, e.y - downY) < slop && e.eventTime - downMs < TAP_MS
+                if (!multi && still) onTap?.invoke(e.x, e.y)
+            }
+            MotionEvent.ACTION_CANCEL -> parent?.requestDisallowInterceptTouchEvent(false)
         }
         renderer.lastTouchNs = System.nanoTime()
         kick()
@@ -217,6 +273,7 @@ internal class TwinTextureView(context: Context, body: TwinBody) : TextureView(c
 
     private companion object {
         const val FRAME_NS = 15_000_000L
+        const val TAP_MS = 300L
     }
 }
 

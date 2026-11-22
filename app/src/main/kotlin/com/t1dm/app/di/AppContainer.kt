@@ -233,6 +233,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -2059,6 +2060,33 @@ class AppContainer(context: Context) {
         appScope.launch { repository.clearTwinOverrides() }
     }
 
+    val sensorPlacements: Flow<Map<String, com.t1dm.core.model.SensorPlacement>>
+        get() = repository.observeSensorPlacements()
+
+    fun placeCgm(p: com.t1dm.core.model.SensorPlacement) {
+        appScope.launch { repository.setSensorPlacement(p, System.currentTimeMillis()) }
+    }
+
+    /** Every listed CGM as the twin draws it; one median window per collector. */
+    val twinSensors: Flow<List<com.t1dm.feature.twin.TwinSensor>>
+        get() = flow {
+            val median = com.t1dm.feature.twin.RssiMedian()
+            emitAll(
+                combine(cgmPanel, sensorPlacements) { panel, placed ->
+                    median.retain(panel.sensors.mapTo(HashSet()) { it.id })
+                    panel.sensors.map { row ->
+                        com.t1dm.feature.twin.TwinSensor(
+                            id = row.id,
+                            placement = placed[row.id],
+                            rssiDbm = median.feed(row.id, row.rssiDbm),
+                            lastReadingMs = row.readingTsMs,
+                            focus = row.authoritative,
+                        )
+                    }
+                },
+            )
+        }
+
     /** Published by [com.t1dm.app.service.ExerciseService]; null whenever no bout is running. */
     val activeExercise = MutableStateFlow<ActiveExercise?>(null)
 
@@ -3314,7 +3342,13 @@ class AppContainer(context: Context) {
     fun deactivateCgm(id: String) = registry.deactivate(com.t1dm.core.model.CgmSourceId(id))
 
     /** A display flag: the source stays on record, so its readings stay in the panel's history. */
-    fun hideCgm(id: String) = registry.hide(com.t1dm.core.model.CgmSourceId(id))
+    fun hideCgm(id: String) {
+        val source = com.t1dm.core.model.CgmSourceId(id)
+        // The registry refuses to hide the authoritative sensor; its pin stays with it.
+        if (registry.authoritative.value == source) return
+        registry.hide(source)
+        appScope.launch { repository.clearSensorPlacement(id) }
+    }
 
     /** Force this family's fresh-sensor activation on one sensor's session, chosen by the user. */
     fun activateCgmSensor(id: String) = registry.activateSensor(com.t1dm.core.model.CgmSourceId(id))

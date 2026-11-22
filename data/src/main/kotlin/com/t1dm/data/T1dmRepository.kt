@@ -38,7 +38,10 @@ import com.t1dm.data.db.LoggedExerciseEntity
 import com.t1dm.data.db.FoodEntity
 import com.t1dm.data.db.InsulinTypeEntity
 import com.t1dm.data.db.EventTombstoneEntity
+import com.t1dm.data.db.SensorPlacementEntity
 import com.t1dm.data.db.TwinOverrideEntity
+import com.t1dm.data.db.toSensorPlacement
+import com.t1dm.core.model.SensorPlacement
 import com.t1dm.data.db.TwinScanEntity
 import com.t1dm.data.db.encodeTwinOutputs
 import com.t1dm.data.db.toTwinScan
@@ -145,6 +148,7 @@ class T1dmRepository(
     private val exerciseFixes get() = db.exerciseFixDao()
     private val twinScans get() = db.twinScanDao()
     private val twinOverrides get() = db.twinOverrideDao()
+    private val placements get() = db.sensorPlacementDao()
 
     /** BEGIN IMMEDIATE on the writer connection; every DAO call in body joins this transaction. */
     private suspend fun <R> inWriteTx(body: suspend () -> R): R =
@@ -1547,6 +1551,15 @@ class T1dmRepository(
 
     suspend fun clearTwinOverrides() = withContext(io) { twinOverrides.deleteAll() }
 
+    fun observeSensorPlacements(): Flow<Map<String, SensorPlacement>> =
+        placements.observeAll().map { rows -> rows.associate { it.sensorId to it.toSensorPlacement() } }
+
+    suspend fun setSensorPlacement(p: SensorPlacement, nowMs: Long) = withContext(io) {
+        placements.upsert(SensorPlacementEntity(p.sensorId, p.meshHash, p.tri, p.u, p.v, nowMs))
+    }
+
+    suspend fun clearSensorPlacement(sensorId: String) = withContext(io) { placements.delete(sensorId) }
+
     /** Row-only wipe, never drop/recreate; preserveCgmSources keeps the live binding on reset. */
     suspend fun wipeAllData(preserveCgmSources: Boolean = false) = withContext(io) {
         inWriteTx {
@@ -1577,6 +1590,7 @@ class T1dmRepository(
             loggedExercise.deleteAll()
             twinScans.deleteAll()
             twinOverrides.deleteAll()
+            placements.deleteAll()
             // kv LAST: it holds the watch nonce ceilings + pairing bits + every setting.
             kv.deleteAll()
         }

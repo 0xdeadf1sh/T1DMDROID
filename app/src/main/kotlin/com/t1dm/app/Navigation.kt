@@ -123,7 +123,9 @@ import com.t1dm.app.di.AppContainer
 import com.t1dm.app.backup.BackupRoute
 import com.t1dm.feature.settings.NightscoutSettingsScreen
 import com.t1dm.feature.settings.DeathModeScreen
+import com.t1dm.feature.twin.TwinPlaceScreen
 import com.t1dm.feature.twin.TwinScanScreen
+import com.t1dm.feature.twin.bodySpot
 import com.t1dm.feature.twin.TwinScreen
 import com.t1dm.feature.twin.TwinTrendsScreen
 import com.t1dm.app.notify.BgFormat
@@ -406,6 +408,7 @@ internal fun crumbsFor(route: String?, modelId: String?, editLabel: String? = nu
         null, "twin" -> listOf(Crumb("Twin", null))
         "twin/scan" -> listOf(Crumb("Twin", "twin"), Crumb("Scan", null))
         "twin/trends" -> listOf(Crumb("Twin", "twin"), Crumb("Trends", null))
+        "twin/place/{sensorId}" -> listOf(Crumb("CGM", "cgm"), Crumb("Place", null))
         "dashboard" -> listOf(Crumb("BG", null))
         "circadian" -> listOf(Crumb("Circadian clock", null))
         "stats" -> listOf(Crumb("Stats", null))
@@ -1230,8 +1233,12 @@ private fun T1dmNavHost(
             val overrides by container.twinOverrides.collectAsState(emptyMap())
             // Starts true so the tutorial never flashes before the stored flag loads.
             val seen by container.settingsStore.twinTutorialSeen.collectAsState(true)
+            val sensors by container.twinSensors.collectAsState(emptyList())
+            val lossMin by container.settingsStore.lossMin.collectAsState(20)
             val scope = rememberCoroutineScope()
             TwinScreen(
+                sensors = sensors,
+                staleAfterMs = lossMin * 60_000L,
                 latest = scans.lastOrNull(),
                 scanCount = scans.size,
                 overrides = overrides,
@@ -1242,6 +1249,27 @@ private fun T1dmNavHost(
                 onOverride = container::setTwinOverride,
                 onResetOverrides = container::clearTwinOverrides,
                 onTutorialDone = { scope.launch { container.settingsStore.setTwinTutorialSeen() } },
+            )
+        }
+        composable("twin/place/{sensorId}") { entry ->
+            val id = entry.arguments?.getString("sensorId") ?: return@composable
+            val scans by container.twinScans.collectAsState(emptyList())
+            val overrides by container.twinOverrides.collectAsState(emptyMap())
+            val sensors by container.twinSensors.collectAsState(emptyList())
+            val lossMin by container.settingsStore.lossMin.collectAsState(20)
+            val cgm by container.cgmPanel.collectAsState()
+            TwinPlaceScreen(
+                sensorId = id,
+                sensorName = cgm.sensors.firstOrNull { it.id == id }?.name ?: id,
+                latest = scans.lastOrNull(),
+                overrides = overrides,
+                sensors = sensors,
+                staleAfterMs = lossMin * 60_000L,
+                onSave = {
+                    container.placeCgm(it)
+                    navController.popBackStack()
+                },
+                onCancel = { navController.popBackStack() },
             )
         }
         composable("twin/trends") {
@@ -1750,6 +1778,11 @@ private fun T1dmNavHost(
         }
         composable("cgm") {
             val cgm by container.cgmPanel.collectAsState()
+            val placements by container.sensorPlacements.collectAsState(emptyMap())
+            val ctx = LocalContext.current
+            val spots = remember(placements) {
+                placements.mapNotNull { (id, p) -> bodySpot(ctx, p)?.let { id to it } }.toMap()
+            }
             var provisioningId by remember { mutableStateOf<String?>(null) }
             CgmScreen(
                 state = cgm,
@@ -1766,6 +1799,8 @@ private fun T1dmNavHost(
                 onRepairHistory = { id -> container.repairCgmHistory(id) },
                 onProvision = { id -> provisioningId = id },
                 onOpenLog = { id -> navController.navigate("cgm/log/${android.net.Uri.encode(id)}") },
+                bodySpots = spots,
+                onPlaceOnBody = { id -> navController.navigate("twin/place/${android.net.Uri.encode(id)}") },
             )
             provisioningId?.let { id ->
                 val row = cgm.sensors.firstOrNull { it.id == id }

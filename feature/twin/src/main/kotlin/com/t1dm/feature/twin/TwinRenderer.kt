@@ -18,6 +18,9 @@ import kotlin.math.tan
 /** sRGB 0..1 triples; set from the UI thread, read once per frame on the GL thread. */
 internal class TwinColors(val bg: FloatArray, val primary: FloatArray, val secondary: FloatArray)
 
+/** One placed sensor for the GL thread; [glow] below 0 draws it stale: grey, no halo. */
+internal class SensorDraw(val tri: Int, val u: Float, val v: Float, val glow: Float, val focus: Boolean)
+
 /** Closest pinch zoom, past the face framing at 0.3, so there is room left for the brain. */
 internal const val ZOOM_IN_LIMIT = 0.15f
 
@@ -39,6 +42,11 @@ internal class TwinRenderer(
 
     /** False: morphs and the build-up jump to their end state, and the scene holds still. */
     @Volatile var animate = true
+    @Volatile var sensors: List<SensorDraw> = emptyList()
+
+    /** Called on the GL thread with the skin under a [requestPick]; misses are dropped. */
+    @Volatile var onPick: ((SkinHit) -> Unit)? = null
+    @Volatile private var pickNdc: FloatArray? = null
     @Volatile private var target = FloatArray(body.morphNames.size)
     @Volatile private var assembleRequested = true
 
@@ -98,10 +106,26 @@ internal class TwinRenderer(
     private val shifted = FloatArray(16)
     private val shiftedProj = FloatArray(16)
     private var revealStart = 0f
+    private var haloProg = 0
+    private var puckVao = 0
+    private val puck = puckMesh()
+    private val invMvp = FloatArray(16)
+    private val clip = FloatArray(4)
+    private val near = FloatArray(4)
+    private val far = FloatArray(4)
+    private val anchor = FloatArray(6)
+    private val sensorCentre = FloatArray(3)
+    private val sensorRot = FloatArray(9)
+    private var eased = FloatArray(0)
 
     fun setTarget(weights: FloatArray, assemble: Boolean) {
         target = weights.copyOf()
         if (assemble) assembleRequested = true
+    }
+
+    /** NDC, y up; answered through [onPick] on the next frame. */
+    fun requestPick(x: Float, y: Float) {
+        pickNdc = floatArrayOf(x, y)
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
@@ -137,6 +161,8 @@ internal class TwinRenderer(
             heartVao = heart?.let(::organVao) ?: 0
             brainVao = brain?.let(::organVao) ?: 0
             sparkVao = brain?.let(::sparkVao) ?: 0
+            haloProg = program(HALO_VS, HALO_FS)
+            puckVao = puckVao()
             dirty = true
         }.onFailure { Log.e(TAG, "twin GL setup failed", it) }.isSuccess
     }
@@ -191,6 +217,10 @@ internal class TwinRenderer(
         shifted[12] = shift
         Matrix.multiplyMM(shiftedProj, 0, shifted, 0, proj, 0)
         Matrix.multiplyMM(mvp, 0, shiftedProj, 0, view, 0)
+        pickNdc?.let {
+            pickNdc = null
+            pick(it[0], it[1])
+        }
         val headY = maxY - bodyH * HEAD_FRAC
 
         glDisable(GL_DEPTH_TEST)
@@ -236,6 +266,7 @@ internal class TwinRenderer(
         if (reveal > maxY) {
             drawOrgans(t, c, inside, ex, ey, ez)
             drawSystems(t, c, inside, ex, ey, ez)
+            drawSensors(t, dt, c, ex, ey, ez)
         }
         glEnable(GL_DEPTH_TEST)
 
@@ -326,6 +357,86 @@ internal class TwinRenderer(
             glBindVertexArray(systemVao[i])
             glDrawElements(if (s.lines) GL_LINES else GL_TRIANGLES, s.indices.size, GL_UNSIGNED_SHORT, 0)
         }
+    }
+
+    /** A puck on the skin per placed sensor, its halo and rings scaled by the eased link glow. */
+    private fun drawSensors(t: Float, dt: Float, c: TwinColors, ex: Float, ey: Float, ez: Float) {
+        val list = sensors
+        if (list.isEmpty()) return
+        if (eased.size != list.size) eased = FloatArray(list.size) { list[it].glow.coerceAtLeast(0f) }
+        val a = if (animate) 1f - exp(-dt * GLOW_RATE) else 1f
+        list.forEachIndexed { i, s ->
+            TwinPick.anchor(posed, body.indices, s.tri, s.u, s.v, anchor)
+            basis(anchor, sensorRot)
+            val stale = s.glow < 0f
+            eased[i] += ((if (stale) 0f else s.glow) - eased[i]) * a
+            val g = eased[i]
+            val pulse = if (s.focus && animate) 0.8f + 0.2f * sin(t * PULSE_RAD_S) else 1f
+            for (k in 0 until 3) sensorCentre[k] = anchor[k] + anchor[3 + k] * PUCK_HALF_H
+            glUseProgram(organProg)
+            glUniformMatrix4fv(loc(organProg, "uMvp"), 1, false, mvp, 0)
+            glUniform3f(loc(organProg, "uEye"), ex, ey, ez)
+            glUniform3fv(loc(organProg, "uCentre"), 1, sensorCentre, 0)
+            glUniformMatrix3fv(loc(organProg, "uRot"), 1, false, sensorRot, 0)
+            glUniform1f(loc(organProg, "uScale"), 1f)
+            glUniform1f(loc(organProg, "uAtria"), 0f)
+            glUniform1f(loc(organProg, "uVentricles"), 0f)
+            glUniform3fv(loc(organProg, "uColor"), 1, if (stale) STALE_RGB else c.primary, 0)
+            glUniform1f(loc(organProg, "uGain"), if (stale) 0.6f else (0.6f + 1.4f * g) * pulse)
+            glBindVertexArray(puckVao)
+            glDrawArrays(GL_TRIANGLES, 0, puck.size / 3)
+            if (stale) return@forEachIndexed
+            for (k in 0 until 3) sensorCentre[k] = anchor[k] + anchor[3 + k] * PUCK_HALF_H * 2f
+            glUseProgram(haloProg)
+            glUniformMatrix4fv(loc(haloProg, "uMvp"), 1, false, mvp, 0)
+            glUniform3fv(loc(haloProg, "uCentre"), 1, sensorCentre, 0)
+            glUniform3f(loc(haloProg, "uRight"), view[0], view[4], view[8])
+            glUniform3f(loc(haloProg, "uUp"), view[1], view[5], view[9])
+            glUniform1f(loc(haloProg, "uSize"), HALO_DM * (0.6f + 0.8f * g))
+            glUniform1f(loc(haloProg, "uT"), t)
+            glUniform1f(loc(haloProg, "uGlow"), g * pulse)
+            glUniform3fv(loc(haloProg, "uColor"), 1, c.secondary, 0)
+            glBindVertexArray(emptyVao)
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
+        }
+    }
+
+    /** Unprojects the NDC point through the frame's [mvp] and casts it at the posed skin. */
+    private fun pick(x: Float, y: Float) {
+        val cb = onPick ?: return
+        if (!Matrix.invertM(invMvp, 0, mvp, 0)) return
+        unproject(x, y, -1f, near)
+        unproject(x, y, 1f, far)
+        val dir = floatArrayOf(far[0] - near[0], far[1] - near[1], far[2] - near[2])
+        TwinPick.ray(posed, body.indices, near, dir)?.let(cb)
+    }
+
+    private fun unproject(x: Float, y: Float, z: Float, out: FloatArray) {
+        clip[0] = x
+        clip[1] = y
+        clip[2] = z
+        clip[3] = 1f
+        Matrix.multiplyMV(out, 0, invMvp, 0, clip, 0)
+        for (k in 0 until 3) out[k] /= out[3]
+    }
+
+    /** Expanded puck triangles; motion class 2 keeps the organ shader from squeezing it. */
+    private fun puckVao(): Int {
+        val vao = genVao()
+        glBindVertexArray(vao)
+        val n = puck.size / 3
+        val bary = floatBuffer(n * 3)
+        val motion = floatBuffer(n * 4)
+        for (i in 0 until n) {
+            bary.put(BARY, (i % 3) * 3, 3)
+            motion.put(puck, i * 3, 3)
+            motion.put(2f)
+        }
+        attribute(0, 3, floatBuffer(puck.size).apply { put(puck).flip() })
+        attribute(1, 3, bary.apply { flip() })
+        attribute(2, 4, motion.apply { flip() })
+        glBindVertexArray(0)
+        return vao
     }
 
     /** Positions stream per morph change; class, distance and indices are static. */
@@ -491,6 +602,63 @@ internal class TwinRenderer(
         const val BRAIN_FULL_ZOOM = 0.18f
         const val IDLE_NS = 2_500_000_000L
         val BARY = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+
+        /** A 35 mm disc, 5 mm thick: the size of a worn CGM, in decimetres. */
+        const val PUCK_R = 0.175f
+        const val PUCK_HALF_H = 0.025f
+        const val PUCK_SEGMENTS = 20
+        const val HALO_DM = 0.9f
+        const val GLOW_RATE = 2f
+        const val PULSE_RAD_S = 3f
+        val STALE_RGB = floatArrayOf(0.45f, 0.45f, 0.45f)
+
+        /** Expanded triangles of a disc about z: both caps and the rim. */
+        fun puckMesh(): FloatArray {
+            val out = ArrayList<Float>()
+            fun v(a: Int, z: Float) {
+                val r = 2.0 * Math.PI * a / PUCK_SEGMENTS
+                out += PUCK_R * cos(r).toFloat()
+                out += PUCK_R * sin(r).toFloat()
+                out += z
+            }
+            fun centre(z: Float) {
+                out += 0f
+                out += 0f
+                out += z
+            }
+            val h = PUCK_HALF_H
+            for (a in 0 until PUCK_SEGMENTS) {
+                centre(h); v(a, h); v(a + 1, h)
+                centre(-h); v(a + 1, -h); v(a, -h)
+                v(a, -h); v(a + 1, -h); v(a + 1, h)
+                v(a, -h); v(a + 1, h); v(a, h)
+            }
+            return out.toFloatArray()
+        }
+
+        /** Column-major mat3 whose z column is the normal at [a] 3..5. */
+        fun basis(a: FloatArray, out: FloatArray) {
+            val nx = a[3]
+            val ny = a[4]
+            val nz = a[5]
+            val helperY = abs(ny) < 0.9f
+            var tx = if (helperY) nz else 0f
+            var ty = if (helperY) 0f else -nz
+            var tz = if (helperY) -nx else ny
+            val len = kotlin.math.sqrt(tx * tx + ty * ty + tz * tz).coerceAtLeast(1e-12f)
+            tx /= len
+            ty /= len
+            tz /= len
+            out[0] = tx
+            out[1] = ty
+            out[2] = tz
+            out[3] = ny * tz - nz * ty
+            out[4] = nz * tx - nx * tz
+            out[5] = nx * ty - ny * tx
+            out[6] = nx
+            out[7] = ny
+            out[8] = nz
+        }
 
         fun floatBuffer(n: Int): FloatBuffer =
             ByteBuffer.allocateDirect(n * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()

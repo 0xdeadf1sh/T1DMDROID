@@ -116,6 +116,14 @@ class MigrationConstantsTest {
     }
 
     @Test
+    fun `the v38 placement DDL is exactly what Room generates`() {
+        assertEquals(
+            createSqlOf(schemaText(38), "sensor_placement"),
+            MigrationRunner.SQL_37_38_CREATE_SENSOR_PLACEMENT,
+        )
+    }
+
+    @Test
     fun `v37 drops the face table and nothing Room still declares`() {
         assertEquals("DROP TABLE IF EXISTS `twin_face`", MigrationRunner.SQL_36_37_DROP_TWIN_FACE)
         assertFalse(schemaText(37).contains("\"tableName\": \"twin_face\""))

@@ -2,6 +2,7 @@ package com.t1dm.feature.twin
 
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.zip.CRC32
 
 /** Written by `tools/twin-mesh/build.py` (layout in its `main`); decimetres, y up. */
 class TwinBody(
@@ -21,6 +22,13 @@ class TwinBody(
 ) {
     val vertexCount: Int get() = neutral.size / 3
     val boneCount: Int get() = boneNames.size
+
+    /** CRC32 of [indices]: a stored placement is only valid on the topology it was made on. */
+    val topologyHash: Int by lazy {
+        val bytes = ByteBuffer.allocate(indices.size * 2).order(ByteOrder.LITTLE_ENDIAN)
+        bytes.asShortBuffer().put(indices)
+        CRC32().apply { update(bytes.array()) }.value.toInt()
+    }
 
     /** Bone pivots for [weights]; writes xyz per bone into [out]. */
     fun pivots(weights: FloatArray, out: FloatArray = FloatArray(bonePivots.size)): FloatArray {

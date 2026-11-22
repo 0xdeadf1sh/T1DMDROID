@@ -40,8 +40,9 @@ import kotlinx.coroutines.Dispatchers
         EventTombstoneEntity::class,
         TwinScanEntity::class,
         TwinOverrideEntity::class,
+        SensorPlacementEntity::class,
     ],
-    version = 37,
+    version = 38,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -73,12 +74,13 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun eventTombstoneDao(): EventTombstoneDao
     abstract fun twinScanDao(): TwinScanDao
     abstract fun twinOverrideDao(): TwinOverrideDao
+    abstract fun sensorPlacementDao(): SensorPlacementDao
 
     companion object {
         const val NAME = "t1dm.db"
 
         /** Must equal `@Database(version)`; a bump lands on every branch, sharing one db file. */
-        const val SCHEMA_VERSION = 37
+        const val SCHEMA_VERSION = 38
 
         /** [FoodFts] isn't a Room entity: fresh installs create it, upgrades via MIGRATION_4_5. */
         fun build(context: Context): AppDatabase =

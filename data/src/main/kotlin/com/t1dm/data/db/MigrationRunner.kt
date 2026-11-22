@@ -781,6 +781,17 @@ object MigrationRunner {
         }
     }
 
+    internal const val SQL_37_38_CREATE_SENSOR_PLACEMENT =
+        "CREATE TABLE IF NOT EXISTS `sensor_placement` (`sensorId` TEXT NOT NULL, `meshHash` INTEGER NOT NULL, " +
+            "`tri` INTEGER NOT NULL, `u` REAL NOT NULL, `v` REAL NOT NULL, `placedAtMs` INTEGER NOT NULL, " +
+            "PRIMARY KEY(`sensorId`))"
+
+    val MIGRATION_37_38 = object : Migration(37, 38) {
+        override fun migrate(connection: SQLiteConnection) {
+            connection.execSQL(SQL_37_38_CREATE_SENSOR_PLACEMENT)
+        }
+    }
+
     val ALL: Array<Migration> = arrayOf(
         MIGRATION_1_2,
         MIGRATION_2_3,
@@ -818,6 +829,7 @@ object MigrationRunner {
         MIGRATION_34_35,
         MIGRATION_35_36,
         MIGRATION_36_37,
+        MIGRATION_37_38,
     )
 
     fun <T : RoomDatabase> configure(builder: RoomDatabase.Builder<T>): RoomDatabase.Builder<T> =

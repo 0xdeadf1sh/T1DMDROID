@@ -44,6 +44,8 @@ fun TwinScreen(
     onResetOverrides: () -> Unit,
     onTutorialDone: () -> Unit,
     modifier: Modifier = Modifier,
+    sensors: List<TwinSensor> = emptyList(),
+    staleAfterMs: Long = Long.MAX_VALUE,
 ) {
     val haptics = rememberT1dmHaptics()
     val cs = MaterialTheme.colorScheme
@@ -69,6 +71,8 @@ fun TwinScreen(
                     onOrbit = { tut.orbitRad += it },
                     onZoom = { tut.zoomLog += it },
                     callouts = !editing,
+                    sensors = sensors,
+                    staleAfterMs = staleAfterMs,
                 )
                 if (panelAlpha > 0f) {
                     TwinPanel(

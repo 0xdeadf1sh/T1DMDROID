@@ -233,6 +233,40 @@ void main() {
 }
 """
 
+internal const val HALO_VS = """#version 300 es
+uniform mat4 uMvp;
+uniform vec3 uCentre;
+uniform vec3 uRight;
+uniform vec3 uUp;
+uniform float uSize;
+out vec2 vQ;
+void main() {
+    vQ = vec2(gl_VertexID & 1, (gl_VertexID >> 1) & 1) * 2.0 - 1.0;
+    gl_Position = uMvp * vec4(uCentre + (uRight * vQ.x + uUp * vQ.y) * uSize, 1.0);
+}
+"""
+
+/** A soft core and rings leaving it like a radio wave; all of it scales with the link's glow. */
+internal const val HALO_FS = """#version 300 es
+precision highp float;
+in vec2 vQ;
+uniform float uT;
+uniform float uGlow;
+uniform vec3 uColor;
+out vec4 o;
+void main() {
+    float d = length(vQ);
+    if (d > 1.0) discard;
+    float i = exp(-d * d * 18.0) * 1.2;
+    for (int k = 0; k < 3; k++) {
+        float r = fract(uT * 0.45 + float(k) / 3.0);
+        float x = (d - r) / 0.035;
+        i += exp(-x * x) * (1.0 - r) * 0.8;
+    }
+    o = vec4(mix(uColor, vec3(1.0), exp(-d * d * 40.0)) * i * uGlow, 1.0);
+}
+"""
+
 internal const val PARTICLE_VS = """#version 300 es
 uniform mat4 uMvp;
 uniform float uT;

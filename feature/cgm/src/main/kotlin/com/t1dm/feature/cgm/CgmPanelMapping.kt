@@ -79,6 +79,7 @@ fun cgmPanelState(
             authoritative = authoritative,
             status = l.status,
             rssiDbm = l.rssiDbm,
+            readingTsMs = l.readingTsMs,
             sensorAgeMin = l.sensorAgeMin,
             // All three must be known; a countdown from an assumed start or wear isn't justifiable.
             expiryMs = if (l.sensorAgeMin != null && l.readingTsMs != null && l.lifetimeMin != null) {
