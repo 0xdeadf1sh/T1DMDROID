@@ -42,7 +42,7 @@ import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.ln
 
-/** The 3D twin; a new [scan] id replays the build-up, and reopening never does. */
+/** The 3D twin; a new [scan] eases the body to its shape. */
 @Composable
 fun TwinView(
     scan: TwinScan?,
@@ -95,7 +95,7 @@ fun TwinView(
     }
 
     LaunchedEffect(scan?.id, scan?.outputs) {
-        view.renderer.show(scan?.id, TwinMorphs.weights(scan, body))
+        view.renderer.show(TwinMorphs.weights(scan, body))
         view.kick()
     }
     LaunchedEffect(callouts) {

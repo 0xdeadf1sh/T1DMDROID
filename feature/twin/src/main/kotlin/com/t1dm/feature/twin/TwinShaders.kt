@@ -75,7 +75,6 @@ in vec3 vW;
 in vec3 vB;
 uniform vec3 uEye;
 uniform float uT;
-uniform float uReveal;
 uniform vec3 uC1;
 uniform vec3 uC2;
 uniform float uHeadY;
@@ -83,7 +82,6 @@ uniform float uHeadFade;
 out vec4 o;
 const float BAYER[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
 void main() {
-    if (vW.y > uReveal) discard;
     vec3 n = normalize(cross(dFdx(vW), dFdy(vW)));
     vec3 v = normalize(uEye - vW);
     if (dot(n, v) < 0.0) n = -n;
@@ -92,14 +90,12 @@ void main() {
     float w = min(min(vB.x, vB.y), vB.z);
     float edge = 1.0 - smoothstep(0.0, fwidth(w) * 1.2, w);
     float flick = 0.94 + 0.06 * sin(uT * 37.0 + vW.y * 2.0);
-    float cut = exp(-pow((uReveal - vW.y) * 3.0, 2.0));
     vec3 c = uC1 * (0.05 + 0.13 * diff) + uC1 * rim * 0.75 + uC1 * edge * 0.5;
     // Zoomed to the face the head thins to its wireframe: screen-door, so depth stays opaque.
     float hf = smoothstep(uHeadY - 0.2, uHeadY + 0.3, vW.y) * uHeadFade;
     ivec2 q = ivec2(gl_FragCoord.xy) & 3;
     if (hf * (1.0 - edge) > (BAYER[q.y * 4 + q.x] + 0.5) / 16.0) discard;
     c *= 1.0 - 0.55 * hf;
-    c += vec3(1.0) * cut * 0.7;
     o = vec4(c * flick, 1.0);
 }
 """

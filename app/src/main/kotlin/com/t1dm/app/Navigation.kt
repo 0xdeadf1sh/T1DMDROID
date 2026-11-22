@@ -1229,19 +1229,21 @@ private fun T1dmNavHost(
             )
         }
         composable("twin") {
-            val scans by container.twinScans.collectAsState(emptyList())
-            val overrides by container.twinOverrides.collectAsState(emptyMap())
+            val scans by container.twinScans.collectAsState(null)
+            val overrides by container.twinOverrides.collectAsState(null)
             // Starts true so the tutorial never flashes before the stored flag loads.
             val seen by container.settingsStore.twinTutorialSeen.collectAsState(true)
             val sensors by container.twinSensors.collectAsState(emptyList())
             val lossMin by container.settingsStore.lossMin.collectAsState(20)
             val scope = rememberCoroutineScope()
+            // Unloaded would read as no scan, and the body would morph in from neutral.
+            val loaded = scans ?: return@composable
             TwinScreen(
                 sensors = sensors,
                 staleAfterMs = lossMin * 60_000L,
-                latest = scans.lastOrNull(),
-                scanCount = scans.size,
-                overrides = overrides,
+                latest = loaded.lastOrNull(),
+                scanCount = loaded.size,
+                overrides = overrides ?: return@composable,
                 showTutorial = !seen,
                 onScan = { navController.navigate("twin/scan") { launchSingleTop = true } },
                 onMockScan = container::mockTwinScan,
@@ -1253,16 +1255,17 @@ private fun T1dmNavHost(
         }
         composable("twin/place/{sensorId}") { entry ->
             val id = entry.arguments?.getString("sensorId") ?: return@composable
-            val scans by container.twinScans.collectAsState(emptyList())
-            val overrides by container.twinOverrides.collectAsState(emptyMap())
+            val scans by container.twinScans.collectAsState(null)
+            val overrides by container.twinOverrides.collectAsState(null)
             val sensors by container.twinSensors.collectAsState(emptyList())
             val lossMin by container.settingsStore.lossMin.collectAsState(20)
             val cgm by container.cgmPanel.collectAsState()
+            val loaded = scans ?: return@composable
             TwinPlaceScreen(
                 sensorId = id,
                 sensorName = cgm.sensors.firstOrNull { it.id == id }?.name ?: id,
-                latest = scans.lastOrNull(),
-                overrides = overrides,
+                latest = loaded.lastOrNull(),
+                overrides = overrides ?: return@composable,
                 sensors = sensors,
                 staleAfterMs = lossMin * 60_000L,
                 onSave = {

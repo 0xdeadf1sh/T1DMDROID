@@ -56,7 +56,7 @@ internal class TwinRenderer(
     /** Horizontal body offset goal in NDC; negative moves it left. */
     @Volatile var shiftTarget = 0f
 
-    /** False: morphs and the build-up jump to their end state, and the scene holds still. */
+    /** False: morphs jump to their end state, and the scene holds still. */
     @Volatile var animate = true
     @Volatile var sensors: List<SensorDraw> = emptyList()
 
@@ -67,9 +67,7 @@ internal class TwinRenderer(
     @Volatile var onPick: ((SkinHit) -> Unit)? = null
     @Volatile private var pickNdc: FloatArray? = null
     @Volatile private var target = FloatArray(body.morphNames.size)
-    @Volatile private var assembleRequested = false
     @Volatile private var snapRequested = false
-    private var shownScanId: Long? = null
     private var shaped = false
 
     private val tris = body.indices.size / 3
@@ -127,7 +125,6 @@ internal class TwinRenderer(
     private var shift = 0f
     private val shifted = FloatArray(16)
     private val shiftedProj = FloatArray(16)
-    private var revealStart = -ASSEMBLE_S
     private var haloProg = 0
     private var puckVao = 0
     private val puck = puckMesh()
@@ -146,16 +143,13 @@ internal class TwinRenderer(
     private val boxCentre = FloatArray(3)
     private val lineEnd = FloatArray(3)
 
-    /** The first shape snaps; a new [scanId] replays the build-up; the same one eases there. */
-    fun show(scanId: Long?, weights: FloatArray) {
+    /** The first shape snaps; every later one eases there. */
+    fun show(weights: FloatArray) {
         target = weights.copyOf()
         if (!shaped) {
             shaped = true
             snapRequested = true
-        } else if (scanId != shownScanId) {
-            assembleRequested = true
         }
-        shownScanId = scanId
     }
 
     /** NDC, y up; answered through [onPick] on the next frame. */
@@ -225,12 +219,6 @@ internal class TwinRenderer(
         if (!ok) return
 
         stepMorph(dt)
-        if (assembleRequested) {
-            assembleRequested = false
-            revealStart = t
-        }
-        val k = if (still) 1f else ((t - revealStart) / ASSEMBLE_S).coerceIn(0f, 1f)
-        val reveal = minY - 1f + (maxY - minY + 2f) * (1f - (1f - k) * (1f - k) * (1f - k))
 
         val idleNow = !still && now - lastTouchNs > IDLE_NS
         if (idleNow) yawAuto += dt * SPIN_RAD_S
@@ -289,7 +277,6 @@ internal class TwinRenderer(
         glUniformMatrix4fv(loc(bodyProg, "uMvp"), 1, false, mvp, 0)
         glUniform3f(loc(bodyProg, "uEye"), ex, ey, ez)
         glUniform1f(loc(bodyProg, "uT"), t)
-        glUniform1f(loc(bodyProg, "uReveal"), reveal)
         glUniform3fv(loc(bodyProg, "uC1"), 1, c.primary, 0)
         glUniform3fv(loc(bodyProg, "uC2"), 1, c.secondary, 0)
         val inside = 1f - smoothstep(BRAIN_FULL_ZOOM, BRAIN_START_ZOOM, z)
@@ -302,11 +289,9 @@ internal class TwinRenderer(
         glEnable(GL_BLEND)
         glBlendFunc(GL_ONE, GL_ONE)
         glDepthMask(false)
-        if (reveal > maxY) {
-            drawOrgans(t, c, inside, ex, ey, ez)
-            drawSystems(t, c, inside, ex, ey, ez)
-            drawSensors(t, dt, c, ex, ey, ez)
-        }
+        drawOrgans(t, c, inside, ex, ey, ez)
+        drawSystems(t, c, inside, ex, ey, ez)
+        drawSensors(t, dt, c, ex, ey, ez)
         glEnable(GL_DEPTH_TEST)
 
         glEnable(GL_BLEND)
@@ -706,7 +691,6 @@ internal class TwinRenderer(
         /** Eye line as a fraction of standing height, measured down from the crown. */
         const val EYE_FROM_TOP = 0.07f
         const val FLOOR_SIZE = 120f
-        const val ASSEMBLE_S = 1.8f
         const val SPIN_RAD_S = 0.075f
         const val MORPH_RATE = 3f
         const val PARTICLES = 220
