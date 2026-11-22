@@ -8,7 +8,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -20,7 +19,6 @@ import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
-import kotlinx.coroutines.delay
 import kotlin.math.sqrt
 
 /** Root-space px: top bar's bottom edge, bottom bar's top edge; the sweep runs outside them. */
@@ -40,14 +38,7 @@ internal fun PolyphemusShaderBackdrop(
 ) {
     val shader = remember { RuntimeShader(POLYPHEMUS_AGSL) }
     val brush = remember(shader) { ShaderBrush(shader) }
-    // ~30 fps: a backdrop needs no more, and it runs behind every screen.
-    val clock by produceState(0f) {
-        val start = System.nanoTime()
-        while (true) {
-            value = ((System.nanoTime() - start) / 1e9f) % CLOCK_WRAP_S
-            delay(FRAME_MS)
-        }
-    }
+    val clock by rememberBackdropClock()
     Canvas(modifier.fillMaxSize()) {
         shader.setFloatUniform("res", size.width, size.height)
         shader.setFloatUniform("t", clock)
@@ -114,9 +105,10 @@ private fun hexagon(path: Path, cx: Float, cy: Float, r: Float) {
 }
 
 private const val HEXES_ACROSS = 9f
-private const val FRAME_MS = 33L
+/** ~30 fps: a backdrop needs no more, and it runs behind every screen. */
+internal const val FRAME_MS = 33L
 /** A whole number of 6 s wave cycles, so the wrap never makes the wave jump. */
-private const val CLOCK_WRAP_S = 1002f
+internal const val CLOCK_WRAP_S = 1002f
 
 private const val POLYPHEMUS_AGSL = """
 uniform float2 res;

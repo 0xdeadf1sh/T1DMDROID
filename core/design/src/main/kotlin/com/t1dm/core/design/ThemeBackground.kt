@@ -31,22 +31,29 @@ fun ThemeBackdrop(alphaPct: Int, bars: BackdropBars? = null, modifier: Modifier 
     val palette = LocalT1dmSemantics.current
     val a = (alphaPct / 100f).coerceIn(0f, 1f)
     val resId = rememberBackdropRasterId(palette.id)
-    if (palette.id == ThemeIds.POLYPHEMUS && LocalAnimationsEnabled.current && Build.VERSION.SDK_INT >= 33) {
+    val animated = LocalAnimationsEnabled.current && Build.VERSION.SDK_INT >= 33
+    if (palette.id == ThemeIds.POLYPHEMUS && animated) {
         PolyphemusShaderBackdrop(palette, a, bars, modifier)
-    } else if (resId != 0) {
-        // Centred at half size, Fit rather than Crop, so the whole motif stays visible.
-        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Image(
-                painter = painterResource(resId),
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(0.5f).alpha(a),
-                contentScale = ContentScale.Fit,
-            )
+        return
+    }
+    Box(modifier.fillMaxSize()) {
+        if (resId != 0) {
+            // Centred at half size, Fit rather than Crop, so the whole motif stays visible.
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Image(
+                    painter = painterResource(resId),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(0.5f).alpha(a),
+                    contentScale = ContentScale.Fit,
+                )
+            }
+        } else {
+            Canvas(Modifier.fillMaxSize().alpha(a)) {
+                drawThemeBackground(palette)
+            }
         }
-    } else {
-        Canvas(modifier.fillMaxSize().alpha(a)) {
-            drawThemeBackground(palette)
-        }
+        val effect = if (animated) BAR_SWEEP_EFFECTS[palette.id] else null
+        if (effect != null && Build.VERSION.SDK_INT >= 33) BarSweepOverlay(palette, bars, effect)
     }
 }
 
