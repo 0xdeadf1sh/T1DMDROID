@@ -2,30 +2,21 @@ package com.t1dm.feature.twin
 
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -35,12 +26,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.t1dm.core.design.LocalAnimationsEnabled
-import com.t1dm.core.design.LocalT1dmSemantics
-import com.t1dm.core.design.TwinAction
-import com.t1dm.core.design.iconStyleForTheme
-import com.t1dm.core.design.twinActionIcon
 import com.t1dm.core.model.TwinScan
 import com.t1dm.core.model.TwinTrait
 import java.util.Locale
@@ -48,21 +35,15 @@ import java.util.Locale
 private val PANEL_TRAITS = listOf(TwinTrait.HEIGHT, TwinTrait.AGE, TwinTrait.SEX, TwinTrait.WEIGHT)
 
 internal class PanelAction(
-    val action: TwinAction,
     val label: String,
     val onClick: () -> Unit,
     val enabled: Boolean = true,
     val target: TutorialTarget? = null,
 )
 
-/** Traits over actions, right of the body; [scan] null shows the actions alone. */
+/** Traits, right of the body. */
 @Composable
-internal fun TwinPanel(
-    scan: TwinScan?,
-    actions: List<PanelAction>,
-    tut: TutorialState,
-    modifier: Modifier = Modifier,
-) {
+internal fun TwinPanel(scan: TwinScan, modifier: Modifier = Modifier) {
     val cs = MaterialTheme.colorScheme
     val tick = cs.secondary
     Layout(
@@ -74,17 +55,15 @@ internal fun TwinPanel(
                     .border(1.dp, cs.primary.copy(alpha = 0.55f), RoundedCornerShape(4.dp))
                     .padding(8.dp),
             ) {
-                if (scan != null) {
-                    TraitRows(scan)
-                    Box(
-                        Modifier
-                            .padding(vertical = 6.dp)
-                            .fillMaxWidth()
-                            .height(1.dp)
-                            .drawBehind { drawRect(cs.primary.copy(alpha = 0.3f)) },
+                val valueStyle = MaterialTheme.typography.labelLarge.copy(color = cs.primary)
+                PANEL_TRAITS.forEach { trait ->
+                    Text(
+                        formatTrait(trait, scan[trait]),
+                        style = valueStyle,
+                        textAlign = TextAlign.End,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
                     )
                 }
-                actions.forEach { ActionRow(it, tut) }
             }
         },
         modifier = modifier,
@@ -104,63 +83,40 @@ private fun DrawScope.drawTick(color: Color) {
     drawLine(color, Offset(size.width - w, 0f), Offset(size.width, 0f), 2.dp.toPx())
 }
 
-/** Values count up from the previous scan. */
+/** Twin actions, above the nav bar; scrolls sideways when they overflow. */
 @Composable
-private fun TraitRows(scan: TwinScan) {
-    val animate = LocalAnimationsEnabled.current
-    val frame = remember { mutableLongStateOf(0L) }
-    LaunchedEffect(scan.id, animate) {
-        if (!animate) return@LaunchedEffect
-        val start = System.nanoTime()
-        while (System.nanoTime() - start < SETTLE_NS) withFrameNanos { frame.longValue = it }
-    }
-    var lastScan by remember { mutableStateOf<TwinScan?>(null) }
-    val from = remember(scan.id) { lastScan }
-    val shownAt = remember(scan.id) { System.nanoTime() }
-    SideEffect { lastScan = scan }
+internal fun TwinToolbar(actions: List<PanelAction>, tut: TutorialState, modifier: Modifier = Modifier) {
     val cs = MaterialTheme.colorScheme
-    val valueStyle = MaterialTheme.typography.labelLarge.copy(color = cs.primary)
-
-    frame.longValue
-    val t = (System.nanoTime() - shownAt) / 1e9f
-    PANEL_TRAITS.forEachIndexed { i, trait ->
-        val p = if (animate) ((t - 1.0f - i * 0.12f) / 0.6f).coerceIn(0f, 1f) else 1f
-        val e = 1f - (1f - p) * (1f - p)
-        // The settled value sizes the slot, so the panel never resizes while a value counts up.
-        Box(Modifier.fillMaxWidth().padding(vertical = 2.dp).alpha(e), contentAlignment = Alignment.CenterEnd) {
-            Text(valueText(trait, scan, from, 1f), style = valueStyle, modifier = Modifier.alpha(0f))
-            Text(valueText(trait, scan, from, e), style = valueStyle)
+    val shape = RoundedCornerShape(4.dp)
+    Row(
+        modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        actions.forEachIndexed { i, a ->
+            Box(
+                Modifier
+                    .then(a.target?.let { Modifier.tutorialTarget(tut, it) } ?: Modifier)
+                    .heightIn(min = 40.dp)
+                    .clip(shape)
+                    .border(1.dp, cs.primary.copy(alpha = 0.55f), shape)
+                    .clickable(enabled = a.enabled, onClick = a.onClick)
+                    .alpha(if (a.enabled) 1f else 0.38f)
+                    .padding(horizontal = 16.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    a.label,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (i == 0) cs.secondary else cs.onSurface,
+                )
+            }
         }
     }
 }
-
-@Composable
-private fun ActionRow(a: PanelAction, tut: TutorialState) {
-    val cs = MaterialTheme.colorScheme
-    val style = iconStyleForTheme(LocalT1dmSemantics.current.id)
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .then(a.target?.let { Modifier.tutorialTarget(tut, it) } ?: Modifier)
-            .heightIn(min = 40.dp)
-            .clip(RoundedCornerShape(4.dp))
-            .clickable(enabled = a.enabled, onClick = a.onClick)
-            .alpha(if (a.enabled) 1f else 0.38f)
-            .padding(horizontal = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            twinActionIcon(a.action, style),
-            contentDescription = null,
-            modifier = Modifier.size(20.dp),
-            tint = if (a.action == TwinAction.SCAN) cs.secondary else cs.primary,
-        )
-        Text(a.label, style = MaterialTheme.typography.labelLarge, color = cs.onSurface)
-    }
-}
-
-private const val SETTLE_NS = 3_000_000_000L
 
 /** Panel centre as a fraction of view height: level with the chest at the default framing. */
 private const val PANEL_CENTRE_Y = 0.42f
@@ -169,13 +125,8 @@ private const val PANEL_CENTRE_Y = 0.42f
 private val PANEL_MIN_TOP = 48.dp
 private val PANEL_EDGE = 12.dp
 
-private fun valueText(t: TwinTrait, to: TwinScan, from: TwinScan?, e: Float): String {
-    val end = to[t] ?: return "-"
-    val start = from?.get(t) ?: end
-    return formatTrait(t, start + (end - start) * e)
-}
-
-private fun formatTrait(t: TwinTrait, v: Double): String = when (t) {
-    TwinTrait.SEX -> "%.2f P(male)".format(Locale.ROOT, v)
+private fun formatTrait(t: TwinTrait, v: Double?): String = when {
+    v == null -> "-"
+    t == TwinTrait.SEX -> "%.2f P(male)".format(Locale.ROOT, v)
     else -> "%.1f %s".format(Locale.ROOT, v, t.unit)
 }

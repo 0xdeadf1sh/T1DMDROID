@@ -23,7 +23,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.unit.dp
 import com.t1dm.core.design.HapticEvent
-import com.t1dm.core.design.TwinAction
 import com.t1dm.core.design.rememberT1dmHaptics
 import com.t1dm.core.model.TwinScan
 import com.t1dm.core.model.TwinSource
@@ -74,23 +73,8 @@ fun TwinScreen(
                     sensors = sensors,
                     staleAfterMs = staleAfterMs,
                 )
-                if (panelAlpha > 0f) {
-                    TwinPanel(
-                        effective,
-                        listOf(
-                            PanelAction(TwinAction.SCAN, "Scan", { haptics.perform(HapticEvent.Tap); onScan() }),
-                            PanelAction(TwinAction.EDIT, "Edit", { editing = true }, latest != null, TutorialTarget.EDIT),
-                            PanelAction(TwinAction.TRENDS, "Trends", onTrends, scanCount > 0),
-                            PanelAction(
-                                TwinAction.MOCK, "Mock",
-                                { haptics.perform(HapticEvent.Tap); onMockScan() },
-                                target = TutorialTarget.MOCK,
-                            ),
-                            PanelAction(TwinAction.HELP, "Help", { tutorial = true }),
-                        ),
-                        tut,
-                        Modifier.fillMaxSize().alpha(panelAlpha),
-                    )
+                if (panelAlpha > 0f && effective != null) {
+                    TwinPanel(effective, Modifier.fillMaxSize().alpha(panelAlpha))
                 }
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
@@ -128,6 +112,17 @@ fun TwinScreen(
                     },
                     onDone = { editing = false },
                     modifier = Modifier.tutorialTarget(tut, TutorialTarget.PANEL),
+                )
+            } else {
+                TwinToolbar(
+                    listOf(
+                        PanelAction("Scan", { haptics.perform(HapticEvent.Tap); onScan() }),
+                        PanelAction("Edit", { editing = true }, latest != null, TutorialTarget.EDIT),
+                        PanelAction("Trends", onTrends, scanCount > 0),
+                        PanelAction("Mock", { haptics.perform(HapticEvent.Tap); onMockScan() }, target = TutorialTarget.MOCK),
+                        PanelAction("Help", { tutorial = true }),
+                    ),
+                    tut,
                 )
             }
         }

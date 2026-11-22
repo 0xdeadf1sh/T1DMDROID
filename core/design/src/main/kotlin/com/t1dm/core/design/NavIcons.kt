@@ -198,50 +198,6 @@ private fun heart(s: IconStyle) = glyph("heart", s) {
 
 fun heartIcon(style: IconStyle): ImageVector = heart(style)
 
-enum class TwinAction { SCAN, EDIT, TRENDS, MOCK, HELP }
-
-private fun scan(s: IconStyle) = glyph("scan", s) { // a face in viewfinder corners
-    moveTo(3f, 3f); lineTo(9f, 3f); lineTo(9f, 5f); lineTo(5f, 5f); lineTo(5f, 9f); lineTo(3f, 9f); close()
-    moveTo(21f, 3f); lineTo(21f, 9f); lineTo(19f, 9f); lineTo(19f, 5f); lineTo(15f, 5f); lineTo(15f, 3f); close()
-    moveTo(21f, 21f); lineTo(15f, 21f); lineTo(15f, 19f); lineTo(19f, 19f); lineTo(19f, 15f); lineTo(21f, 15f); close()
-    moveTo(3f, 21f); lineTo(3f, 15f); lineTo(5f, 15f); lineTo(5f, 19f); lineTo(9f, 19f); lineTo(9f, 21f); close()
-    moveTo(12f, 7f); arcTo(5f, 5f, 0f, true, true, 11.99f, 7f); close()
-}
-
-private fun edit(s: IconStyle) = glyph("edit", s) { // a pencil, diagonal
-    moveTo(4f, 20f); lineTo(5f, 15f); lineTo(15.5f, 4.5f); lineTo(19.5f, 8.5f); lineTo(9f, 19f); close()
-}
-
-private fun trends(s: IconStyle) = glyph("trends", s) { // a rising zigzag and its arrowhead
-    moveTo(3f, 16f); lineTo(9f, 10f); lineTo(13f, 14f); lineTo(17f, 10f); lineTo(18.5f, 11.5f)
-    lineTo(13f, 17f); lineTo(9f, 13f); lineTo(4.5f, 17.5f); close()
-    moveTo(15f, 6f); lineTo(21f, 6f); lineTo(21f, 12f); close()
-}
-
-private fun mock(s: IconStyle) = glyph("mock", s) { // a die showing five
-    // Pips wound opposite the face, so NonZero fill knocks them out as holes.
-    moveTo(4f, 4f); lineTo(20f, 4f); lineTo(20f, 20f); lineTo(4f, 20f); close()
-    for ((x, y) in listOf(8f to 8f, 16f to 8f, 12f to 12f, 8f to 16f, 16f to 16f)) {
-        moveTo(x - 1.25f, y - 1.25f); lineTo(x - 1.25f, y + 1.25f)
-        lineTo(x + 1.25f, y + 1.25f); lineTo(x + 1.25f, y - 1.25f); close()
-    }
-}
-
-private fun help(s: IconStyle) = glyph("help", s) { // a question mark
-    moveTo(7f, 9f); arcTo(5f, 5f, 0f, true, true, 15f, 13f)
-    lineTo(13f, 14.5f); lineTo(13f, 16f); lineTo(11f, 16f); lineTo(11f, 13.5f)
-    lineTo(13.8f, 11.4f); arcTo(3f, 3f, 0f, true, false, 9f, 9f); close()
-    moveTo(11f, 18f); lineTo(13f, 18f); lineTo(13f, 20f); lineTo(11f, 20f); close()
-}
-
-fun twinActionIcon(action: TwinAction, style: IconStyle): ImageVector = when (action) {
-    TwinAction.SCAN -> scan(style)
-    TwinAction.EDIT -> edit(style)
-    TwinAction.TRENDS -> trends(style)
-    TwinAction.MOCK -> mock(style)
-    TwinAction.HELP -> help(style)
-}
-
 fun navIcon(route: String, style: IconStyle): ImageVector = when (route) {
     "twin" -> twin(style)
     "dashboard" -> dashboard(style)
