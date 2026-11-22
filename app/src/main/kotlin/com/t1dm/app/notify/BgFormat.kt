@@ -32,11 +32,11 @@ object BgFormat {
 
     /** Empty where no rate was measured; callers must not lay out a space around it. */
     fun arrow(trend: GlanceTrend?): String = when (trend) {
-        GlanceTrend.RISING_FAST -> "^^"
-        GlanceTrend.RISING -> "/"
-        GlanceTrend.FLAT -> "->"
-        GlanceTrend.FALLING -> "\\"
-        GlanceTrend.FALLING_FAST -> "vv"
+        GlanceTrend.RISING_FAST -> "⇈"
+        GlanceTrend.RISING -> "↗"
+        GlanceTrend.FLAT -> "→"
+        GlanceTrend.FALLING -> "↘"
+        GlanceTrend.FALLING_FAST -> "⇊"
         null -> ""
     }
 

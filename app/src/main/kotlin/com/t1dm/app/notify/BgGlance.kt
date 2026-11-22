@@ -350,15 +350,8 @@ object BgGlanceComputer {
         }
         status != null && status != ForecastStatus.OK -> "forecast unavailable"
         bg != null -> {
-            val arrow = when (trend) {
-                GlanceTrend.RISING_FAST -> "^^"
-                GlanceTrend.RISING -> "^"
-                GlanceTrend.FALLING_FAST -> "vv"
-                GlanceTrend.FALLING -> "v"
-                GlanceTrend.FLAT -> "->"
-                null -> null
-            }
-            if (arrow == null) "$bg" else "$bg $arrow"
+            val arrow = BgFormat.arrow(trend)
+            if (arrow.isEmpty()) "$bg" else "$bg $arrow"
         }
         else -> "no reading"
     }.let { if (it.length <= 40) it else it.take(40) }
