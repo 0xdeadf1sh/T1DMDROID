@@ -53,29 +53,29 @@ internal fun TwinTraitBar(
     }
 }
 
-/** Twin actions, above the nav bar. */
+/** Twin actions, above the nav bar; each takes an equal share of the width. */
 @Composable
 internal fun TwinToolbar(actions: List<PanelAction>, tut: TutorialState, modifier: Modifier = Modifier) {
     val cs = MaterialTheme.colorScheme
-    ChipRow(modifier) {
+    ChipRow(modifier, scroll = false) {
         actions.forEachIndexed { i, a ->
             Chip(
                 a.label,
                 if (i == 0) cs.secondary else cs.onSurface,
                 a.onClick,
                 a.enabled,
-                a.target?.let { Modifier.tutorialTarget(tut, it) } ?: Modifier,
+                Modifier.weight(1f).then(a.target?.let { Modifier.tutorialTarget(tut, it) } ?: Modifier),
             )
         }
     }
 }
 
 @Composable
-private fun ChipRow(modifier: Modifier, content: @Composable RowScope.() -> Unit) {
+private fun ChipRow(modifier: Modifier, scroll: Boolean = true, content: @Composable RowScope.() -> Unit) {
     Row(
         modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
+            .then(if (scroll) Modifier.horizontalScroll(rememberScrollState()) else Modifier)
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
