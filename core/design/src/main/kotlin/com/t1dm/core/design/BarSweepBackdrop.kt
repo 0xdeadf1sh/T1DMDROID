@@ -33,7 +33,10 @@ internal fun BarSweepOverlay(
     effect: String,
     modifier: Modifier = Modifier,
 ) {
-    val shader = remember(effect) { RuntimeShader(BAR_SWEEP_PRELUDE + effect + BAR_SWEEP_MAIN) }
+    // A shader that fails to compile must leave the still backdrop, not crash the app.
+    val shader = remember(effect) {
+        runCatching { RuntimeShader(BAR_SWEEP_PRELUDE + effect + BAR_SWEEP_MAIN) }.getOrNull()
+    } ?: return
     val brush = remember(shader) { ShaderBrush(shader) }
     val clock by rememberBackdropClock()
     Canvas(modifier.fillMaxSize()) {
