@@ -66,8 +66,8 @@ fun TwinScreen(
                     selected = trait.takeIf { editing },
                     onPick = {
                         haptics.perform(HapticEvent.Tap)
+                        editing = !(editing && trait == it)
                         trait = it
-                        editing = true
                     },
                     enabled = latest != null,
                 )
