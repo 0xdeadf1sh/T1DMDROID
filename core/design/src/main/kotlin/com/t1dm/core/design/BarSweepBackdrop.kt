@@ -125,30 +125,56 @@ float4 effect(float2 lp, float2 sz) {
 }
 """
 
-/** A stretched double helix repeating along the strip; its pitch breathes, rungs pulse in turn. */
+/** A B-DNA helix turning about the bar's axis, depth-sorted: 10 pairs a turn, 3 s a turn. */
 private const val UMBRELLA_EFFECT = """
+float4 comp(float4 bot, float4 top) {
+    float o = top.a + bot.a * (1.0 - top.a);
+    float3 c = o > 0.0 ? (top.rgb * top.a + bot.rgb * bot.a * (1.0 - top.a)) / o : float3(0.0);
+    return float4(c, o);
+}
+
+float4 strand(float2 lp, float cy, float amp, float ang, float ph, float xc, float sp,
+              float rb, float sgn, float3 col) {
+    float step36 = 0.6283185;
+    float z = sgn * sin(ang);
+    float yb = cy + sgn * amp * cos(ang);
+    float slope = -sgn * amp * sin(ang) * step36 / sp;
+    float wd = 1.4 * (1.0 + 0.4 * z);
+    float tube = 1.0 - smoothstep(wd - 0.8, wd + 0.6, abs(lp.y - yb) / sqrt(1.0 + slope * slope));
+    float zb = sgn * sin(ph);
+    float2 bc = float2(xc, cy + sgn * amp * cos(ph));
+    float r = rb * (1.0 + 0.35 * zb);
+    float bead = 1.0 - smoothstep(r - 1.0, r + 0.7, distance(lp, bc));
+    float aT = tube * (0.7 + 0.3 * z);
+    float3 c = (col * (0.55 + 0.45 * z) * aT + col * (0.55 + 0.45 * zb) * bead) / max(aT + bead, 0.001);
+    return float4(c, max(aT, bead));
+}
+
 float4 effect(float2 lp, float2 sz) {
-    float lam = 260.0;
-    float w = 2.0943951;
-    float pitch = 1.0 + 0.25 * sin(t * w * 0.5);
-    float u = (lp.x - sz.x * 0.5) / lam * 6.2831853 * pitch;
-    float amp = sz.y * 0.40 * (0.8 + 0.2 * sin(lp.x / lam * 3.1415927 - t * w));
+    float sp = 22.0;
     float cy = sz.y * 0.5;
-    float s = sin(u);
-    float slope = amp * cos(u) * 6.2831853 * pitch / lam;
-    float norm = 1.0 / sqrt(1.0 + slope * slope);
-    float d1 = abs(lp.y - (cy + amp * s)) * norm;
-    float d2 = abs(lp.y - (cy - amp * s)) * norm;
-    float depth = cos(u);
-    float a1 = (1.0 - smoothstep(0.0, 1.8, d1)) * (0.65 + 0.35 * depth);
-    float a2 = (1.0 - smoothstep(0.0, 1.8, d2)) * (0.65 - 0.35 * depth);
-    float ri = u / 6.2831853 * 8.0;
-    float r = fract(ri) - 0.5;
-    float pulse = max(0.0, sin(floor(ri) * 0.7 - t * w));
-    float inside = step(abs(lp.y - cy), amp * abs(s));
-    float rung = (1.0 - smoothstep(0.0, 1.2, abs(r) * lam / 8.0 / pitch)) * inside * (0.25 + 0.6 * pulse * pulse);
-    float3 col = (float3(c1.rgb) * a1 + float3(ink.rgb) * a2 + float3(ink.rgb) * rung) / max(a1 + a2 + rung, 0.001);
-    return float4(col, clamp(a1 + a2 + rung, 0.0, 1.0) * 0.4);
+    float amp = sz.y * 0.34;
+    float step36 = 0.6283185;
+    float rb = clamp(sz.y * 0.07, 2.5, 5.0);
+    float i = floor(lp.x / sp);
+    float xc = (i + 0.5) * sp;
+    float th = t * 2.0943951;
+    float ph = i * step36 + th;
+    float ang = (lp.x / sp - 0.5) * step36 + th;
+
+    float4 s1 = strand(lp, cy, amp, ang, ph, xc, sp, rb, 1.0, float3(c1.rgb));
+    float4 s2 = strand(lp, cy, amp, ang, ph, xc, sp, rb, -1.0, float3(ink.rgb));
+
+    float y1 = cy + amp * cos(ph);
+    float span = -2.0 * amp * cos(ph);
+    float tt = abs(span) < 0.001 ? 0.5 : (lp.y - y1) / span;
+    float inside = step(0.0, tt) * step(tt, 1.0);
+    float rungA = (1.0 - smoothstep(0.5, 1.4, abs(lp.x - xc))) * inside * 0.7;
+    float3 rungC = mix(float3(c1.rgb), float3(ink.rgb), smoothstep(0.4, 0.6, tt)) * 0.75;
+    float4 rung = float4(rungC, rungA);
+
+    float4 o = sin(ang) < 0.0 ? comp(comp(s1, rung), s2) : comp(comp(s2, rung), s1);
+    return float4(o.rgb, o.a * 0.5);
 }
 """
 
